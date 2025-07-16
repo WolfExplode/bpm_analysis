@@ -34,6 +34,11 @@ class BPMApp:
         self.create_widgets()
         self.root.after(100, self.process_log_queue)
         self._find_initial_audio_file()
+        
+        # Check if output folder exists and enable button if it does
+        output_dir = os.path.join(os.getcwd(), "processed_files")
+        if os.path.exists(output_dir) and os.path.isdir(output_dir):
+            self.open_folder_btn.config(state=tk.NORMAL)
 
     def create_widgets(self):
         main_frame = ttk.Frame(self.root, padding="20")
@@ -59,6 +64,8 @@ class BPMApp:
         btn_frame.pack(fill=tk.X, pady=20)
         self.analyze_btn = ttk.Button(btn_frame, text="Analyze", command=self.start_analysis_thread, bootstyle=SUCCESS, state=tk.DISABLED)
         self.analyze_btn.pack(side=tk.RIGHT, padx=5)
+        self.open_folder_btn = ttk.Button(btn_frame, text="Open Output Folder", command=self.open_output_folder, bootstyle=INFO, state=tk.DISABLED)
+        self.open_folder_btn.pack(side=tk.RIGHT, padx=5)
 
         # Status Bar
         self.status_var = tk.StringVar(value="Select one or more audio files to begin.")
@@ -78,6 +85,7 @@ class BPMApp:
                     final_message = msg.data if msg.data else "Analysis complete!"
                     self.status_var.set(final_message)
                     self.analyze_btn.config(state=tk.NORMAL)
+                    self.open_folder_btn.config(state=tk.NORMAL)
                 elif msg.type == UIMessageType.ERROR:
                      self.status_var.set("An error occurred. Check logs and messagebox.")
                      messagebox.showerror("Analysis Error", msg.data)
@@ -165,6 +173,16 @@ class BPMApp:
         else:
             self._update_status(f"Ready to analyze. No previous settings file found.")
 
+    def open_output_folder(self):
+        """Opens the output folder where analysis results are stored."""
+        output_dir = os.path.join(os.getcwd(), "processed_files")
+        if os.path.exists(output_dir):
+            # Use the appropriate command for Windows
+            os.startfile(output_dir)
+            self._update_status(f"Opened output folder: {output_dir}")
+        else:
+            messagebox.showerror("Error", "Output folder does not exist")
+            
     def _update_status(self, message):
         """Safely update the status bar from any thread."""
         self.root.after(0, lambda: self.status_var.set(message))
