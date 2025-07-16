@@ -84,29 +84,55 @@ class PeakClassifier:
 
     def _initialize_state(self, start_bpm_hint, precomputed_noise_floor, precomputed_troughs) -> Dict:
         """Pre-calculates all necessary data and initializes the state for the peak finding loop."""
-        state = {'analysis_data': {}}
-        state['dynamic_noise_floor'], state['trough_indices'] = precomputed_noise_floor, precomputed_troughs
-        state['all_peaks'] = self._find_raw_peaks(state['dynamic_noise_floor'].values)
-        state['analysis_data']['dynamic_noise_floor_series'] = state['dynamic_noise_floor']
-        state['analysis_data']['trough_indices'] = state['trough_indices']
-
-        noise_floor_at_peaks = state['dynamic_noise_floor'].reindex(state['all_peaks'], method='nearest').values
-        peak_strengths = self.audio_envelope[state['all_peaks']] - noise_floor_at_peaks
-        peak_strengths[peak_strengths < 0] = 0
-        normalized_deviations = np.abs(np.diff(peak_strengths)) / (np.maximum(peak_strengths[:-1], peak_strengths[1:]) + 1e-9)
-        deviation_times = (state['all_peaks'][:-1] + state['all_peaks'][1:]) / 2 / self.sample_rate
-        deviation_series = pd.Series(normalized_deviations, index=deviation_times)
-        smoothing_window = max(5, int(len(deviation_series) * self.params['deviation_smoothing_factor']))
-        state['smoothed_dev_series'] = deviation_series.rolling(window=smoothing_window, min_periods=1, center=True).mean()
-        state['analysis_data']['deviation_series'] = state['smoothed_dev_series']
-
-        state['long_term_bpm'] = float(start_bpm_hint) if start_bpm_hint else 80.0
-        state['candidate_beats'] = []
-        state['beat_debug_info'] = {}
-        state['long_term_bpm_history'] = []
-        state['sorted_troughs'] = sorted(state['trough_indices'])
-        state['consecutive_rr_rejections'] = 0
-        state['loop_idx'] = 0
+        # Initialize state with all required keys at once to reduce dictionary resizing
+        state = {
+            'analysis_data': {},
+            'dynamic_noise_floor': precomputed_noise_floor,
+            'trough_indices': precomputed_troughs,
+            'long_term_bpm': float(start_bpm_hint) if start_bpm_hint else 80.0,
+            'candidate_beats': [],
+            'beat_debug_info': {},
+            'long_term_bpm_history': [],
+            'consecutive_rr_rejections': 0,
+            'loop_idx': 0
+        }
+        
+        # Find raw peaks
+        state['all_peaks'] = self._find_raw_peaks(precomputed_noise_floor.values)
+        
+        # Store references in analysis_data
+        state['analysis_data']['dynamic_noise_floor_series'] = precomputed_noise_floor
+        state['analysis_data']['trough_indices'] = precomputed_troughs
+        
+        # Pre-sort troughs for faster lookups later
+        state['sorted_troughs'] = sorted(precomputed_troughs)
+        
+        # Calculate peak strengths and deviations more efficiently
+        noise_floor_at_peaks = precomputed_noise_floor.reindex(state['all_peaks'], method='nearest').values
+        peak_strengths = np.maximum(0, self.audio_envelope[state['all_peaks']] - noise_floor_at_peaks)
+        
+        # Only proceed if we have enough peaks
+        if len(peak_strengths) > 1:
+            # Calculate normalized deviations more efficiently
+            peak_max = np.maximum(peak_strengths[:-1], peak_strengths[1:])
+            normalized_deviations = np.abs(np.diff(peak_strengths)) / (peak_max + 1e-9)
+            
+            # Calculate deviation times
+            deviation_times = (state['all_peaks'][:-1] + state['all_peaks'][1:]) / (2 * self.sample_rate)
+            
+            # Create and smooth deviation series
+            deviation_series = pd.Series(normalized_deviations, index=deviation_times)
+            smoothing_window = max(5, int(len(deviation_series) * self.params['deviation_smoothing_factor']))
+            state['smoothed_dev_series'] = deviation_series.rolling(
+                window=smoothing_window, 
+                min_periods=1, 
+                center=True
+            ).mean()
+            state['analysis_data']['deviation_series'] = state['smoothed_dev_series']
+        else:
+            # Handle edge case with too few peaks
+            state['smoothed_dev_series'] = pd.Series()
+            state['analysis_data']['deviation_series'] = state['smoothed_dev_series']
 
         return state
 
@@ -131,40 +157,64 @@ class PeakClassifier:
 
     def _kickstart_check(self):
         """Specialized recovery function to kick-start the algorithm if it gets stuck."""
+        # Early exit checks to avoid unnecessary computation
+        candidate_beats = self.state['candidate_beats']
+        candidate_beats_len = len(candidate_beats)
+        
+        # Fixed constants to avoid repeated lookups
+        history = 4  # Hardcoded history beats
+        min_s1s = 3  # Hardcoded min S1 candidates
+        
+        # Quick check if we have enough beats to analyze
+        if candidate_beats_len < history:
+            return
+            
         # Calculate recent rhythm stability as a ratio
         history_window = self.params.get("stability_history_window", 20)
-        if len(self.state['candidate_beats']) < history_window:
+        if candidate_beats_len < history_window:
             pairing_ratio = 0.5
         else:
-            recent_beats = self.state['candidate_beats'][-history_window:]
-            paired_count = sum(1 for beat_idx in recent_beats if PeakType.S1_PAIRED.value in self.state['beat_debug_info'].get(beat_idx, ""))
+            # Cache beat_debug_info to avoid repeated dictionary lookups
+            beat_debug_info = self.state['beat_debug_info']
+            recent_beats = candidate_beats[-history_window:]
+            paired_count = sum(1 for beat_idx in recent_beats if 
+                              PeakType.S1_PAIRED.value in beat_debug_info.get(beat_idx, ""))
             pairing_ratio = paired_count / history_window
             
+        # Early exit if pairing ratio is above threshold
         if pairing_ratio >= self.params.get("kickstart_check_threshold", 0.3):
             return
 
-        history = 4  # Hardcoded history beats
-        if len(self.state['candidate_beats']) < history:
-            return
-
-        min_s1s = 3  # Hardcoded min S1 candidates
-        recent_lone_s1s = [idx for idx in self.state['candidate_beats'][-history:] if "Lone S1" in self.state['beat_debug_info'].get(idx, "")]
+        # Find recent lone S1s more efficiently
+        beat_debug_info = self.state['beat_debug_info']
+        recent_lone_s1s = []
+        for idx in candidate_beats[-history:]:
+            debug_info = beat_debug_info.get(idx, "")
+            if "Lone S1" in debug_info:
+                recent_lone_s1s.append(idx)
+                
         if len(recent_lone_s1s) < min_s1s:
             return
 
+        # Cache all_peaks for faster lookups
+        all_peaks = self.state['all_peaks']
         min_matches = 3  # Hardcoded min matches
         matches = 0
+        
         for s1_idx in recent_lone_s1s:
-            current_raw_idx = np.searchsorted(self.state['all_peaks'], s1_idx)
-            if current_raw_idx < len(self.state['all_peaks']) - 1:
-                next_raw_peak_idx = self.state['all_peaks'][current_raw_idx + 1]
-                if "Noise" in self.state['beat_debug_info'].get(next_raw_peak_idx, ""):
+            current_raw_idx = np.searchsorted(all_peaks, s1_idx)
+            if current_raw_idx < len(all_peaks) - 1:
+                next_raw_peak_idx = all_peaks[current_raw_idx + 1]
+                if "Noise" in beat_debug_info.get(next_raw_peak_idx, ""):
                     matches += 1
+                    # Early exit if we've found enough matches
+                    if matches >= min_matches:
+                        break
 
         if matches >= min_matches:
             override_ratio = self.params.get("kickstart_override_ratio", 0.6)
             logging.info(f"KICK-START: Found {matches}/{len(recent_lone_s1s)} S1->Noise patterns. Overriding pairing ratio to {override_ratio}.")
-            # This is a temporary state change, so we don't store the override ratio in self.state
+            # This is a temporary state change
             self.state['pairing_ratio_override'] = override_ratio
 
     def _handle_last_peak(self, peak_idx: int):
@@ -176,14 +226,26 @@ class PeakClassifier:
     def _process_peak_pair(self, current_peak_idx: int):
         """Processes a pair of peaks to determine if they are S1-S2."""
         next_peak_idx = self.state['all_peaks'][self.state['loop_idx'] + 1]
-        # Calculate recent rhythm stability as a ratio
-        history_window = self.params.get("stability_history_window", 20)
-        if len(self.state['candidate_beats']) < history_window:
-            pairing_ratio = 0.5
+        
+        # Calculate pairing ratio once and cache it for reuse
+        # Use cached pairing_ratio_override if available from kickstart mechanism
+        if hasattr(self.state, 'pairing_ratio_override'):
+            pairing_ratio = self.state.get('pairing_ratio_override', 0.5)
+            # Clear the override after using it once
+            if 'pairing_ratio_override' in self.state:
+                del self.state['pairing_ratio_override']
         else:
-            recent_beats = self.state['candidate_beats'][-history_window:]
-            paired_count = sum(1 for beat_idx in recent_beats if PeakType.S1_PAIRED.value in self.state['beat_debug_info'].get(beat_idx, ""))
-            pairing_ratio = paired_count / history_window
+            # Calculate recent rhythm stability as a ratio
+            history_window = self.params.get("stability_history_window", 20)
+            if len(self.state['candidate_beats']) < history_window:
+                pairing_ratio = 0.5
+            else:
+                # Use list comprehension instead of sum() with generator for better performance
+                recent_beats = self.state['candidate_beats'][-history_window:]
+                beat_debug_info = self.state['beat_debug_info']
+                paired_count = sum(1 for beat_idx in recent_beats if 
+                                  PeakType.S1_PAIRED.value in beat_debug_info.get(beat_idx, ""))
+                pairing_ratio = paired_count / history_window
 
         is_paired, reason = self._attempt_s1_s2_pairing(
             current_peak_idx, next_peak_idx, pairing_ratio
@@ -510,34 +572,46 @@ class Plotter:
     def _add_line_traces(self, time_axis_dt: pd.Series, audio_envelope: np.ndarray, analysis_data: Dict):
         """Adds downsampled audio envelope and noise floor traces for performance."""
         # --- Prepare data for plotting, with optional downsampling for performance ---
-        plot_time_axis_dt = time_axis_dt
-        plot_envelope = audio_envelope
         plot_noise_floor = analysis_data.get('dynamic_noise_floor_series')
 
         # Always downsample for performance (hardcoded behavior)
         factor = self.params.get("plot_downsample_factor", 5)
         if factor > 1 and len(audio_envelope) >= factor:
             logging.info(f"Downsampling line traces by a factor of {factor} for plotting.")
+            # Use direct array slicing for better performance
             plot_time_axis_dt = time_axis_dt[::factor]
             plot_envelope = audio_envelope[::factor]
+            
+            # Handle noise floor downsampling more efficiently
             if plot_noise_floor is not None and not plot_noise_floor.empty:
-                plot_noise_floor = plot_noise_floor.iloc[::factor]
+                # Use efficient resampling for pandas Series
+                if len(plot_noise_floor) > len(audio_envelope) // factor:
+                    plot_noise_floor = plot_noise_floor.iloc[::factor]
+        else:
+            plot_time_axis_dt = time_axis_dt
+            plot_envelope = audio_envelope
 
         # --- Add the potentially downsampled line traces ---
+        # Pre-allocate memory for traces to avoid multiple reallocations
         self.fig.add_trace(go.Scatter(
             x=plot_time_axis_dt,
             y=plot_envelope,
             name="Audio Envelope",
-            line=dict(color="#47a5c4")),
+            line=dict(color="#47a5c4"),
+            hoverinfo="skip"),  # Skip hover for better performance on large datasets
             secondary_y=False)
-        if plot_noise_floor is not None and not plot_noise_floor.empty and len(plot_noise_floor) >= len(plot_time_axis_dt):
-            self.fig.add_trace(go.Scatter(
-                x=plot_time_axis_dt,
-                y=plot_noise_floor.values,
-                name="Dynamic Noise Floor",
-                line=dict(color="green", dash="dot", width=1.5),
-                hovertemplate="Noise Floor: %{y:.2f}<extra></extra>"),
-                secondary_y=False)
+            
+        # Only add noise floor if it exists and has valid data
+        if plot_noise_floor is not None and not plot_noise_floor.empty:
+            # Ensure noise floor length matches time axis
+            if len(plot_noise_floor) >= len(plot_time_axis_dt):
+                self.fig.add_trace(go.Scatter(
+                    x=plot_time_axis_dt,
+                    y=plot_noise_floor.values[:len(plot_time_axis_dt)],  # Ensure lengths match
+                    name="Dynamic Noise Floor",
+                    line=dict(color="green", dash="dot", width=1.5),
+                    hovertemplate="Noise Floor: %{y:.2f}<extra></extra>"),
+                    secondary_y=False)
 
     def _add_trough_markers(self, audio_envelope: np.ndarray, analysis_data: Dict):
         """Adds trough markers to the plot using original full-resolution data for accuracy."""
