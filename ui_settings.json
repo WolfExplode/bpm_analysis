@@ -1,12 +1,14 @@
 {
     "starting_bpm": "",
+    "segmenter": "springer",
+    "springer_model_path": "C:/Users/WXP/Documents/GitHub/bpm_analysis/logistic-regression-hsmm-based-heart-sound-segmentation-1.0/cristhian_potes-204/cristhian_potes_model.npz",
     "process_all_channels": false,
-    "verbose_console_logging": false,
+    "verbose_console_logging": true,
     "output_html": true,
-    "output_png": true,
+    "output_png": false,
     "output_csv": false,
     "output_summary": false,
-    "output_debug": false,
+    "output_debug": true,
     "output_filtered_wav": true,
     "output_bpm_text": false,
     "output_spectrogram": false,
@@ -14,6 +16,6 @@
     "optimize_long_plots": false,
     "output_to_input_dir": false,
     "last_files": [
-        "C:/Users/WXP/Documents/GitHub/bpm_analysis/inputs/Difficulty 1/\u2b50Playing Horror Game with my heartbeat[FNAF 4] (NIGHT 1)  [FAIL].mp4"
+        "C:/Users/WXP/Documents/GitHub/bpm_analysis/inputs/Difficulty 1/Control2.wav"
     ]
 }

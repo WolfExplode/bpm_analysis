@@ -17,6 +17,11 @@
   const SPECTROGRAM_AVAILABLE = cfg.spectrogramAvailable || {};
   const AUDIO_SOURCES = cfg.audioSources || {};
   const AUDIO_LABELS = cfg.audioLabels || {};
+  const SPRINGER_SEGMENTS = cfg.springerSegments || [];
+  const SPRINGER_STATE_COLORS = { 1: "#e36f6f", 2: "#666", 3: "#f0a030", 4: "#999" };
+  const SPRINGER_STRIP_OFFSET_FROM_BOTTOM = 14;
+  const SPRINGER_TICK_HALF = 4;
+  let springerSegmentElements = [];
 
   // DOM Elements
   const audio = document.getElementById("audio-player");
@@ -35,6 +40,8 @@
   const timelineTicks = document.getElementById("timeline-ticks");
   const chartPlayhead = document.getElementById("chart-playhead");
   const chartContainer = document.getElementById("chart-container");
+  const springerSegmentsGroup = document.getElementById("springer-segments-group");
+  const springerSegmentsLayer = document.getElementById("springer-segments-layer");
   const audioFileNameEl = document.getElementById("audio-file-name");
   const audioSourceSelect = document.getElementById("audio-source-select");
   const axisGridButtons = document.querySelectorAll("[data-grid-axis]");
@@ -169,6 +176,56 @@
 
     const ratio = (xTime - xMin) / (xMax - xMin);
     return plotLeft + ratio * plotWidth;
+  }
+
+  function initSpringerSegments() {
+    if (!springerSegmentsGroup || SPRINGER_SEGMENTS.length === 0) return;
+    springerSegmentElements = [];
+    springerSegmentsGroup.innerHTML = "";
+    const ns = "http://www.w3.org/2000/svg";
+    SPRINGER_SEGMENTS.forEach(function (seg) {
+      const color = SPRINGER_STATE_COLORS[seg.state] || "#888";
+      const bar = document.createElementNS(ns, "line");
+      bar.setAttribute("stroke", color);
+      bar.setAttribute("stroke-width", "2");
+      bar.setAttribute("stroke-linecap", "round");
+      const tick = document.createElementNS(ns, "line");
+      tick.setAttribute("stroke", color);
+      tick.setAttribute("stroke-width", "2");
+      tick.setAttribute("stroke-linecap", "round");
+      springerSegmentsGroup.appendChild(bar);
+      springerSegmentsGroup.appendChild(tick);
+      springerSegmentElements.push({ data: seg, bar: bar, tick: tick });
+    });
+  }
+
+  function updateSpringerSegmentPositions() {
+    if (springerSegmentElements.length === 0) return;
+    let y = 20;
+    if (plotlyGraphDiv && plotlyGraphDiv._fullLayout && plotlyGraphDiv._fullLayout.yaxis) {
+      const layout = plotlyGraphDiv._fullLayout.yaxis;
+      y = (layout._offset || 0) + (layout._length || 0) - SPRINGER_STRIP_OFFSET_FROM_BOTTOM;
+    }
+    const y1 = y - SPRINGER_TICK_HALF;
+    const y2 = y + SPRINGER_TICK_HALF;
+    springerSegmentElements.forEach(function (obj) {
+      const seg = obj.data;
+      const mid = (seg.s + seg.e) / 2;
+      const xStart = getXPositionForTime(seg.s);
+      const xEnd = getXPositionForTime(seg.e);
+      const xMid = getXPositionForTime(mid);
+      const visible = xStart !== null && xEnd !== null;
+      obj.bar.setAttribute("x1", xStart == null ? 0 : xStart);
+      obj.bar.setAttribute("x2", xEnd == null ? 0 : xEnd);
+      obj.bar.setAttribute("y1", y);
+      obj.bar.setAttribute("y2", y);
+      obj.tick.setAttribute("x1", xMid == null ? 0 : xMid);
+      obj.tick.setAttribute("x2", xMid == null ? 0 : xMid);
+      obj.tick.setAttribute("y1", y1);
+      obj.tick.setAttribute("y2", y2);
+      obj.bar.style.display = visible ? "block" : "none";
+      obj.tick.style.display = xMid !== null ? "block" : "none";
+    });
   }
 
   // Initialize timeline ticks
@@ -549,9 +606,31 @@
     }
     Plotly.restyle(plotlyGraphDiv, { visible: visibility, showlegend: showlegend });
 
-    // In Analysis Data view, scale signal (y) axis to 0–1 for visibility; restore default otherwise
+    // In Analysis Data view, auto-scale signal (y) axis to 0–5× max amplitude of visible signal traces
     if (plotlyGraphDiv._fullLayout && plotlyGraphDiv._fullLayout.yaxis) {
-      const range = value === "analysis" ? [0, 1] : signalAxisRangeDefault;
+      let range;
+      if (value === "analysis") {
+        let maxVal = 0;
+        for (let i = 0; i < data.length; i++) {
+          const name = (data[i].name || "").trim();
+          const isDebug = LEGEND_DEBUG_NAMES.has(name);
+          const show = !isDebug || LEGEND_IN_BOTH_NAMES.has(name);
+          if (!show) continue;
+          const trace = data[i];
+          const yaxisId = trace.yaxis || "y";
+          if (yaxisId !== "y") continue;
+          const yArr = trace.y;
+          if (!yArr || !yArr.length) continue;
+          for (let j = 0; j < yArr.length; j++) {
+            const v = Number(yArr[j]);
+            if (Number.isFinite(v) && v > maxVal) maxVal = v;
+          }
+        }
+        const top = maxVal * 5;
+        range = [0, Number.isFinite(top) && top > 0 ? top : 1];
+      } else {
+        range = signalAxisRangeDefault;
+      }
       if (range && Array.isArray(range) && range.length === 2) {
         Plotly.relayout(plotlyGraphDiv, { "yaxis.range": range });
       }
@@ -1509,12 +1588,18 @@
 
       updateAxisRange();
 
+      if (SPRINGER_SEGMENTS.length > 0) {
+        initSpringerSegments();
+        updateSpringerSegmentPositions();
+      }
+
       plotlyGraphDiv.on("plotly_relayout", function () {
         updateAxisRange();
         if (audio) {
           updatePlayhead(audio.currentTime);
         }
         updateSpectrogramPosition();
+        updateSpringerSegmentPositions();
         refreshAxisGridButtons();
       });
 
@@ -1522,6 +1607,7 @@
         snapshotLegendCategoryDefaults();
         updateAxisRange();
         updateSpectrogramPosition();
+        updateSpringerSegmentPositions();
         refreshAxisGridButtons();
       });
 
@@ -1531,6 +1617,7 @@
           updatePlayhead(audio.currentTime);
         }
         updateSpectrogramPosition();
+        updateSpringerSegmentPositions();
         Plotly.Plots.resize(plotlyGraphDiv);
       });
 
@@ -1569,28 +1656,30 @@
   initSpectrogramControls();
   setTimeout(initPlotlyIntegration, 500);
 
-  // DEBUG: Check for audio file presence relative to HTML
-  const debugAudioPath =
-    AUDIO_SOURCES[currentAudioKey] || AUDIO_SOURCES[DEFAULT_AUDIO_KEY] || "";
-  if (debugAudioPath) {
-    console.log("📂 Checking for audio file in same directory...", debugAudioPath);
-    fetch("./" + decodeURIComponent(debugAudioPath), { method: "HEAD" })
-      .then((response) => {
-        if (response.ok) {
-          console.log("✅ Audio file found at expected location!");
-        } else {
-          console.error("❌ Audio file NOT found at expected location");
-        }
-      })
-      .catch((err) => {
-        console.error("❌ Cannot access audio file:", err);
-        console.log(
-          "💡 If you're using file:// protocol, try running a local server instead:"
-        );
-        console.log("   python -m http.server 8000");
-      });
-  } else {
-    console.warn("⚠️ No audio file specified for HEAD check.");
+  // DEBUG: Check for audio file presence only when BPM_ANALYZER_DEBUG is set (e.g. in console)
+  if (window.BPM_ANALYZER_DEBUG) {
+    const debugAudioPath =
+      AUDIO_SOURCES[currentAudioKey] || AUDIO_SOURCES[DEFAULT_AUDIO_KEY] || "";
+    if (debugAudioPath) {
+      console.log("📂 Checking for audio file in same directory...", debugAudioPath);
+      fetch("./" + decodeURIComponent(debugAudioPath), { method: "HEAD" })
+        .then((response) => {
+          if (response.ok) {
+            console.log("✅ Audio file found at expected location!");
+          } else {
+            console.error("❌ Audio file NOT found at expected location");
+          }
+        })
+        .catch((err) => {
+          console.error("❌ Cannot access audio file:", err);
+          console.log(
+            "💡 If you're using file:// protocol, try running a local server instead:"
+          );
+          console.log("   python -m http.server 8000");
+        });
+    } else {
+      console.warn("⚠️ No audio file specified for HEAD check.");
+    }
   }
 })();
 

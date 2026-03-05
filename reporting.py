@@ -54,9 +54,15 @@ class ReportGenerator:
             final_metrics.get("smoothed_bpm"),
             final_metrics.get("bpm_times"),
         )
+        springer_debug = analysis_data.get("springer_debug")
         with open(output_log_path, "w", encoding="utf-8") as log_file:
+            log_file.write(f"# Chronological Debug Log for {os.path.basename(self.file_name)}\n")
+            log_file.write(f"Analysis performed on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            if springer_debug is not None:
+                self._write_springer_debug_section(log_file, springer_debug)
+                log_file.write("\n---\n\n## Chronological events\n\n")
             if merged_df is None or merged_df.empty:
-                log_file.write("# No significant events detected to log.\n")
+                log_file.write("No significant events detected to log.\n")
             else:
                 self._write_log_events(log_file, merged_df)
         logging.info("Debug log generation complete.")
@@ -79,8 +85,9 @@ class ReportGenerator:
         events_df = pd.DataFrame(events).sort_values(by="time").set_index("time")
 
         master_df = pd.DataFrame(index=np.arange(len(audio_envelope)) / sample_rate)
-        if "dynamic_noise_floor_series" in analysis_data:
-            master_df["noise_floor"] = analysis_data["dynamic_noise_floor_series"].values
+        noise_floor_series = analysis_data.get("dynamic_noise_floor_series")
+        if noise_floor_series is not None and hasattr(noise_floor_series, "values"):
+            master_df["noise_floor"] = noise_floor_series.values
         if smoothed_bpm is not None and not smoothed_bpm.empty:
             smoothed_bpm_sec_index = pd.Series(data=smoothed_bpm.values, index=bpm_times).groupby(level=0).mean()
             master_df["smoothed_bpm"] = smoothed_bpm_sec_index
@@ -99,9 +106,7 @@ class ReportGenerator:
         )
 
     def _write_log_events(self, log_file, merged_df):
-        log_file.write(f"# Chronological Debug Log for {os.path.basename(self.file_name)}\n")
-        log_file.write(f"Analysis performed on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-
+        """Write chronological peak/trough events (header is written by create_chronological_log)."""
         for row in merged_df.itertuples(name="LogEvent"):
             log_file.write(f"## Time: `{row.Index:.4f}s`\n")
 
@@ -138,6 +143,101 @@ class ReportGenerator:
                     log_file.write(f"- **{name}**: `{formatted}`\n")
 
             log_file.write("\n\n")
+
+    def _write_springer_debug_section(self, log_file, springer_debug: Dict) -> None:
+        """Writes Springer pipeline debug info (HR, features, state counts) to the debug log."""
+        log_file.write("\n---\n\n# Springer Pipeline Debug\n\n")
+        log_file.write("| Parameter | Value |\n|:---|:---|\n")
+        if springer_debug.get("heart_rate") is not None:
+            log_file.write(f"| **Heart rate (BPM)** | {springer_debug['heart_rate']:.1f} |\n")
+        if springer_debug.get("systolic_time_interval") is not None:
+            log_file.write(f"| **Systolic time (s)** | {springer_debug['systolic_time_interval']:.3f} |\n")
+        if springer_debug.get("features_shape") is not None:
+            sh = springer_debug["features_shape"]
+            log_file.write(f"| **PCG_Features shape** | {sh} (frames × features) |\n")
+        log_file.write("\n## Viterbi state counts (at 50 Hz, before expand)\n\n")
+        qt_counts = springer_debug.get("qt_state_counts") or {}
+        state_names = {1: "S1", 2: "Systole", 3: "S2", 4: "Diastole"}
+        for state in (1, 2, 3, 4):
+            count = qt_counts.get(state, 0)
+            name = state_names.get(state, f"State {state}")
+            log_file.write(f"- **{name}**: {count} frames\n")
+        log_file.write("\n## Assigned states (after expand to audio length)\n\n")
+        assigned_counts = springer_debug.get("assigned_states_state_counts") or {}
+        for state in (1, 2, 3, 4):
+            count = assigned_counts.get(state, 0)
+            name = state_names.get(state, f"State {state}")
+            log_file.write(f"- **{name}**: {count} samples\n")
+        num_seg = springer_debug.get("num_segments")
+        if num_seg is not None:
+            log_file.write(f"\n**Total segments**: {num_seg}\n")
+        feature_mean = springer_debug.get("feature_mean")
+        feature_std = springer_debug.get("feature_std")
+        if feature_mean is not None and feature_std is not None:
+            log_file.write("\n## Feature summary (per channel, over time)\n\n")
+            log_file.write("| Feature index | Mean | Std |\n|:---:|:---:|:---:|\n")
+            for i, (m, s) in enumerate(zip(feature_mean, feature_std)):
+                log_file.write(f"| {i} | {m:.4f} | {s:.4f} |\n")
+        # Per-state feature means (do emissions differ by state?)
+        mean_by_state = springer_debug.get("feature_mean_by_state")
+        if mean_by_state:
+            log_file.write("\n## Per-state feature means (Viterbi frames)\n\n")
+            log_file.write("If S1/S2 rows are similar to Systole/Diastole, the model may not be discriminating.\n\n")
+            log_file.write("| State | Feat 0 | Feat 1 | Feat 2 | Feat 3 |\n|:---:|:---:|:---:|:---:|:---:|\n")
+            for st in (1, 2, 3, 4):
+                name = state_names.get(st, f"S{st}")
+                row = mean_by_state.get(st, [])
+                if row:
+                    log_file.write(f"| {name} | {row[0]:.4f} | {row[1]:.4f} | {row[2]:.4f} | {row[3]:.4f} |\n")
+                else:
+                    log_file.write(f"| {name} | — | — | — | — |\n")
+        # Segment duration stats
+        seg_dur = springer_debug.get("segment_duration_stats")
+        if seg_dur:
+            log_file.write("\n## Segment duration by state\n\n")
+            log_file.write("Expected roughly: S1 ~50–100 ms, Systole ~250 ms, S2 ~50–100 ms, Diastole variable.\n\n")
+            log_file.write("| State | Mean (s) | Std (s) | Count |\n|:---:|:---:|:---:|:---:|\n")
+            for st in (1, 2, 3, 4):
+                name = state_names.get(st, f"S{st}")
+                d = seg_dur.get(st, {})
+                mean_s = d.get("mean_sec")
+                std_s = d.get("std_sec")
+                cnt = d.get("count", 0)
+                if mean_s is not None:
+                    log_file.write(f"| {name} | {mean_s:.3f} | {std_s:.3f} | {cnt} |\n")
+                else:
+                    log_file.write(f"| {name} | — | — | {cnt} |\n")
+        # First segments
+        first_seg = springer_debug.get("first_segments")
+        if first_seg:
+            log_file.write("\n## First segments (start, end, state, duration)\n\n")
+            log_file.write("| # | Start (s) | End (s) | State | Duration (s) |\n|:---:|:---:|:---:|:---:|:---:|\n")
+            for i, seg in enumerate(first_seg, 1):
+                log_file.write(f"| {i} | {seg['s']:.3f} | {seg['e']:.3f} | {seg['state']} | {seg['duration_sec']:.3f} |\n")
+        # Envelope vs Springer alignment
+        mean_s1 = springer_debug.get("mean_abs_offset_s1_ms")
+        mean_s2 = springer_debug.get("mean_abs_offset_s2_ms")
+        if mean_s1 is not None or mean_s2 is not None:
+            log_file.write("\n## Envelope vs Springer alignment\n\n")
+            log_file.write("Offset = Springer S1/S2 midpoint time minus nearest envelope peak time. ")
+            log_file.write("Small values mean states line up with envelope peaks.\n\n")
+            if mean_s1 is not None:
+                log_file.write(f"- **Mean |offset| S1 → nearest envelope peak**: {mean_s1:.1f} ms\n")
+            if mean_s2 is not None:
+                log_file.write(f"- **Mean |offset| S2 → nearest envelope peak**: {mean_s2:.1f} ms\n")
+        env_peaks = springer_debug.get("envelope_peak_times_sec")
+        s1_mid = springer_debug.get("s1_midpoint_times_sec")
+        s2_mid = springer_debug.get("s2_midpoint_times_sec")
+        if env_peaks and (s1_mid or s2_mid):
+            log_file.write("\nFirst envelope peak times (s): ")
+            log_file.write(", ".join(f"{t:.2f}" for t in env_peaks[:10]) + "\n")
+            if s1_mid:
+                log_file.write("First S1 midpoints (s): ")
+                log_file.write(", ".join(f"{t:.2f}" for t in s1_mid[:10]) + "\n")
+            if s2_mid:
+                log_file.write("First S2 midpoints (s): ")
+                log_file.write(", ".join(f"{t:.2f}" for t in s2_mid[:10]) + "\n")
+        log_file.write("\n")
 
     def _write_summary_header(self, f):
         f.write(f"# Analysis Report for: {os.path.basename(self.file_name)}\n")

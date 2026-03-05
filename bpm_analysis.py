@@ -11,7 +11,7 @@ from typing import List, Dict, Tuple, Optional, Any
 from enum import Enum
 import csv
 
-from audio_io import preprocess_audio
+from audio_io import load_audio_mono, preprocess_audio
 
 # INSTRUCTIONS FOR AI: 
 # Do not remove any debugging code unless specified by the user
@@ -2157,6 +2157,53 @@ def _load_manual_labels_csv(audio_file_path: str) -> Optional[Dict[str, str]]:
     return labels_by_time
 
 
+def _springer_states_to_peaks(assigned_states: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    From Springer assigned_states (1=S1, 2=systole, 3=S2, 4=diastole), compute segment
+    midpoints for S1 and S2. Returns (s1_indices, s2_indices) as 1d arrays of sample indices.
+    """
+    assigned_states = np.asarray(assigned_states).flatten()
+    s1_indices = []
+    s2_indices = []
+    n = len(assigned_states)
+    i = 0
+    while i < n:
+        s = int(assigned_states[i])
+        start = i
+        while i < n and int(assigned_states[i]) == s:
+            i += 1
+        end = i
+        mid = start + (end - start) // 2
+        if s == 1:
+            s1_indices.append(mid)
+        elif s == 3:
+            s2_indices.append(mid)
+    return np.array(s1_indices, dtype=np.int64), np.array(s2_indices, dtype=np.int64)
+
+
+def _springer_states_to_segments(
+    assigned_states: np.ndarray, sample_rate: float
+) -> List[Dict[str, Any]]:
+    """
+    From Springer assigned_states (1=S1, 2=systole, 3=S2, 4=diastole), build a list of
+    segments for visualization: each {"s": start_sec, "e": end_sec, "state": 1|2|3|4}.
+    """
+    assigned_states = np.asarray(assigned_states).flatten()
+    segments = []
+    n = len(assigned_states)
+    i = 0
+    while i < n:
+        state = int(assigned_states[i])
+        start = i
+        while i < n and int(assigned_states[i]) == state:
+            i += 1
+        end = i
+        start_sec = start / float(sample_rate)
+        end_sec = end / float(sample_rate)
+        segments.append({"s": round(start_sec, 4), "e": round(end_sec, 4), "state": state})
+    return segments
+
+
 def _build_predicted_labels_for_validation(
     analysis_data: Dict, sample_rate: int
 ) -> Dict[str, str]:
@@ -2397,26 +2444,131 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     start_time = time.time()
     logging.info(f"--- Processing file: {os.path.basename(original_file_path)} ---")
 
-    # STAGE 1: Initialization
-    audio_envelope, sample_rate = preprocess_audio(wav_file_path, params, output_directory, output_options)
-    noise_floor, troughs = _calculate_dynamic_noise_floor(audio_envelope, sample_rate, params)
-
-    start_bpm, peak_time, recovery_time = _run_preliminary_pass(
-        audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
-    )
-
-    # STAGE 3: Main Analysis, now informed by the preliminary pass
-    logging.info("--- STAGE 3: Running Main Analysis Pass ---")
-    classifier = PeakClassifier(
-        audio_envelope, sample_rate, params, start_bpm,
-        noise_floor, troughs, peak_time, recovery_time
-    )
-    s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
-
-    # STAGE 4 & 5: Correction and Refinement
-    final_peaks, analysis_data = _refine_and_correct_peaks(
-        s1_peaks, all_raw_peaks, analysis_data, audio_envelope, sample_rate, params
-    )
+    segmenter = (params.get("segmenter") or "default").strip().lower()
+    if segmenter == "springer":
+        # Springer path (paper-aligned): raw/resampled PCG at Springer Fs, no our preprocessing.
+        # All filtering (25-400 Hz, spike removal, envelopes) is done inside the Springer pipeline.
+        model_path = (params.get("springer_model_path") or "").strip()
+        if not model_path or not os.path.isfile(model_path):
+            logging.error(
+                "Springer segmenter selected but no valid model file. Set springer_model_path to a .npz file."
+            )
+            return None
+        try:
+            from springer_hsmm import run_springer_segmentation_algorithm
+            from springer_hsmm.model_io import load_springer_model
+            from springer_hsmm.options import default_springer_hsmm_options
+        except ImportError as e:
+            logging.error("Springer HSMM package not available: %s", e)
+            return None
+        options = default_springer_hsmm_options()
+        springer_fs = int(options["audio_Fs"])
+        logging.info("--- Springer HSMM segmentation (paper pipeline at %d Hz) ---", springer_fs)
+        audio_data, sample_rate = load_audio_mono(wav_file_path, springer_fs)
+        model = load_springer_model(model_path)
+        result = run_springer_segmentation_algorithm(
+            audio_data,
+            float(sample_rate),
+            model["B_matrix"],
+            model["pi_vector"],
+            model["total_obs_distribution"],
+            options=options,
+            return_debug=True,
+            return_viz_data=True,
+        )
+        assigned_states, audio_envelope = result[0], result[1]
+        springer_debug = result[2] if len(result) > 2 else None
+        springer_pipeline_viz = result[3] if len(result) > 3 else None
+        s1_indices, s2_indices = _springer_states_to_peaks(assigned_states)
+        final_peaks = np.asarray(s1_indices, dtype=np.int64)
+        all_raw_peaks = np.unique(np.concatenate([np.asarray(s1_indices), np.asarray(s2_indices)])) if (len(s1_indices) or len(s2_indices)) else np.array([], dtype=np.int64)
+        beat_debug = {}
+        for idx in s1_indices:
+            beat_debug[int(idx)] = {"peak_type": "S1 (Springer)", "sections": []}
+        for idx in s2_indices:
+            beat_debug[int(idx)] = {"peak_type": "S2 (Springer)", "sections": []}
+        springer_segments = _springer_states_to_segments(assigned_states, float(sample_rate))
+        if springer_debug is not None:
+            springer_debug["num_segments"] = len(springer_segments)
+            # Segment duration stats per state (ms) to check if S1/S2 lengths are plausible
+            from collections import defaultdict
+            dur_by_state = defaultdict(list)
+            for seg in springer_segments:
+                dur_sec = seg["e"] - seg["s"]
+                dur_by_state[seg["state"]].append(dur_sec)
+            segment_duration_stats = {}
+            for st in (1, 2, 3, 4):
+                durs = dur_by_state.get(st, [])
+                if durs:
+                    arr = np.array(durs)
+                    segment_duration_stats[st] = {
+                        "mean_sec": float(np.mean(arr)),
+                        "std_sec": float(np.std(arr)) if len(arr) > 1 else 0.0,
+                        "count": len(durs),
+                    }
+                else:
+                    segment_duration_stats[st] = {"mean_sec": None, "std_sec": None, "count": 0}
+            springer_debug["segment_duration_stats"] = segment_duration_stats
+            # First N segments for visual check
+            first_n = 20
+            first_segments = [
+                {"s": seg["s"], "e": seg["e"], "state": seg["state"], "duration_sec": round(seg["e"] - seg["s"], 4)}
+                for seg in springer_segments[:first_n]
+            ]
+            springer_debug["first_segments"] = first_segments
+            # Envelope-vs-Springer alignment: do Springer S1/S2 midpoints line up with envelope peaks?
+            peak_indices, _ = find_peaks(
+                audio_envelope,
+                distance=max(1, int(0.15 * sample_rate)),
+                prominence=np.percentile(audio_envelope, 75) * 0.1 if audio_envelope.size else 0.01,
+            )
+            envelope_peak_times_sec = (peak_indices / float(sample_rate)).tolist()[:20]
+            s1_midpoints = [(seg["s"] + seg["e"]) / 2.0 for seg in springer_segments if seg["state"] == 1][:20]
+            s2_midpoints = [(seg["s"] + seg["e"]) / 2.0 for seg in springer_segments if seg["state"] == 3][:20]
+            def offset_ms_to_nearest_peak(midpoint_sec, peak_times_sec):
+                if not peak_times_sec:
+                    return None
+                peak_arr = np.array(peak_times_sec)
+                return float((midpoint_sec - peak_arr[np.argmin(np.abs(peak_arr - midpoint_sec))]) * 1000)
+            s1_offsets_ms = [offset_ms_to_nearest_peak(m, envelope_peak_times_sec) for m in s1_midpoints]
+            s2_offsets_ms = [offset_ms_to_nearest_peak(m, envelope_peak_times_sec) for m in s2_midpoints]
+            springer_debug["envelope_peak_times_sec"] = envelope_peak_times_sec[:15]
+            springer_debug["s1_midpoint_times_sec"] = s1_midpoints[:15]
+            springer_debug["s2_midpoint_times_sec"] = s2_midpoints[:15]
+            springer_debug["s1_to_nearest_peak_offset_ms"] = s1_offsets_ms
+            springer_debug["s2_to_nearest_peak_offset_ms"] = s2_offsets_ms
+            springer_debug["mean_abs_offset_s1_ms"] = float(np.mean(np.abs(s1_offsets_ms))) if s1_offsets_ms else None
+            springer_debug["mean_abs_offset_s2_ms"] = float(np.mean(np.abs(s2_offsets_ms))) if s2_offsets_ms else None
+        analysis_data = {
+            "segmenter": "springer",
+            "springer_s1_indices": np.asarray(s1_indices),
+            "springer_s2_indices": np.asarray(s2_indices),
+            "springer_segments": springer_segments,
+            "springer_debug": springer_debug,
+            "springer_pipeline_viz": springer_pipeline_viz,
+            "beat_debug_info": beat_debug,
+            "trough_indices": np.array([], dtype=np.int64),
+            "dynamic_noise_floor_series": None,
+        }
+    else:
+        # Default path: Stage 1 (preprocess, noise floor, preliminary pass) then classifier.
+        # STAGE 1: Initialization
+        audio_envelope, sample_rate = preprocess_audio(wav_file_path, params, output_directory, output_options)
+        noise_floor, troughs = _calculate_dynamic_noise_floor(audio_envelope, sample_rate, params)
+        start_bpm, peak_time, recovery_time = _run_preliminary_pass(
+            audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
+        )
+        # STAGE 3: Main Analysis, now informed by the preliminary pass
+        logging.info("--- STAGE 3: Running Main Analysis Pass ---")
+        classifier = PeakClassifier(
+            audio_envelope, sample_rate, params, start_bpm,
+            noise_floor, troughs, peak_time, recovery_time
+        )
+        s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
+        # STAGE 4 & 5: Correction and Refinement
+        final_peaks, analysis_data = _refine_and_correct_peaks(
+            s1_peaks, all_raw_peaks, analysis_data, audio_envelope, sample_rate, params
+        )
 
     # STAGE 6: Final Reporting
     if len(final_peaks) < 2:

@@ -13,7 +13,10 @@ DEFAULT_PARAMS = {
     # 1. General & Preprocessing Settings
     # Controls the initial loading and filtering of the audio.
     # =================================================================================
-    "downsample_factor": 300,     # Factor to reduce sample rate. Higher = faster processing, less detail.
+    "segmenter": "springer",       # "default" = peak-based classifier; "springer" = Springer HSMM segmentation
+    "springer_model_path": r"C:\Users\WXP\Documents\GitHub\bpm_analysis\springer_hsmm\springer_model.npz",    # Path to .npz Springer model; required when segmenter is "springer"
+    "target_sample_rate": 850,    # Resample audio to this rate (Hz). lower sample rate for optimization reasons
+    # only frequencies below target_sample_rate/2 can be represented; higher frequencies are lost or aliased.
     "save_filtered_wav": True,    # If True, saves a .wav file of the filtered audio for debugging.
 
     # pyPCG denoising, I never managed to get this to work well, so I'm not using it for now. I should probably remove this
@@ -35,9 +38,15 @@ DEFAULT_PARAMS = {
     # 2. Signal Feature Detection
     # Governs the initial identification of peaks and troughs in the audio envelope.
     # =================================================================================
+    "bandpass_lowcut_hz": 15,             # Pre-filter bandpass low cutoff (Hz) for S1/S2. Typical PCG range.
+    "bandpass_highcut_hz": 250,          # Pre-filter bandpass high cutoff (Hz). Must be < sample_rate/2.
+    "envelope_method": "hilbert",    # "hilbert" or "homomorphic" for A/B testing envelope extraction.
     "min_peak_distance_sec": 0.1,        # I Adjusted This✔ Minimum time allowed between any two raw peaks.
-    "peak_prominence_quantile": 0.60,    # Min prominence = this quantile of envelope. Higher reduces false peaks (e.g. Hilbert ripple).
+    "peak_prominence_quantile": 0.45,    # Min prominence = this quantile of envelope. Higher reduces false peaks.
     "trough_prominence_quantile": 0.1,   # How much a dip must stand out to be considered a 'trough'.
+    "homomorphic_cutoff_hz": 25.0,       # Low-pass cutoff (Hz). Higher = less smoothing, sharper peaks (8 = very smooth, 25–40 = sharper).
+    "homomorphic_filter_order": 2,       # Butterworth order for homomorphic envelope low-pass.
+    "homomorphic_medfilt_kernel": 0,     # Median filter kernel size (0 = off). 3 = light spike removal.
 
     # =================================================================================
     # 3. Noise Estimation & Rejection
@@ -138,7 +147,7 @@ DEFAULT_PARAMS = {
     "hrv_window_size_beats": 40,             # Sliding window size (in beats) for HRV calculation.
     "hrv_step_size_beats": 5,                # How many beats the HRV window moves in each step.
     "plot_amplitude_scale_factor": 250.0,    # Adjusts the default y-axis range of the signal amplitude plot.
-    "plot_downsample_factor": 1,             # The factor for downsampling plot traces (e.g., 5 = keep 1 of every 5 points).
+    "plot_downsample_factor": 2,             # The factor for downsampling plot traces (e.g., 5 = keep 1 of every 5 points).
 
     # --- 7.2. Long Plot Optimization ---
     # When enabled, very long recordings can skip detailed debug traces in the HTML plot

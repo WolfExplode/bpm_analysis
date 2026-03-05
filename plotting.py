@@ -148,7 +148,9 @@ class Plotter:
         """Generates and saves the main analysis plot by calling helper methods."""
         self.time_axis_sec = np.arange(len(audio_envelope)) / self.sample_rate
         self.audio_duration_sec = self.time_axis_sec[-1] if len(self.time_axis_sec) > 0 else 0
-        
+        self._springer_segments = analysis_data.get("springer_segments") or []
+        self._springer_pipeline_viz = analysis_data.get("springer_pipeline_viz")
+
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
         long_threshold_sec = float(self.params.get("long_plot_duration_threshold_sec", 600.0))
@@ -160,23 +162,28 @@ class Plotter:
         )
 
         self._add_line_traces(time_axis_dt, audio_envelope, analysis_data)
-        self._add_trough_markers(audio_envelope, analysis_data)
-        self._add_peak_traces(
-            all_raw_peaks,
-            analysis_data.get("beat_debug_info", {}),
-            audio_envelope,
-            analysis_data.get("trough_indices"),
-        )
+        if analysis_data.get("segmenter") == "springer":
+            self._add_springer_pipeline_overlay_traces(time_axis_dt, audio_envelope, analysis_data)
+            self._add_springer_s1_s2_markers(audio_envelope, analysis_data)
+        else:
+            self._add_trough_markers(audio_envelope, analysis_data)
+            self._add_peak_traces(
+                all_raw_peaks,
+                analysis_data.get("beat_debug_info", {}),
+                audio_envelope,
+                analysis_data.get("trough_indices"),
+            )
         self._add_bpm_hrv_traces(
             final_metrics.get("smoothed_bpm"), analysis_data, final_metrics.get("windowed_hrv_df")
         )
-        self._add_slope_traces(
-            final_metrics.get("major_inclines"),
-            final_metrics.get("major_declines"),
-            final_metrics.get("peak_recovery_stats"),
-            final_metrics.get("peak_exertion_stats"),
-        )
-        self._add_trapezoid_shapes(final_metrics.get("trapezoids"))
+        if analysis_data.get("segmenter") != "springer":
+            self._add_slope_traces(
+                final_metrics.get("major_inclines"),
+                final_metrics.get("major_declines"),
+                final_metrics.get("peak_recovery_stats"),
+                final_metrics.get("peak_exertion_stats"),
+            )
+            self._add_trapezoid_shapes(final_metrics.get("trapezoids"))
         self._add_annotations_and_summary(
             final_metrics.get("smoothed_bpm"),
             final_metrics.get("hrv_summary"),
@@ -217,8 +224,13 @@ class Plotter:
             # Generate the base Plotly HTML
             plotly_html = self.fig.to_html(config=plot_config, full_html=False, include_plotlyjs='cdn')
 
+            # Pipeline steps are overlaid on main plot for Springer; no separate figure
+            pipeline_steps_html = ""
+
             # Generate custom HTML with audio player and playhead
-            custom_html = self._generate_custom_html(plotly_html, plot_title, base_name)
+            custom_html = self._generate_custom_html(
+                plotly_html, plot_title, base_name, pipeline_steps_html=pipeline_steps_html
+            )
 
             with open(output_html_path, 'w', encoding='utf-8') as f:
                 f.write(custom_html)
@@ -286,16 +298,25 @@ class Plotter:
             margin=dict(t=80, b=100, l=100, r=10),
             hovermode="x unified",
             autosize=True,
+            uirevision="layout-stable",
         )
 
-        tick_positions_sec = np.linspace(0, self.time_axis_sec[-1], num=10)
+        duration_sec = float(self.time_axis_sec[-1])
+        tick_interval_sec = 30
+        tick_positions_sec = np.arange(0, duration_sec + 1e-6, tick_interval_sec, dtype=float)
+        if tick_positions_sec.size > 0 and tick_positions_sec[-1] < duration_sec:
+            tick_positions_sec = np.append(tick_positions_sec, duration_sec)
         epoch = datetime.datetime.fromtimestamp(0)
 
         tickvals = [epoch + datetime.timedelta(seconds=s) for s in tick_positions_sec]
         ticktext = [f"{int(s // 60):02d}:{int(s % 60):02d} ({s:.2f})" for s in tick_positions_sec]
 
         self.fig.update_xaxes(
-            title_text="Time", tickvals=tickvals, ticktext=ticktext, hoverformat="%M:%S.%L"
+            title_text="Time",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            hoverformat="%M:%S.%L",
+            automargin=False,
         )
 
         # Use the audio envelope trace, if present, to scale the amplitude axis.
@@ -318,6 +339,7 @@ class Plotter:
             secondary_y=False,
             range=[0, robust_upper_limit * amplitude_scale],
             showgrid=False,
+            automargin=False,
         )
         half_span = self.bpm_axis_span / 2.0
         min_bpm = max(self.bpm_axis_center - half_span, 5)
@@ -327,7 +349,204 @@ class Plotter:
             secondary_y=True,
             range=[min_bpm, max_bpm],
             autorange=False,
+            automargin=False,
         )
+
+    def _add_springer_pipeline_overlay_traces(
+        self,
+        time_axis_dt: pd.Series,
+        audio_envelope: np.ndarray,
+        analysis_data: Dict,
+    ) -> None:
+        """Add pipeline step signals as overlaid traces on the main plot (normalized 0–1) with legend entries."""
+        viz = getattr(self, "_springer_pipeline_viz", None)
+        if not viz or not isinstance(viz, dict):
+            return
+        filtered_audio = viz.get("filtered_audio")
+        homomorphic_env = viz.get("homomorphic_env")
+        envelope_50hz = viz.get("envelope_50hz")
+        time_50hz = viz.get("time_50hz")
+        features_50hz = viz.get("features_50hz")
+        fs = viz.get("sample_rate")
+        if filtered_audio is None or homomorphic_env is None or envelope_50hz is None or time_50hz is None or not fs:
+            return
+        filtered_audio = np.asarray(filtered_audio).flatten()
+        homomorphic_env = np.asarray(homomorphic_env).flatten()
+        envelope_50hz = np.asarray(envelope_50hz).flatten()
+        time_50hz = np.asarray(time_50hz).flatten()
+        n = len(audio_envelope)
+        factor = self.params.get("plot_downsample_factor", 5)
+        if factor > 1 and n >= factor:
+            plot_time_axis_dt = time_axis_dt[::factor]
+            fa = filtered_audio[:n][::factor]
+        else:
+            plot_time_axis_dt = time_axis_dt
+            fa = filtered_audio[:n]
+        fs_int = int(fs)
+        def norm01(y):
+            y = np.asarray(y, dtype=np.float64)
+            mn, mx = np.nanmin(y), np.nanmax(y)
+            if mx - mn < 1e-12:
+                return np.zeros_like(y)
+            return (y - mn) / (mx - mn)
+        # Filtered PCG only (homomorphic env = main "Audio Envelope", skip redundant overlay)
+        self.fig.add_trace(
+            go.Scatter(
+                x=plot_time_axis_dt,
+                y=norm01(fa),
+                name=f"Filtered PCG ({fs_int} Hz)",
+                line=dict(color="#7f7f7f", width=0.8),
+            ),
+            secondary_y=False,
+        )
+        # Use features length for 50 Hz axis (Feature 0 = z-scored homomorphic @ 50 Hz, so skip redundant "Homomorphic env (50 Hz)")
+        n_f = min(len(time_50hz), len(envelope_50hz))
+        if n_f == 0:
+            return
+        time_50hz = time_50hz[:n_f]
+        time_50_dt = pd.to_datetime(
+            [datetime.datetime.fromtimestamp(0) + datetime.timedelta(seconds=float(t)) for t in time_50hz]
+        )
+        if features_50hz is not None and np.asarray(features_50hz).ndim == 2:
+            features_50hz = np.asarray(features_50hz)[:n_f]
+            if features_50hz.shape[1] >= 4:
+                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+                labels = [
+                    "Feature 0: Homomorphic (50 Hz)",
+                    "Feature 1: Hilbert (50 Hz)",
+                    "Feature 2: PSD 40–60 Hz (50 Hz)",
+                    "Feature 3: DWT (50 Hz)",
+                ]
+                for i, (label, c) in enumerate(zip(labels, colors)):
+                    self.fig.add_trace(
+                        go.Scatter(
+                            x=time_50_dt,
+                            y=norm01(features_50hz[:, i]),
+                            name=label,
+                            line=dict(color=c, width=0.7),
+                        ),
+                        secondary_y=False,
+                    )
+        # Step 4 debug: P(state|O) posteriors (LR output) and decoded state qt at 50 Hz.
+        # Posteriors should be high for the correct state at each time (e.g. P(S1|O) high during S1).
+        posteriors_50hz = viz.get("posteriors_50hz")
+        qt_50hz = viz.get("qt_50hz")
+        if posteriors_50hz is not None and qt_50hz is not None:
+            posteriors_50hz = np.asarray(posteriors_50hz)
+            qt_50hz = np.asarray(qt_50hz).flatten()
+            n_em = min(n_f, posteriors_50hz.shape[0] if posteriors_50hz.ndim >= 1 else 0, len(qt_50hz))
+            if n_em > 0 and posteriors_50hz.ndim == 2 and posteriors_50hz.shape[1] >= 4:
+                time_50_dt_em = time_50_dt[:n_em]
+                em_colors = ["#4a90d9", "#e67e22", "#27ae60", "#c0392b"]
+                em_labels = [
+                    "P(S1|O) — high when S1",
+                    "P(Systole|O) — high when systole",
+                    "P(S2|O) — high when S2",
+                    "P(Diastole|O) — high when diastole",
+                ]
+                for i, (label, c) in enumerate(zip(em_labels, em_colors)):
+                    self.fig.add_trace(
+                        go.Scatter(
+                            x=time_50_dt_em,
+                            y=norm01(posteriors_50hz[:n_em, i]),
+                            name=label,
+                            line=dict(color=c, width=0.8),
+                        ),
+                        secondary_y=False,
+                    )
+                # Decoded state qt: map 1->0, 2->0.33, 3->0.66, 4->1 for visibility
+                qt_scaled = (qt_50hz[:n_em].astype(np.float64) - 1.0) / 3.0
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=time_50_dt_em,
+                        y=qt_scaled,
+                        name="Decoded state qt (50 Hz)",
+                        line=dict(color="#2c3e50", width=1.2, shape="hv"),
+                    ),
+                    secondary_y=False,
+                )
+
+    def _build_springer_pipeline_steps_html(self) -> str:
+        """Build one multi-panel figure (Step 1 + Step 2 features) with shared x-axis for synced zoom/pan."""
+        viz = getattr(self, "_springer_pipeline_viz", None)
+        if not viz or not isinstance(viz, dict):
+            return ""
+        filtered_audio = viz.get("filtered_audio")
+        homomorphic_env = viz.get("homomorphic_env")
+        envelope_50hz = viz.get("envelope_50hz")
+        time_50hz = viz.get("time_50hz")
+        features_50hz = viz.get("features_50hz")
+        fs = viz.get("sample_rate")
+        if filtered_audio is None or homomorphic_env is None or envelope_50hz is None or time_50hz is None or not fs:
+            return ""
+        filtered_audio = np.asarray(filtered_audio).flatten()
+        homomorphic_env = np.asarray(homomorphic_env).flatten()
+        envelope_50hz = np.asarray(envelope_50hz).flatten()
+        time_50hz = np.asarray(time_50hz).flatten()
+        has_features = features_50hz is not None and np.asarray(features_50hz).ndim == 2
+        if has_features:
+            features_50hz = np.asarray(features_50hz)
+            n_f = min(features_50hz.shape[0], len(time_50hz), len(envelope_50hz))
+            time_50hz = time_50hz[:n_f]
+            envelope_50hz = envelope_50hz[:n_f]
+            features_50hz = features_50hz[:n_f]
+        max_dur_sec = 60.0
+        n_max = min(len(filtered_audio), int(max_dur_sec * fs))
+        t_sec = np.arange(n_max) / float(fs)
+        fa = filtered_audio[:n_max]
+        he = homomorphic_env[:n_max]
+        if n_max > 15000:
+            step = max(1, n_max // 15000)
+            t_sec = t_sec[::step]
+            fa = fa[::step]
+            he = he[::step]
+        mask_50 = time_50hz <= max_dur_sec
+        t50 = time_50hz[mask_50]
+        e50 = envelope_50hz[mask_50]
+
+        subplot_titles = [
+            "Step 1a: Filtered PCG (25–400 Hz)",
+            "Step 1b: Homomorphic envelope",
+            "Envelope at 50 Hz",
+            "Step 2: Feature 0 (homomorphic)",
+            "Step 2: Feature 1 (Hilbert)",
+            "Step 2: Feature 2 (PSD 40–60 Hz)",
+            "Step 2: Feature 3 (wavelet)",
+        ]
+        n_rows = 7 if has_features else 3
+        row_heights = [0.18, 0.18, 0.14, 0.12, 0.12, 0.12, 0.14] if has_features else [0.35, 0.35, 0.3]
+        fig = make_subplots(
+            rows=n_rows,
+            cols=1,
+            subplot_titles=subplot_titles[:n_rows],
+            vertical_spacing=0.04,
+            row_heights=row_heights,
+            shared_xaxes=True,
+        )
+        fig.add_trace(go.Scatter(x=t_sec, y=fa, name="Filtered PCG", line=dict(color="#7f7f7f", width=0.8)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=t_sec, y=he, name="Homomorphic env", line=dict(color="#47a5c4", width=1)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=t50, y=e50, name="Envelope @ 50 Hz", line=dict(color="#2ca02c", width=1)), row=3, col=1)
+        if has_features and features_50hz.shape[1] >= 4:
+            f0, f1, f2, f3 = features_50hz[mask_50, 0], features_50hz[mask_50, 1], features_50hz[mask_50, 2], features_50hz[mask_50, 3]
+            fig.add_trace(go.Scatter(x=t50, y=f0, line=dict(color="#1f77b4", width=1)), row=4, col=1)
+            fig.add_trace(go.Scatter(x=t50, y=f1, line=dict(color="#ff7f0e", width=1)), row=5, col=1)
+            fig.add_trace(go.Scatter(x=t50, y=f2, line=dict(color="#2ca02c", width=1)), row=6, col=1)
+            fig.add_trace(go.Scatter(x=t50, y=f3, line=dict(color="#d62728", width=1)), row=7, col=1)
+        fig.update_layout(
+            template="plotly_dark",
+            height=720 if has_features else 420,
+            margin=dict(t=50, b=40, l=50, r=30),
+            showlegend=False,
+            title_text="Springer pipeline – steps 1 & 2 (zoom/pan synced)",
+        )
+        fig.update_xaxes(title_text="Time (s)", row=n_rows, col=1)
+        fig.update_yaxes(title_text="Amplitude", row=1, col=1)
+        fig.update_yaxes(title_text="Envelope", row=2, col=1)
+        fig.update_yaxes(title_text="Envelope", row=3, col=1)
+        if has_features:
+            for r in range(4, 8):
+                fig.update_yaxes(title_text="Norm", row=r, col=1)
+        return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def _add_line_traces(self, time_axis_dt: pd.Series, audio_envelope: np.ndarray, analysis_data: Dict):
         """Adds downsampled audio envelope and noise floor traces for performance."""
@@ -360,8 +579,51 @@ class Plotter:
                     x=plot_time_axis_dt,
                     y=plot_noise_floor.values,
                     name="Dynamic Noise Floor",
-                    line=dict(color="green", dash="dot", width=1.5),
+                    line=dict(color="green", width=1.5),
                     hovertemplate="Noise Floor: %{y:.4f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+
+    def _add_springer_s1_s2_markers(self, audio_envelope: np.ndarray, analysis_data: Dict):
+        """Adds only S1 and S2 markers from Springer segmenter (segment midpoints)."""
+        s1_indices = analysis_data.get("springer_s1_indices")
+        s2_indices = analysis_data.get("springer_s2_indices")
+        if s1_indices is not None and s1_indices.size > 0:
+            s1_indices = np.asarray(s1_indices).flatten()
+            times_dt = pd.to_datetime(
+                [
+                    datetime.datetime.fromtimestamp(0) + datetime.timedelta(seconds=t)
+                    for t in (s1_indices / self.sample_rate)
+                ]
+            )
+            self.fig.add_trace(
+                go.Scatter(
+                    x=times_dt,
+                    y=audio_envelope[s1_indices],
+                    mode="markers",
+                    name="S1 (Springer)",
+                    marker=dict(color="#e36f6f", size=8, symbol="diamond"),
+                    hovertemplate="S1 (Springer)<br>Time: %{x}<br>Amp: %{y:.0f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+        if s2_indices is not None and s2_indices.size > 0:
+            s2_indices = np.asarray(s2_indices).flatten()
+            times_dt = pd.to_datetime(
+                [
+                    datetime.datetime.fromtimestamp(0) + datetime.timedelta(seconds=t)
+                    for t in (s2_indices / self.sample_rate)
+                ]
+            )
+            self.fig.add_trace(
+                go.Scatter(
+                    x=times_dt,
+                    y=audio_envelope[s2_indices],
+                    mode="markers",
+                    name="S2 (Springer)",
+                    marker=dict(color="orange", symbol="circle", size=6),
+                    hovertemplate="S2 (Springer)<br>Time: %{x}<br>Amp: %{y:.0f}<extra></extra>",
                 ),
                 secondary_y=False,
             )
@@ -541,7 +803,7 @@ class Plotter:
                     y=s1_smooth,
                     mode="lines",
                     name="Average S1 contractility",
-                    line=dict(color="#e36f6f", width=2, dash="dot"),
+                    line=dict(color="#e36f6f", width=2),
                     visible=True,
                 ),
                 secondary_y=False,
@@ -560,7 +822,7 @@ class Plotter:
                     y=s2_smooth,
                     mode="lines",
                     name="Average S2 contractility",
-                    line=dict(color="orange", width=2, dash="dot"),
+                    line=dict(color="orange", width=2),
                     visible="legendonly",
                 ),
                 secondary_y=False,
@@ -592,7 +854,7 @@ class Plotter:
                     y=combined_smooth,
                     mode="lines",
                     name="Average contractility",
-                    line=dict(color="#aaa", width=2, dash="dot"),
+                    line=dict(color="#aaa", width=2),
                     visible="legendonly",
                 ),
                 secondary_y=False,
@@ -617,7 +879,7 @@ class Plotter:
                     x=lt_times_dt,
                     y=lt_series.values,
                     name="BPM Trend (Belief)",
-                    line=dict(color="orange", width=2, dash="dot"),
+                    line=dict(color="orange", width=2),
                     visible="legendonly",
                 ),
                 secondary_y=True,
@@ -715,7 +977,7 @@ class Plotter:
                         x=[incline["start_time"], incline["end_time"]],
                         y=[incline["start_bpm"], incline["end_bpm"]],
                         mode="lines",
-                        line=dict(color="purple", width=4, dash="dash"),
+                        line=dict(color="purple", width=4),
                         name="Exertion",
                         legendgroup="Exertion",
                         showlegend=(i == 0),
@@ -734,7 +996,7 @@ class Plotter:
                         x=[decline["start_time"], decline["end_time"]],
                         y=[decline["start_bpm"], decline["end_bpm"]],
                         mode="lines",
-                        line=dict(color="#2ca02c", width=4, dash="dash"),
+                        line=dict(color="#2ca02c", width=4),
                         name="Recovery",
                         legendgroup="Recovery",
                         showlegend=(i == 0),
@@ -752,7 +1014,7 @@ class Plotter:
                     x=[stats["start_time"], stats["end_time"]],
                     y=[stats["start_bpm"], stats["end_bpm"]],
                     mode="lines",
-                    line=dict(color="#ff69b4", width=5, dash="solid"),
+                    line=dict(color="#ff69b4", width=5),
                     name="Peak Recovery Slope",
                     legendgroup="Steepest Slopes",
                     visible="legendonly",
@@ -769,7 +1031,7 @@ class Plotter:
                     x=[stats["start_time"], stats["end_time"]],
                     y=[stats["start_bpm"], stats["end_bpm"]],
                     mode="lines",
-                    line=dict(color="#9d32a8", width=5, dash="solid"),
+                    line=dict(color="#9d32a8", width=5),
                     name="Peak Exertion Slope",
                     legendgroup="Steepest Slopes",
                     visible="legendonly",
@@ -809,7 +1071,7 @@ class Plotter:
                     mode="lines+markers",
                     name="Trapezoid Artifacts",
                     marker=dict(symbol="circle-open", size=8, color="#ffd166"),
-                    line=dict(color="#ffd166", dash="dot", width=2),
+                    line=dict(color="#ffd166", width=2),
                     customdata=customdata,
                     hovertemplate="%{customdata}<extra></extra>",
                     legendgroup="Trapezoid Artifacts",
@@ -818,7 +1080,14 @@ class Plotter:
                 secondary_y=True,
             )
 
-    def _generate_custom_html(self, plotly_html: str, plot_title: str, base_name: str) -> str:
+    def _generate_custom_html(
+        self,
+        plotly_html: str,
+        plot_title: str,
+        base_name: str,
+        *,
+        pipeline_steps_html: str = "",
+    ) -> str:
         """
         Generates custom HTML with audio player, timeline scrubber, and synchronized playhead.
         Fixes audio path issues and adds debugging capabilities.
@@ -927,6 +1196,7 @@ class Plotter:
                 "original": audio_file_name,
                 "filtered": filtered_debug_file_name if filtered_available else audio_file_name,
             },
+            "springerSegments": getattr(self, "_springer_segments", []) or [],
         }
         config_json = json.dumps(config_payload)
 
@@ -941,6 +1211,25 @@ class Plotter:
                 logging.error(f"interactive_plot.js not found at {js_src_path}; HTML will reference a missing script.")
         except Exception as e:
             logging.error(f"Failed to copy interactive_plot.js: {e}")
+
+        springer_legend_html = ""
+        if getattr(self, "_springer_segments", None):
+            springer_legend_html = (
+                ' <span class="springer-segments-legend" title="Segment strip: S1, systole, S2, diastole">'
+                '<span class="springer-legend-dot" style="background:#e36f6f"></span> S1 '
+                '<span class="springer-legend-dot" style="background:#666"></span> Systole '
+                '<span class="springer-legend-dot" style="background:#f0a030"></span> S2 '
+                '<span class="springer-legend-dot" style="background:#999"></span> Diastole</span>'
+            )
+
+        pipeline_steps_section = ""
+        if pipeline_steps_html:
+            pipeline_steps_section = (
+                '<div class="springer-pipeline-steps-section">'
+                '<h3>Pipeline steps (debug)</h3>'
+                f'<div class="springer-pipeline-steps-chart">{pipeline_steps_html}</div>'
+                '</div>'
+            )
 
         html_template = f'''<!DOCTYPE html>
 <html>
@@ -1247,18 +1536,63 @@ class Plotter:
             border-color: #666;
         }}
         
-        #plotly-chart {{
+        .plotly-chart-wrapper {{
+            position: relative;
             flex: 1;
             min-height: 0;
             width: 100%;
+        }}
+
+        #plotly-chart {{
+            width: 100%;
             height: 100%;
         }}
-        
+
         #plotly-chart > div {{
             width: 100% !important;
             height: 100% !important;
         }}
         
+        .springer-segments-overlay {{
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: visible;
+        }}
+
+        .springer-segments-legend {{
+            margin-left: 0.75em;
+            font-size: 0.85em;
+            color: #aaa;
+        }}
+
+        .springer-legend-dot {{
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 1px;
+            vertical-align: middle;
+            margin-right: 2px;
+        }}
+
+        .springer-pipeline-steps-section {{
+            margin-top: 1em;
+            padding: 0.5em 0;
+            border-top: 1px solid #333;
+        }}
+        .springer-pipeline-steps-section h3 {{
+            margin: 0 0 0.5em 0;
+            font-size: 0.95em;
+            color: #aaa;
+        }}
+        .springer-pipeline-steps-chart {{
+            width: 100%;
+            min-height: 400px;
+        }}
+
         /* Vertical playhead line on chart */
         #chart-playhead {{
             position: absolute;
@@ -1397,14 +1731,21 @@ class Plotter:
                     <option value="debug">Debug</option>
                     <option value="analysis">Analysis Data</option>
                 </select>
+                {springer_legend_html}
             </div>
             <div id="spectrogram-container">
                 <img id="spectrogram-image" class="hidden" src="{spectrogram_original_src}" alt="Spectrogram" />
             </div>
             <div id="chart-playhead"></div>
-            <div id="plotly-chart">
-                {plotly_html}
+            <div class="plotly-chart-wrapper">
+                <div id="plotly-chart">
+                    {plotly_html}
+                </div>
+                <svg id="springer-segments-layer" class="springer-segments-overlay" aria-hidden="true">
+                    <g id="springer-segments-group"></g>
+                </svg>
             </div>
+            {pipeline_steps_section}
         </div>
     </div>
     

@@ -32,7 +32,7 @@ class BPMApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Heartbeat BPM Analyzer")
-        self.root.geometry("800x660")
+        self.root.geometry("800x800")
         self.style = ttkb.Style(theme='minty')
         self.current_files = []
         self.params = DEFAULT_PARAMS.copy()
@@ -67,6 +67,23 @@ class BPMApp:
         self.bpm_entry.bind('<KeyRelease>', lambda e: self.save_ui_settings())
         self.bpm_entry.bind('<FocusOut>', lambda e: self.save_ui_settings())
 
+        # Segmenter choice
+        ttk.Label(param_frame, text="Segmenter:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.segmenter_var = tk.StringVar(value=self.params.get("segmenter", "default"))
+        segmenter_combo = ttk.Combobox(
+            param_frame, textvariable=self.segmenter_var, values=("default", "springer"), state="readonly", width=12
+        )
+        segmenter_combo.grid(row=1, column=1, sticky=tk.EW, padx=5, pady=2)
+        segmenter_combo.bind("<<ComboboxSelected>>", lambda e: self.save_ui_settings())
+
+        ttk.Label(param_frame, text="Springer model (.npz):").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.springer_model_path_var = tk.StringVar(value=self.params.get("springer_model_path", ""))
+        self.springer_model_entry = ttk.Entry(param_frame, textvariable=self.springer_model_path_var, width=40)
+        self.springer_model_entry.grid(row=2, column=1, sticky=tk.EW, padx=5, pady=2)
+        self.springer_model_entry.bind('<KeyRelease>', lambda e: self.save_ui_settings())
+        self.springer_model_entry.bind('<FocusOut>', lambda e: self.save_ui_settings())
+        ttk.Button(param_frame, text="Browse", command=self._browse_springer_model, bootstyle=SECONDARY).grid(row=2, column=2, padx=2, pady=2)
+
         # Channel handling option
         self.process_all_channels = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -74,7 +91,7 @@ class BPMApp:
             text="Analyze each audio channel separately (stereo \u2192 CH1 & CH2 outputs)",
             variable=self.process_all_channels,
             command=self.save_ui_settings,
-        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
 
         # Verbose console logging option
         self.verbose_console_logging = tk.BooleanVar(value=True)
@@ -83,7 +100,7 @@ class BPMApp:
             text="Verbose console logging (detailed algorithm messages)",
             variable=self.verbose_console_logging,
             command=self.save_ui_settings,
-        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(2, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=(2, 0))
 
         # Output file options
         self.output_html = tk.BooleanVar(value=True)
@@ -296,6 +313,15 @@ class BPMApp:
         except (TypeError, ValueError):
             return None
 
+    def _browse_springer_model(self):
+        path = filedialog.askopenfilename(
+            title="Select Springer model (.npz)",
+            filetypes=[("NumPy model", "*.npz"), ("All files", "*.*")],
+        )
+        if path:
+            self.springer_model_path_var.set(path)
+            self.save_ui_settings()
+
     def save_ui_settings(self):
         """Save current UI settings to a JSON file."""
         # Don't save during initialization when loading settings
@@ -304,6 +330,8 @@ class BPMApp:
         try:
             settings = {
                 'starting_bpm': self.bpm_entry.get().strip(),
+                'segmenter': self.segmenter_var.get().strip() or 'default',
+                'springer_model_path': self.springer_model_path_var.get().strip(),
                 'process_all_channels': self.process_all_channels.get(),
                 'verbose_console_logging': self.verbose_console_logging.get(),
                 'output_html': self.output_html.get(),
@@ -339,6 +367,10 @@ class BPMApp:
             if 'starting_bpm' in settings and settings['starting_bpm']:
                 self.bpm_entry.delete(0, tk.END)
                 self.bpm_entry.insert(0, settings['starting_bpm'])
+            if 'segmenter' in settings and settings['segmenter'] in ('default', 'springer'):
+                self.segmenter_var.set(settings['segmenter'])
+            if 'springer_model_path' in settings:
+                self.springer_model_path_var.set(settings.get('springer_model_path', '') or '')
             
             # Load output options
             if 'process_all_channels' in settings:
@@ -531,7 +563,9 @@ class BPMApp:
                     logging.error("Failed to initialize regression testing output log: %s", e)
                     regression_log_path = None
 
-            # Read batch-wide options once
+            # Read batch-wide options once and sync segmenter params for this run
+            self.params["segmenter"] = (self.segmenter_var.get() or "default").strip().lower() or "default"
+            self.params["springer_model_path"] = (self.springer_model_path_var.get() or "").strip()
             process_all_channels = self.process_all_channels.get()
             optimize_long_plots = self.optimize_long_plots.get()
             verbose_console_logging = self.verbose_console_logging.get()

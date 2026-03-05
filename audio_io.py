@@ -5,7 +5,7 @@ from typing import Dict, Optional, Tuple, List
 import numpy as np
 import pandas as pd
 from scipy.io import wavfile
-from scipy.signal import butter, filtfilt, welch, iirnotch, find_peaks, hilbert
+from scipy.signal import butter, filtfilt, welch, iirnotch, find_peaks, hilbert, medfilt
 import librosa
 
 try:
@@ -273,6 +273,52 @@ def _apply_pypcg_denoising(audio_data: np.ndarray, sample_rate: int, params: Dic
         return audio_data
 
 
+def homomorphic_envelope(
+    audio_signal: np.ndarray,
+    sample_rate: int,
+    lowpass_cutoff: float = 25.0,
+    filter_order: int = 2,
+    medfilt_kernel: int = 0,
+) -> np.ndarray:
+    """
+    Compute homomorphic envelope (Springer et al. style) for PCG.
+
+    Rectify -> log -> low-pass (extract envelope) -> exp -> optional median filter.
+    Higher lowpass_cutoff = less smoothing, sharper peaks.
+
+    Parameters
+    ----------
+    audio_signal : np.ndarray
+        Pre-filtered audio (e.g. bandpass for S1/S2).
+    sample_rate : int
+        Sampling frequency (Hz).
+    lowpass_cutoff : float
+        Low-pass cutoff (Hz). Higher = sharper envelope (e.g. 25–40).
+    filter_order : int
+        Butterworth low-pass order.
+    medfilt_kernel : int
+        Median filter kernel size; 0 = disabled. 3 = light spike removal.
+
+    Returns
+    -------
+    envelope : np.ndarray
+        Amplitude envelope (float64).
+    """
+    rectified = np.abs(audio_signal).astype(np.float64)
+    epsilon = 1e-10
+    log_rectified = np.log(rectified + epsilon)
+
+    nyquist = sample_rate / 2.0
+    normalized_cutoff = min(lowpass_cutoff / nyquist, 0.99)
+    b, a = butter(filter_order, normalized_cutoff, btype="low")
+    log_envelope = filtfilt(b, a, log_rectified)
+
+    envelope = np.exp(log_envelope).astype(np.float64)
+    if medfilt_kernel >= 3 and medfilt_kernel % 2 == 1:
+        envelope = medfilt(envelope, kernel_size=medfilt_kernel).astype(np.float64)
+    return envelope
+
+
 def preprocess_audio(
     file_path: str, params: Dict, output_directory: str, output_options: Optional[Dict] = None
 ) -> Tuple[np.ndarray, int]:
@@ -287,7 +333,7 @@ def preprocess_audio(
         }
 
     save_debug_file = params["save_filtered_wav"] and output_options.get("filtered_wav", True)
-    target_sample_rate = 500 # I had to use a lower sample rate for optimization reasons
+    target_sample_rate = int(params.get("target_sample_rate", 850))
 
     try:
         # Preserve historical behavior: simple mono mix of all channels.
@@ -305,11 +351,9 @@ def preprocess_audio(
     if detected_hum is not None:
         logging.info("Detected and removed stationary hum at ~%.2f Hz.", detected_hum)
 
-    # Bandpass for S1/S2 detection: 20–150 Hz is the typical PCG (phonocardiogram) range
-    # where first and second heart sounds have most of their energy.
-    # 20–60 Hz is the typical range for S1 detection.
-    # 60–200 Hz is the typical range for S2 detection.
-    lowcut, highcut = 20, 220
+    # Bandpass for S1/S2 detection (configurable; typical PCG range ~15–250 Hz).
+    lowcut = int(params.get("bandpass_lowcut_hz", 15))
+    highcut = int(params.get("bandpass_highcut_hz", 250))
     nyquist = 0.5 * new_sample_rate
     low, high = lowcut / nyquist, highcut / nyquist
 
@@ -353,15 +397,69 @@ def preprocess_audio(
     elif params["save_filtered_wav"] and not output_options.get("filtered_wav", True):
         logging.info("Skipping filtered audio WAV generation as requested.")
 
-    # Hilbert envelope: magnitude of analytic signal for a sharper, more symmetric envelope
-    # than abs + rolling mean, which helps peak timing stability (e.g. for HRV).
-    analytic = hilbert(audio_filtered)
-    envelope_raw = np.abs(analytic).astype(np.float64)
-    # Light smoothing to reduce ripple (e.g. between S1 and S2) without smearing peaks.
-    smooth_window = max(1, new_sample_rate // 80)  # ~20 ms at 500 Hz
-    audio_envelope = pd.Series(envelope_raw).rolling(
-        window=smooth_window, min_periods=1, center=True
-    ).mean().values
+    envelope_method = (params.get("envelope_method") or "homomorphic").strip().lower()
+    if envelope_method == "hilbert":
+        # Hilbert envelope: magnitude of analytic signal; light smoothing to reduce ripple.
+        analytic = hilbert(audio_filtered)
+        envelope_raw = np.abs(analytic).astype(np.float64)
+        smooth_window = max(1, new_sample_rate // 80)
+        audio_envelope = pd.Series(envelope_raw).rolling(
+            window=smooth_window, min_periods=1, center=True
+        ).mean().values
+    else:
+        # Homomorphic envelope (Springer et al. style); default for A/B testing.
+        audio_envelope = homomorphic_envelope(
+            audio_filtered,
+            new_sample_rate,
+            lowpass_cutoff=float(params.get("homomorphic_cutoff_hz", 25.0)),
+            filter_order=int(params.get("homomorphic_filter_order", 2)),
+            medfilt_kernel=int(params.get("homomorphic_medfilt_kernel", 0)),
+        )
 
     return audio_envelope, new_sample_rate
+
+
+def load_audio_mono(file_path: str, sample_rate: int) -> Tuple[np.ndarray, int]:
+    """
+    Load audio as mono at the given sample rate with no filtering (no denoise, hum removal, or bandpass).
+    Used for the Springer pipeline so the algorithm receives raw/resampled PCG and does its own 25-400 Hz bandpass.
+    Returns (audio, sample_rate).
+    """
+    try:
+        audio, sr = librosa.load(file_path, sr=sample_rate, mono=True)
+    except Exception as e:
+        logging.error("Librosa failed to load file: %s", e)
+        raise
+    return audio, sr
+
+
+def get_filtered_audio(file_path: str, params: Dict) -> Tuple[np.ndarray, int]:
+    """
+    Load and filter audio (denoise, hum removal, bandpass) without computing envelope.
+    Used when segmenter is Springer so the same waveform is passed to the HSMM.
+    Returns (filtered_audio, sample_rate); length matches what preprocess_audio would use.
+    """
+    target_sample_rate = int(params.get("target_sample_rate", 850))
+    try:
+        audio_downsampled, new_sample_rate = librosa.load(file_path, sr=target_sample_rate, mono=True)
+    except Exception as e:
+        logging.error("Librosa failed to load file: %s", e)
+        raise
+    audio_downsampled = _apply_pypcg_denoising(audio_downsampled, new_sample_rate, params)
+    audio_downsampled, detected_hum = _detect_and_remove_stationary_hum(
+        audio_downsampled, new_sample_rate, params
+    )
+    if detected_hum is not None:
+        logging.info("Detected and removed stationary hum at ~%.2f Hz.", detected_hum)
+    lowcut = int(params.get("bandpass_lowcut_hz", 15))
+    highcut = int(params.get("bandpass_highcut_hz", 250))
+    nyquist = 0.5 * new_sample_rate
+    low, high = lowcut / nyquist, highcut / nyquist
+    if high >= 1.0:
+        raise ValueError(
+            f"Cannot create a {highcut}Hz filter. The sample rate of {new_sample_rate}Hz is too low."
+        )
+    b, a = butter(2, [low, high], btype="band")
+    audio_filtered = filtfilt(b, a, audio_downsampled)
+    return audio_filtered, new_sample_rate
 

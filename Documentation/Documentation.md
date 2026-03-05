@@ -1,7 +1,7 @@
 # **BPM Analysis documentation**
 
 # Design theory
-The goal is to take PCG data recorded via consumer household equipment and convert it into usable data. Normally, clinical PCG data is captured via advanced and expensive equipment that may not be easily accessible to the general public such as digital stethoscopes etc. My goal is to extract information by using a algorithm to compensate for inadequate hardware. 
+The goal is to take PCG data recorded via consumer household equipment and convert it into usable data. to plot changes in heart rate, beats per minute (bpm) over time. Normally, clinical PCG data is captured via advanced and expensive equipment that may not be easily accessible to the general public such as digital stethoscopes etc. My goal is to extract information by using a algorithm to compensate for inadequate hardware. 
 
 The script will track bpm over time like a heart rate monitor, but using a recording of a patient's heartbeat instead. The resulting plot should accurately reflect fast changes in heart rate.
 
@@ -17,6 +17,7 @@ In a ideal world, the user should only need to enter a file, press run, and get 
 
 
 # General knowledge:
+## Phonocardiography (PCG)
 **Phonocardiography (PCG)** is a non-invasive technique that records and analyzes heart sounds and murmurs. It uses a sensitive microphone (phonocardiograph) placed on the chest wall to convert acoustic vibrations into electronic signals, which are then displayed as a waveform (phonocardiogram).
 **Key points:**
 - **Purpose**: Provides a visual representation of heart sounds (S1, S2, S3, S4) and any pathological murmurs, allowing detailed timing and frequency analysis.
@@ -33,13 +34,254 @@ As the diaphragm descends, the heart itself shifts slightly in the chest cavity.
 For example, the heart's rotation might simultaneously move the pulmonic valve closer or into a better acoustic alignment with the stethoscope resulting in a S1 being louder or quieter throughout the recording. 
 
 
+## Existing methods
+It's important to acknowledge and aggregate existing methods to do what I'm trying to accomplish
+```embed
+title: "Logistic Regression-HSMM-based Heart Sound Segmentation v1.0"
+image: "https://physionet.org/static/images/physionet-logo.svg"
+description: "Heart sound segmentation code, based on a duration-dependent hidden Markov model, extended with the use of logistic regression for emission probability estimation and an enhanced Viterbi algorithm."
+url: "https://physionet.org/content/hss/1.0/"
+favicon: ""
+aspectRatio: "24.12831241283124"
+```
+
+```embed
+title: "             An Open Access Database for the Evaluation of Heart Sound Algorithms - PMC         "
+image: "https://cdn.ncbi.nlm.nih.gov/pmc/banners/logo-nihpa.png"
+description: "In the past few decades, analysis of heart sound signals (i.e., the phonocardiogram or PCG), especially for automated heart sound segmentation and classification, has been widely studied and has been reported to have the potential value to detect ..."
+url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC7199391/"
+favicon: ""
+aspectRatio: "15"
+```
+
+```embed
+title: "Classification of Heart Sound Recordings: The PhysioNet/Computing in Cardiology Challenge 2016 v1.0.0"
+image: "https://physionet.org/files/challenge-2016/1.0.0/figure1.png"
+description: ""
+url: "https://physionet.org/content/challenge-2016/1.0.0/"
+favicon: ""
+aspectRatio: "62.5"
+```
+
+
+
+## Comparing my method with existing heart sound segmentation algorithms
+[springer2015](https://physionet.org/content/hss/1.0/)
+Springer's pipeline was not made to process PCG information at different/changing heart rates. It expects the bpm to be constant across time.
+- **Springer:** Calculates **one global HR estimate per recording** before segmentation begins. It uses this single value to parameterize the Gaussian duration distributions (S1, Systole, S2, Diastole) for the **entire sequence**.
+
+
+
+### [Heart sound datasets:](https://pmc.ncbi.nlm.nih.gov/articles/PMC11461928/)
+https://pmc.ncbi.nlm.nih.gov/articles/PMC7199391/
+
+
+## Existing PCG code/libraries
+```embed
+title: "biosppy.signals — BioSPPy 2.2.2 documentation"
+image: "https://biosppy.readthedocs.io/en/stable/_images/math/8045a195c2f29ae10ca11ed1a5cd3dd2801a79d3.png"
+description: ""
+url: "https://biosppy.readthedocs.io/en/stable/biosppy.signals.html"
+favicon: ""
+aspectRatio: "14.615384615384617"
+```
+
+```embed
+title: "Segmentation — pyPCG 0.1b5 documentation"
+image: ""
+description: ""
+url: "https://pypcg-toolbox.readthedocs.io/en/latest/segment.html"
+favicon: ""
+```
+
+
+
+
+[A Wavelet Transform-Based Neural Network Denoising Algorithm for Mobile Phonocardiography](https://doi.org/10.3390/s19040957)
+## What is a Wavelet Transform?
+In order to do time series analysis, we must understand these fundamental concepts:
+What are [wavelets](https://youtu.be/jnxqHcObNK4)? 
+what is wavelet [convolution](https://youtu.be/jnxqHcObNK4?t=1282)?
+We need to find the contribution of a certain frequency around a timepoint. 
+By applying wavelet transform, to generate a wavelet scalogram, we can [view a sound's structure](https://youtu.be/jnxqHcObNK4?t=1813)
+
+
+
+Side note: [Mike X Cohen](https://youtu.be/ljw3gW-nL0E?t=1721) is fkin intelligent:
+We should maintain a holistic view. [If you have a real finding in your data, it will be robust to a reasonable range of parameters](https://youtu.be/ljw3gW-nL0E?t=1676)
+aka a good algorithm should have a large range of configuration values that will work on any input data. 
+This is why it's a good idea to use wavelet convolution for time series analysis
+
+### [Application of time frequency analysis](https://www.youtube.com/watch?v=hj7j4Q8T3Ck&list=PLn0OLiymPak2BYu--bR0ADNBJsC4kuRWs&index=1)
+```embed
+title: "Morlet wavelets in time and in frequency"
+image: "https://i.ytimg.com/vi/7ahrcB5HL0k/maxresdefault.jpg"
+description: "This video lesson is part of a complete course on neuroscience time series analyses.The full course includes   - over 47 hours of video instruction  - lots a..."
+url: "https://youtu.be/7ahrcB5HL0k"
+favicon: ""
+aspectRatio: "56.25"
+```
+Convolution in the time domain acts as a band pass filter:
+```embed
+title: "Convolution in the time domain"
+image: "https://i.ytimg.com/vi/9Hk-RAIzOaw/maxresdefault.jpg"
+description: "This video lesson is part of a complete course on neuroscience time series analyses.The full course includes   - over 47 hours of video instruction  - lots a..."
+url: "https://youtu.be/9Hk-RAIzOaw"
+favicon: ""
+aspectRatio: "56.25"
+```
+Also here's the [Parameters of Morlet wavelet](https://youtu.be/LMqTM7EYlqY?list=PLn0OLiymPak2BYu--bR0ADNBJsC4kuRWs&t=308)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Find a way to input more data into the algorithm to help it identify S1 and S2
+[Transfer Learning in Heart Sound Classification using Mel Spectrogram](https://cinc.org/archives/2022/pdf/CinC2022-046.pdf)
+
+
+
+
+> [!say]
+> I wonder, is it possible to record a spectral fingerprint for S1 and S2 heart sounds?
+> Like, each recording has a different audio characteristic
+> But within the file, every S1 should sound similar
+> And be distinct from S2
+> If this is true, there must be a way to exploit this
+
+> [!think] Multiple frequency bands
+> what if we preprocess using multiple frequency bands for the explicit propose of comparing the confidence that a peak is S1 vs S2 across the two frequency bands.
+> the idea is, we generate a profile of what we think S1 sound, sounds like and when we encounter something that sound similar we give it a confidence score. then we pre process the audio again with a different frequency band and generate a new confidence score. Then we compare what we did vs how it changed the confidence score to generate a final confidence. 
+> S1 is typically found between 20–80 Hz
+> S2 is typically found between 60–200 Hz
+> 
+> if we do 60–200 Hz refilter and run analysis, if confidence for S2 increases, maybe we should increase confidence again since it aligns with what we expect?
+
+> [!think]
+> Each beat, S1 and S2 should have a distinct sound that gives it its unique "profile". S2's higher frequency components (up to 250 Hz) are different S1's lower frequencies. I think there should be a way to exploit this. I need to confirm whether or not this frequency separation exists in my dataset before I try to isolate it. 
+
+
+
+
+
+
+> [!think]
+> Looking at `Test4_bpm_plot.html`,
+> I wonder, Is it possible make a profile for S1 and S2 heart sounds? that data would be very large. I'm thinking of a way to compress/express this profile data in a easy to parse way.
+> what If we apply different EQ band filters for ever 100 hz or something. This will generate different amplitude peaks for each peak. Then we can get the difference and compare.
+> 
+>So far, we haven't needed to compress the input data because the peak detection algorithm naturally outputs simple and easily parsable data. The additional data I plan to input input to the algorithm will not be easily parsable so I need to find a way to "compress the info" into a more "parsable" format. 
+>
+> I'm just trying to get a way to make the algorithm understand what S1 and S2 *sounds* like. currently, The algorithm knows what S1 and S2 *look* like from a point wise perspective. (there's no logic for trapezoidal shaped waveforms yet). The current data being fed into the algorithm is very minimal which means the current algorithm has to make many educated guesses. If I can find a way to efficiently compress beat "profile" data and feed it into the algorithm, then I should be able to make it substantially more robust. 
+
+
+> [!think]
+> Right now, the algorithms confidence is artificially boosted
+> If we look at the input data the algorithm is receiving. There are many instances where logically there should be no way the algorithm can determine a answer. 
+> But right now it does
+> I've done this intentionally as a band aid fix. I wanted more labeling but I must acknowledge that many peaks are being labeled correctly because the algorithm is simply making a lucky guess
+
+
+> [!think]
+> research
+> - [mel-spectrogram](https://www.youtube.com/watch?v=9GHCiiDLHQ4&t=280s)
+> - Wavelet Scalogram
+> - 
+> 
+
+We can identify the following parameters for S1/S2 sounds
+- Spectral centroid trajectory
+- Bandwidth evolution
+- Dominant frequency
+- Energy envelope shape (attack/decay)
+
+
+
+
+
+
+
+
+
+
+
+
+# Explanation of PCG Preprocessing
+## Generating our audio envelope:
+### How was the Audio Envelope calculated?
+Previously, the Audio Envelope is abs(filtered audio) then a centered 100ms rolling mean at 500 Hz. Peak detection currently returns the top of that envelope
+#### Trapezoidal waveforms causes the middle of the sound to not be the peak amplitude
+I've noticed from the peak detection algorithm, It places the peak at the highest point, but sometimes the audio envelope of a wave might look like a cut mountain and sometimes slanted. we basically need to capture the middle of the peak of a trapezoidal wave. 
+[![|508x155](https://i.imgur.com/xkhzAQS.png)]
+From this example, we can see how the placement of the detected peak is not center with the mass of the waveform resulting in a very small inaccuracy.
+
+![|398x161](Y1rGxdpPAq4.png)
+
+**Why this is a issue:**
+HRV is calculated from R-R intervals. Since HRV is so sensitive (standard deviation of ~10-50ms) we cannot afford any noise in the HRV calculation. The HRV function expects accurate data so if we feed it incorrect peak timings the the HRV calculated will be wrong. 
+
+> [!think]
+> Maybe we can solve this in a simple way:
+> we just take the integral of the waveform between two troughs and place the peak such that it divides the area under the curve in half. This should result in a slightly more accurate placement of the labels.
+### Hilbert Envelope:
+[![|1645|1027x175](https://imgur.com/69ibaD7.jpg)
+
+What is [Hilbert transform](https://youtu.be/NMR7PR7M4Iw)?
+[What is a Hilbert Space?](https://youtu.be/FFPXm-tuOt8?t=153)
+
+The Hilbert transform can give you a clean separation between envelope and oscillation. This can only be done if the signal has slow changes riding on fast oscillations.
+If you have a signal where something is changing slowly while something else is wiggling quickly, and these two aspects don't overlap in their frequency content, then the Hilbert transform can pull them apart accurately.
+
+This is applicable to our application because we don't care about the raw waveform, only the larger underlying envelope. As you can see, the the "carrier", fast oscillation within the envelope, are visible
+[![|490x215](https://imgur.com/AUfZXGh.jpg) 
+this image shows the resulting envelope
+[![|225x141](https://imgur.com/Tm2fXqo.jpg)
+
+
+> [!think]
+> By applying Hilbert transform, we can generate a good envelope for to do our analysis but I can't help but wonder... there's a lot of information being thrown away in the carrier frequencies. 
+
+#### Issues with the Hilbert Envelope
+- Linear dynamic range results in loss of weak S2 amplitudes at high BPM. "At 200 bpm, S1 is very loud and prominent... S2 becomes very soft or even inaudible"
+- heart sounds are transient, not sinusoidal
+- Hilbert envelope might show artificial peaks between S1 and S2 due to Spectral overlap (S1 tail and S2 onset interfere)
+
+
+
+
+### Homomorphic envelope
+Homomorphic filtering is a nonlinear signal processing technique that separates multiplicative components in a signal by transforming them into additive components via logarithms. For phonocardiography, this is powerful because heart sounds are approximately the product of:
+- Slowly varying amplitude modulation (the envelope)
+- Rapid oscillations (the "carrier" valve vibration frequencies)
+
+Homomorphic filtering explicitly separates the envelope from the carrier. 
+
+> [!think]
+> Perhaps we can use **Hilbert** for timing precision and **homomorphic** for amplitude comparison.
+
+After implementing Homomorphic envelope, it doesn't really make a improvement... I think I'll just use Hilbert
+
+
+
+
+
+
 
 
 
 
 
 # Explanation of algorithm logic decision making
-
 
 ### Brainstorming:
 > [!think]
@@ -365,16 +607,70 @@ Detects trapezoid-shaped discontinuities in the average BPM series that are char
 
 
 ## Known Limitations & Edge Cases
+
+### Sequential Decision Making
+Currently, peak labeling is assigned locally and greedily as each peak is classified based on immediate context.
+**The problem**: A local decision can force suboptimal future choices. If you label a weak peak as S1, you may miss a stronger S1-S2 pair just milliseconds later.
+
+
+**research:**
+[Hidden Markov Models](https://youtu.be/RWkHJnFj5rY)
+```embed
+title: "Introduction to HMMs | Hidden Markov Models Part 1"
+image: "https://i.ytimg.com/vi/ZIT2UH6bF38/maxresdefault.jpg"
+description: "In this video, we break down Hidden Markov Models (HMMs) in machine learning with intuitive explanations and step-by-step examples. Starting from simple Mark..."
+url: "https://youtu.be/ZIT2UH6bF38"
+favicon: ""
+aspectRatio: "56.25"
+```
+
+```embed
+title: "Viterbi Algorithm"
+image: "https://i.ytimg.com/vi/6JVqutwtzmo/maxresdefault.jpg?sqp=-oaymwEmCIAKENAF8quKqQMa8AEB-AG-B4AC0AWKAgwIABABGGUgZShlMA8=&rs=AOn4CLBxRNlVpBCC0Z53iOa7xpZRxrs2kw"
+description: "Short description of the Viterbi Algorithm without equations using a trip planning example.Correction: Viterbi first published this in 1967, not 1968 as stat..."
+url: "https://youtu.be/6JVqutwtzmo"
+favicon: ""
+aspectRatio: "56.25"
+```
+
+Viterbi's transition matrix
+
+
+
+
+
+
+
+
+
+
 ### Cold Start Problem
-**Issue:** First 4 seconds often misclassified because long_term_bpm hasn't stabilized.
+The cold start is a consequence of sequential decision making
+**Issue:** First 4 seconds often misclassified because long_term_bpm hasn't stabilized. 
 **Workaround:** Provide `start_bpm_hint` when possible. The `_kickstart_check` helps but isn't perfect.
+
 
 **Example of Failure mode:**
 ![|968x178](https://imgur.com/6BK2wQk.jpg)
 ![|968x190](https://imgur.com/XEYt7r4.jpg)
 In this case, the very first peak was mislabeled as Lone S1 while it was S2. Since this is the first peak of the recording, it's impossible to determine if it's S1 or S2 without scanning backwards and using future knowledge
 
-Ideally, we should have a way to scan backwards to fix errors that occurred before.
+> [!think]
+> we could scan backwards to fix errors that occurred before.
+> This is difficult to implement because our algorithm expects forward data. Reversing the logic is a non trivial task.
+
+> [!think]
+> What if we just loop the waveform back onto itself and run it continuously?
+> Then there would be no start... we just process the start data and then discard it after running it again. Therefore there will be no initial labeling in the final output. 
+> 
+> Because what if the start bpm is 60 and the end bpm is 180?
+
+
+
+
+
+
+
 
 
 ### Noisy audio
@@ -399,14 +695,6 @@ There's no real way to solve this issue... just don't input noisy audio I guess
 **Current solution:** Algorithm gracefully degrades to Lone S1 mode when pairing fails consistently.
 **Future:** Could add a "S2 dropout detection" that disables pairing entirely when consecutive Lone S1s exceed threshold at high BPM.
 
-
-### Trapezoidal waveforms causes the middle of the sound to not be the peak amplitude
-I've noticed from the peak detection algorithm, It places the peak at the highest point, but sometimes a wave might look like a cut mountain and sometimes slanted. we basically need to capture the middle of the peak of a trapezoidal wave. 
-[![|508x155](https://i.imgur.com/xkhzAQS.png)]
-From this example, we can see how the placement of the detected peak is not center with the mass of the waveform resulting in a very small inaccuracy.
-
-![|398x161](Y1rGxdpPAq4.png)
-would it be difficult to implement a fix for this? would it even make the results more accurate? Is this even a issue?
 
 
 ## Optimizations:
@@ -437,8 +725,9 @@ There are bits of logic that I implemented to the script that likely do not need
 Right now, I can't name anything off the top of my head but I get the feeling this issue exists.
 
 
-
-
+### Release
+I've decided to package binaries in a `BPM_Analyzer.exe` for non technical users to run on windows computers
+Simply run `pyinstaller BPM_Analyzer.spec` to repackage and update binaries
 
 
 
@@ -468,8 +757,13 @@ what if we have a interactive way for the user to correct the peak labeling outp
 > I've noticed that the BPM Trend (Belief) seems to be shifted to the right compared to the calculated Average BPM graph
 > is this a issue? there a better way to calculate BPM Trend (Belief) that doesn't result in this happening?
 
-> [!think]
-> Research phase-rectified signal averaging for noise reduction
+
+
+
+
+
+
+
 
 
 
@@ -527,46 +821,27 @@ I was considering this but I can no longer find a example of the issue this is d
 
 
 
-### Find a way to input more data into the algorithm to help it identify S1 and S2
-> [!say]
-> I wonder, is it possible to record a spectral fingerprint for S1 and S2 heart sounds?
-> Like, each recording has a different audio characteristic
-> But within the file, every S1 should sound similar
-> And be distinct from S2
-> If this is true, there must be a way to exploit this
-- [ ] Implemented
+
+
+
+
+
+
+
+
+### Split S2 
+Split S2 visible in the Hilbert transform waveform envelope:
+![|1018x182](https://imgur.com/dm8zzsY.jpg)
+
+There should be a way to detect split S2. I'm thinking, After S1 and S2 peaks are labeled, we can go back and find more peaks.
+Around the timeframe where S2 peaks are labeled, we should disable or drasticly reduce the min_peak_distance_sec and rescan. Maybe we can pick up the two split peaks.
+I think the rescan for new peaks should be at the very end, after the post processing peak labeling stuff etc. because it depends on the labelings for the S2 peaks.
 
 > [!think]
-> S2's higher frequency components (up to 250 Hz) are different S1's lower frequencies. I think there should be a way to exploit this. I need to confirm whether or not this frequency separation exists in my dataset before I try to isolate it. 
+> If we can find a way to identify areas of Split S2, we might be able to calculate RSA from this data.
 
-
-Each beat, S1 and S2 should have a distinct sound that gives it its unique "profile".  
-
-> [!think]
-> Looking at `Test4_bpm_plot.html`,
-> I wonder, Is it possible make a profile for S1 and S2 heart sounds? that data would be very large. I'm thinking of a way to compress/express this profile data in a easy to parse way.
-> what If we apply different EQ band filters for ever 100 hz or something. This will generate different amplitude peaks for each peak. Then we can get the difference and compare.
-> 
->So far, we haven't needed to compress the input data because the peak detection algorithm naturally outputs simple and easily parsable data. The additional data I plan to input input to the algorithm will not be easily parsable so I need to find a way to "compress the info" into a more "parsable" format. 
->
-> I'm just trying to get a way to make the algorithm understand what S1 and S2 *sounds* like. currently, The algorithm knows what S1 and S2 *look* like from a point wise perspective. (there's no logic for trapezoidal shaped waveforms yet). The current data being fed into the algorithm is very minimal which means the current algorithm has to make many educated guesses. If I can find a way to efficiently compress beat "profile" data and feed it into the algorithm, then I should be able to make it substantially more robust. 
-
-
-> [!think]
-> Right now, the algorithms confidence is artificially boosted
-> If we look at the input data the algorithm is receiving. There are many instances where logically there should be no way the algorithm can determine a answer. 
-> But right now it does
-> I've done this intentionally as a band aid fix. I wanted more labeling but I must acknowledge that many peaks are being labeled correctly because the algorithm is simply making a lucky guess
-
-
-
-
-
-
-
-
-
-
+I'm not sure how to store split S2 in the code. I plan on doing respiratory rate Analysis with split S2 data.
+In some files with low noise and a prominent S2 peak(s), it's easy to identify a split S2 but in some audios, split S2 may not be so easy to identify. In those cases, we will pick up many peaks around the S2 area. what shall we do? 
 
 
 
@@ -593,7 +868,16 @@ Each beat, S1 and S2 should have a distinct sound that gives it its unique "prof
 - Heart shifts position to be closer to chest wall, potentially amplifying sounds
 	- [ ] is this observed in our dataset? 
 
+
+Inhale/exhale visible from S1 amplitude fluctuations:
+![|861x271](https://imgur.com/ibFbbpx.jpg)
+But only sometimes...
+It's rare, but respiratory rate can be calculated at some times, it's difficult though, because a person might stop breathing, hold their breath momentarily, or just some random noise in the waveform.
+This is a difficult challenge because sometimes the data is extremely clear and easy to parse. other times it's non existent. 
+
+
 #### Respiratory Sinus Arrhythmia (RSA)
+![|487x488](https://imgur.com/83CAXFZ.jpg)
 Heart rate increases during inspiration
 Heart rate decreases during expiration
 - [ ] Is this observed in our dataset? 
