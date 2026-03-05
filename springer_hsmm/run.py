@@ -2,10 +2,12 @@
 Run Springer segmentation: features -> HR -> Viterbi -> expand to audio length.
 
 Translated from runSpringerSegmentationAlgorithm.m
+Supports time-varying BPM via heart_rate_curve (e.g. from default pipeline long_term_bpm_series).
 """
 
 import logging
 import time
+from typing import Optional, Union
 
 import numpy as np
 from scipy.signal import resample
@@ -19,6 +21,33 @@ from springer_hsmm.viterbi import viterbi_decode_pcg_springer
 logger = logging.getLogger(__name__)
 
 
+def _interp_bpm_curve(
+    heart_rate_curve: Union[tuple[np.ndarray, np.ndarray], object],
+    time_sec: np.ndarray,
+) -> np.ndarray:
+    """Interpolate BPM at time_sec. curve is pd.Series (index=time_sec) or (times_sec, bpm_values)."""
+    try:
+        import pandas as pd
+    except ImportError:
+        pd = None
+    if pd is not None and isinstance(heart_rate_curve, pd.Series):
+        times = np.asarray(heart_rate_curve.index, dtype=np.float64)
+        bpm = np.asarray(heart_rate_curve.values, dtype=np.float64)
+    else:
+        times = np.asarray(heart_rate_curve[0], dtype=np.float64)
+        bpm = np.asarray(heart_rate_curve[1], dtype=np.float64)
+    if times.size == 0 or bpm.size == 0:
+        return np.full(time_sec.shape, np.nan)
+    bpm_interp = np.interp(
+        time_sec,
+        times,
+        bpm,
+        left=bpm[0] if bpm.size else 80.0,
+        right=bpm[-1] if bpm.size else 80.0,
+    )
+    return np.clip(bpm_interp, 20.0, 300.0)
+
+
 def run_springer_segmentation_algorithm(
     audio_data: np.ndarray,
     fs: float,
@@ -27,12 +56,18 @@ def run_springer_segmentation_algorithm(
     total_observation_distribution: tuple[np.ndarray, np.ndarray],
     options: dict | None = None,
     *,
+    heart_rate_curve: Optional[Union[tuple[np.ndarray, np.ndarray], object]] = None,
     return_debug: bool = False,
     return_viz_data: bool = False,
 ):
     """
     Assign state (1=S1, 2=systole, 3=S2, 4=diastole) to each sample of the audio.
     All preprocessing (25-400 Hz bandpass, spike removal, envelopes) is done inside this pipeline.
+
+    heart_rate_curve : optional
+        If provided, time-varying BPM for the duration model. Either a pd.Series with index=time_sec
+        and values=BPM, or a tuple (times_sec, bpm_values). Interpolated at 50 Hz frame times.
+        If None, a single global HR from Schmidt autocorrelation is used.
 
     Returns
     -------
@@ -78,13 +113,27 @@ def run_springer_segmentation_algorithm(
         time.perf_counter() - t0, heart_rate,
     )
 
+    T = PCG_Features.shape[0]
+    if heart_rate_curve is not None:
+        time_50hz_sec = np.arange(T, dtype=np.float64) / float(features_fs)
+        hr_at_frame = _interp_bpm_curve(heart_rate_curve, time_50hz_sec)
+        if np.any(np.isnan(hr_at_frame)):
+            hr_at_frame = np.nan_to_num(hr_at_frame, nan=heart_rate)
+        logger.info(
+            "Using time-varying BPM for duration model (min=%.1f, max=%.1f BPM)",
+            float(np.nanmin(hr_at_frame)), float(np.nanmax(hr_at_frame)),
+        )
+        viterbi_heart_rate = hr_at_frame
+    else:
+        viterbi_heart_rate = heart_rate
+
     t0 = time.perf_counter()
     _, _, qt, observation_probs, posteriors = viterbi_decode_pcg_springer(
         PCG_Features,
         pi_vector,
         B_matrix,
         total_observation_distribution,
-        heart_rate,
+        viterbi_heart_rate,
         systolic_time_interval,
         float(features_fs),
     )

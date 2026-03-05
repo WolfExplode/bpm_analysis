@@ -2446,8 +2446,27 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
 
     segmenter = (params.get("segmenter") or "default").strip().lower()
     if segmenter == "springer":
-        # Springer path (paper-aligned): raw/resampled PCG at Springer Fs, no our preprocessing.
-        # All filtering (25-400 Hz, spike removal, envelopes) is done inside the Springer pipeline.
+        # Run full default analysis first to get BPM vs time for the duration model.
+        logging.info("--- Running default pipeline to generate BPM/time for Springer ---")
+        default_envelope, default_sr = preprocess_audio(wav_file_path, params, output_directory, output_options)
+        noise_floor, troughs = _calculate_dynamic_noise_floor(default_envelope, default_sr, params)
+        start_bpm, peak_time, recovery_time = _run_preliminary_pass(
+            default_envelope, default_sr, params, noise_floor, troughs, start_bpm_hint
+        )
+        logging.info("--- STAGE 3: Main Analysis Pass (for BPM curve) ---")
+        classifier = PeakClassifier(
+            default_envelope, default_sr, params, start_bpm,
+            noise_floor, troughs, peak_time, recovery_time
+        )
+        _s1_peaks, _all_raw, default_analysis_data = classifier.classify_peaks()
+        _default_final, default_analysis_data = _refine_and_correct_peaks(
+            _s1_peaks, _all_raw, default_analysis_data, default_envelope, default_sr, params
+        )
+        heart_rate_curve = default_analysis_data.get("long_term_bpm_series")
+        if heart_rate_curve is None or (hasattr(heart_rate_curve, "__len__") and len(heart_rate_curve) == 0):
+            logging.info("No BPM curve from default pipeline; Springer will use global HR from autocorrelation.")
+
+        # Springer path: raw/resampled PCG at Springer Fs, time-varying duration model from BPM curve.
         model_path = (params.get("springer_model_path") or "").strip()
         if not model_path or not os.path.isfile(model_path):
             logging.error(
@@ -2473,6 +2492,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
             model["pi_vector"],
             model["total_obs_distribution"],
             options=options,
+            heart_rate_curve=heart_rate_curve,
             return_debug=True,
             return_viz_data=True,
         )

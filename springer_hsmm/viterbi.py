@@ -2,12 +2,16 @@
 Duration-dependent Viterbi decoding for the 4-state HSMM.
 
 Translated from viterbiDecodePCG_Springer.m
+Supports time-varying heart rate: pass heart_rate as np.ndarray (length T) for per-frame HR.
 """
 
 import numpy as np
 from scipy.stats import multivariate_normal
 
 from springer_hsmm.durations import get_duration_distributions
+
+# Minimum HR (BPM) used when computing max_duration and when clamping time-varying HR
+_HR_MIN_BPM = 20.0
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -54,33 +58,14 @@ def _observation_probs(
     return obs_probs, posteriors
 
 
-def viterbi_decode_pcg_springer(
-    observation_sequence: np.ndarray,
-    pi_vector: np.ndarray,
-    B_matrix: list[np.ndarray],
-    total_obs_distribution: tuple[np.ndarray, np.ndarray],
+def _build_duration_probs_for_hr(
     heart_rate: float,
     systolic_time: float,
-    Fs: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Extended Viterbi for duration-dependent HSMM. Returns delta, psi, qt, observation_probs, posteriors.
-    qt is the state sequence 1..4 for frames 0..T-1.
-    observation_probs has shape (T, 4): per-frame emission b_j(O_t) = P(O_t|state j).
-    posteriors has shape (T, 4): P(state j|O_t) from LR, for debug (high when that state is happening).
-    """
-    total_obs_mean, total_obs_cov = total_obs_distribution
-    if total_obs_cov.ndim == 1:
-        total_obs_cov = np.diag(np.atleast_1d(total_obs_cov))
-    T, _ = observation_sequence.shape
-    N = 4
-    max_duration_D = int(round((60.0 / max(heart_rate, 20.0)) * Fs))
-
-    observation_probs, posteriors = _observation_probs(
-        observation_sequence, B_matrix, pi_vector, total_obs_mean, total_obs_cov
-    )
-    observation_probs = np.clip(observation_probs, 1e-300, None)
-
+    N: int,
+    max_duration_D: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build (duration_probs (N, max_duration_D+1), duration_sum (N,)) for one HR value."""
+    hr = max(float(heart_rate), 1e-6)
     (
         d_distributions,
         min_S1,
@@ -91,7 +76,7 @@ def viterbi_decode_pcg_springer(
         max_systole,
         min_diastole,
         max_diastole,
-    ) = get_duration_distributions(heart_rate, systolic_time)
+    ) = get_duration_distributions(hr, systolic_time)
 
     duration_probs = np.zeros((N, max_duration_D + 1))
     for state_j in range(N):
@@ -128,6 +113,70 @@ def viterbi_decode_pcg_springer(
                     ) / (std_d * np.sqrt(2 * np.pi))
     duration_sum = np.sum(duration_probs, axis=1, keepdims=True)
     duration_sum = np.maximum(duration_sum, 1e-300)
+    return duration_probs, duration_sum.squeeze(axis=1)
+
+
+def viterbi_decode_pcg_springer(
+    observation_sequence: np.ndarray,
+    pi_vector: np.ndarray,
+    B_matrix: list[np.ndarray],
+    total_obs_distribution: tuple[np.ndarray, np.ndarray],
+    heart_rate: float | np.ndarray,
+    systolic_time: float,
+    Fs: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extended Viterbi for duration-dependent HSMM. Returns delta, psi, qt, observation_probs, posteriors.
+    qt is the state sequence 1..4 for frames 0..T-1.
+    observation_probs has shape (T, 4): per-frame emission b_j(O_t) = P(O_t|state j).
+    posteriors has shape (T, 4): P(state j|O_t) from LR, for debug (high when that state is happening).
+
+    heart_rate : float or np.ndarray
+        If float, single global HR (BPM) for the whole recording.
+        If np.ndarray of length T (number of feature frames), per-frame HR for time-varying duration model.
+    """
+    total_obs_mean, total_obs_cov = total_obs_distribution
+    if total_obs_cov.ndim == 1:
+        total_obs_cov = np.diag(np.atleast_1d(total_obs_cov))
+    T, _ = observation_sequence.shape
+    N = 4
+
+    hr_is_array = isinstance(heart_rate, np.ndarray) and heart_rate.ndim >= 1
+    if hr_is_array:
+        hr_flat = np.asarray(heart_rate).flatten()
+        if hr_flat.size != T:
+            hr_is_array = False
+            heart_rate = float(np.clip(np.nanmean(hr_flat), _HR_MIN_BPM, 300.0))
+        else:
+            hr_at_frame = np.clip(hr_flat.astype(np.float64), _HR_MIN_BPM, 300.0)
+            hr_min = float(np.nanmin(hr_at_frame))
+            heart_rate_scalar = max(hr_min, _HR_MIN_BPM)
+
+    if not hr_is_array:
+        heart_rate_scalar = max(float(heart_rate), _HR_MIN_BPM)
+
+    max_duration_D = int(round((60.0 / heart_rate_scalar) * Fs))
+    max_duration_D = max(max_duration_D, 10)
+
+    observation_probs, posteriors = _observation_probs(
+        observation_sequence, B_matrix, pi_vector, total_obs_mean, total_obs_cov
+    )
+    observation_probs = np.clip(observation_probs, 1e-300, None)
+
+    if hr_is_array:
+        duration_probs_by_frame = np.zeros((T, N, max_duration_D + 1), dtype=np.float64)
+        duration_sum_by_frame = np.zeros((T, N), dtype=np.float64)
+        for i in range(T):
+            dp, ds = _build_duration_probs_for_hr(
+                hr_at_frame[i], systolic_time, N, max_duration_D
+            )
+            duration_probs_by_frame[i] = dp
+            duration_sum_by_frame[i] = ds
+    else:
+        duration_probs, duration_sum_1d = _build_duration_probs_for_hr(
+            heart_rate_scalar, systolic_time, N, max_duration_D
+        )
+        duration_sum = np.maximum(duration_sum_1d, 1e-300)
 
     size_delta = T + max_duration_D - 1
     delta = np.full((size_delta, N), -np.inf)
@@ -159,7 +208,14 @@ def viterbi_decode_pcg_springer(
                     prod_prob = np.finfo(float).tiny
                 emission_probs = np.log(prod_prob)
 
-                dur_prob = duration_probs[j, d] / duration_sum[j, 0]
+                if hr_is_array:
+                    center = max(0, min(T - 1, t - d // 2))
+                    dur_prob = (
+                        duration_probs_by_frame[center, j, d]
+                        / duration_sum_by_frame[center, j]
+                    )
+                else:
+                    dur_prob = duration_probs[j, d] / duration_sum[j]
                 if dur_prob <= 0:
                     dur_prob = np.finfo(float).tiny
                 delta_temp = max_delta + emission_probs + np.log(dur_prob)
