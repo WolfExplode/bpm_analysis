@@ -61,9 +61,10 @@ def _run_preliminary_pass(audio_envelope: np.ndarray, sample_rate: int, params: 
                           noise_floor: pd.Series, troughs: np.ndarray,
                           start_bpm_hint: Optional[float],
                           band_envelopes: Optional[Dict[str, np.ndarray]] = None,
-                          ) -> Tuple[float, Optional[float], Optional[float]]:
+                          ) -> Tuple[float, Optional[float], Optional[float], np.ndarray, pd.Series, np.ndarray]:
     """
     Runs a high-confidence first pass to estimate global BPM and find the recovery phase.
+    Returns (start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, prelim_bpm_series, prelim_bpm_times).
     """
     logging.info("--- STAGE 2: Running High-Confidence pass to find anchor beats ---")
     params_pass_1 = params.copy()
@@ -88,7 +89,7 @@ def _run_preliminary_pass(audio_envelope: np.ndarray, sample_rate: int, params: 
     prelim_bpm_series, prelim_bpm_times = calculate_bpm_series(anchor_beats, sample_rate, params)
     peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(prelim_bpm_series, prelim_bpm_times, params)
 
-    return start_bpm, peak_bpm_time_sec, recovery_end_time_sec
+    return start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, prelim_bpm_series, prelim_bpm_times
 
 
 def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
@@ -110,7 +111,7 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
     # iterative correction loop
     # Safety cap: in practice 1-2 passes suffice; 5 prevents a runaway loop if
     # the corrections destabilize and re-introduce the same errors each time.
-    max_iterations = 5
+    max_iterations = 1
     for i in range(max_iterations):
         logging.info(f"Correction Pass Iteration {i + 1}...")
 
@@ -202,9 +203,30 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     # STAGE 1: Initialization
     audio_envelope, sample_rate, band_envelopes, noise_floor, troughs = preprocess_audio(wav_file_path, params, output_directory, output_options)
 
-    start_bpm, peak_time, recovery_time = _run_preliminary_pass(
+    start_bpm, peak_time, recovery_time, anchor_beats, prelim_bpm_series, prelim_bpm_times = _run_preliminary_pass(
         audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint, band_envelopes
     )
+
+    # Preliminary pass plot (simple: envelope + anchor beats + BPM series); skip when only last pass requested
+    _opts = output_options if output_options is not None else DEFAULT_OUTPUT_OPTIONS.copy()
+    if _opts.get("html", True) and _opts.get("output_all_passes", True):
+        plotter_prelim = Plotter(
+            original_file_path,
+            params,
+            sample_rate,
+            output_directory,
+            source_audio_path=wav_file_path,
+        )
+        base_name = os.path.basename(os.path.splitext(original_file_path)[0])
+        prelim_html_path = os.path.join(output_directory, f"{base_name}_preliminary.html")
+        plotter_prelim.plot_preliminary_save(
+            audio_envelope,
+            anchor_beats,
+            prelim_bpm_series,
+            prelim_bpm_times,
+            _opts,
+            prelim_html_path,
+        )
 
     # STAGE 3: Main Analysis, now informed by the preliminary pass
     logging.info("--- STAGE 3: Running Main Analysis Pass ---")
@@ -218,6 +240,31 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     if band_envelopes is not None:
         analysis_data["s1_band"] = band_envelopes.get("s1_band")
         analysis_data["s2_band"] = band_envelopes.get("s2_band")
+
+    # Set default output options if none provided (needed for pass1/pass2 plot decisions)
+    if output_options is None:
+        output_options = DEFAULT_OUTPUT_OPTIONS.copy()
+    needs_plot_outputs = any([
+        output_options.get('html', True),
+        output_options.get('png', False),
+        output_options.get('csv', True),
+    ])
+    plotter = None
+
+    # Pass1 plot: main classifier output (before refinement); skip when only last pass requested
+    output_all_passes = output_options.get("output_all_passes", True)
+    if needs_plot_outputs and output_all_passes and len(s1_peaks) >= 2:
+        plotter = Plotter(
+            original_file_path,
+            params,
+            sample_rate,
+            output_directory,
+            source_audio_path=wav_file_path,
+        )
+        metrics_pass1 = _calculate_final_metrics(s1_peaks, sample_rate, params)
+        plotter.plot_and_save(
+            audio_envelope, all_raw_peaks, analysis_data, metrics_pass1, output_options, output_suffix="_pass1"
+        )
 
     # STAGE 4 & 5: Correction and Refinement
     final_peaks, analysis_data = _refine_and_correct_peaks(
@@ -259,36 +306,28 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
             e,
         )
 
-    # Set default output options if none provided
-    if output_options is None:
-        output_options = DEFAULT_OUTPUT_OPTIONS.copy()
-
     plotly_figure = None
 
-    # Generate plot outputs if requested (HTML/PNG/CSV share the same figure generation)
-    needs_plot_outputs = any([
-        output_options.get('html', True),
-        output_options.get('png', False),
-        output_options.get('csv', True),
-    ])
-
-    if needs_plot_outputs:
-        plotter = Plotter(
-            original_file_path,
-            params,
-            sample_rate,
-            output_directory,
-            source_audio_path=wav_file_path,
+    # Pass2 plot: after refinement
+    if needs_plot_outputs and len(final_peaks) >= 2:
+        if plotter is None:
+            plotter = Plotter(
+                original_file_path,
+                params,
+                sample_rate,
+                output_directory,
+                source_audio_path=wav_file_path,
+            )
+        plotly_figure = plotter.plot_and_save(
+            audio_envelope, all_raw_peaks, analysis_data, final_metrics, output_options, output_suffix="_pass2"
         )
-        plotly_figure = plotter.plot_and_save(audio_envelope, all_raw_peaks, analysis_data, final_metrics, output_options)
-    else:
+    elif not needs_plot_outputs:
         logging.info("Skipping all plot outputs (HTML/PNG/CSV) as requested.")
 
     # Generate other outputs if requested
     needs_reporter = any([
         output_options.get('summary', True),
         output_options.get('debug', True),
-        output_options.get('bpm_text', False),
     ])
 
     if needs_reporter:
@@ -303,11 +342,6 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
             reporter.create_chronological_log(audio_envelope, sample_rate, all_raw_peaks, analysis_data, final_metrics)
         else:
             logging.info("Skipping debug log generation as requested.")
-
-        if output_options.get('bpm_text', False):
-            reporter.save_bpm_time_txt(final_metrics.get('smoothed_bpm'), final_metrics.get('bpm_times'))
-        else:
-            logging.info("Skipping BPM text export as requested.")
     else:
         logging.info("Skipping all report generation as requested.")
 

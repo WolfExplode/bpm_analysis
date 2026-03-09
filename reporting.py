@@ -228,20 +228,4 @@ class ReportGenerator:
         else:
             f.write("| *No data* | *No data* |\n")
 
-    def save_bpm_time_txt(self, smoothed_bpm, bpm_times):
-        """Exports the time-aligned BPM series using tilde delimiters."""
-        if smoothed_bpm is None or smoothed_bpm.empty or bpm_times is None:
-            logging.info("Skipping BPM text export; no BPM data available.")
-            return
-
-        output_path = os.path.join(self.output_directory, f"{self.base_name}_HbPerBpm.txt")
-        try:
-            with open(output_path, "w", encoding="utf-8") as f:
-                for t, bpm in zip(bpm_times, smoothed_bpm.values):
-                    if np.isnan(bpm):
-                        continue
-                    f.write(f"{t:.1f}~{bpm:.1f}~\n")
-            logging.info(f"Tilde-delimited BPM export saved to {output_path}")
-        except Exception as e:
-            logging.error(f"Failed to save BPM text export: {e}")
 

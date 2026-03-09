@@ -33,16 +33,15 @@ class UIMessage:
 # Order and labels for output file checkboxes (keys must match DEFAULT_OUTPUT_OPTIONS in config).
 # First 8 in 2-column grid, 9th full width. Default values come from config only.
 OUTPUT_FILE_OPTIONS = (
-    ("html", "Heart Rate Graph (HTML File)"),
-    ("png", "Plot PNG (auto-export)"),
-    ("csv", "CSV Data"),
-    ("spectrogram", "HTML Spectrogram"),
-    ("fft_profiles", "S1/S2 FFT Profiles (HTML)"),
-    ("summary", "Summary Report"),
-    ("debug", "Debug Report"),
-    ("filtered_wav", "Filtered Audio WAV"),
-    ("bpm_text", "BPM Time Text"),
-    ("regression_log", "Regression testing output log (Markdown)"),
+    ("html", "Heart Rate Graph (.html)"),
+    ("fft_profiles", "S1/S2 FFT Profiles (.html)"),
+    ("png", "Plot PNG (.png)"),
+    ("csv", "bpm/time Data (.csv)"),
+    ("spectrogram", "Spectrogram (.png)"), 
+    ("summary", "Summary Report (.md)"),
+    ("filtered_wav", "Filtered Audio (.wav)"),
+    ("debug", "Debug Report (.md)"),
+    ("regression_log", "Regression testing output log (.md)"),
 )
 
 
@@ -100,79 +99,85 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
 
-        # Verbose console logging option
-        self.verbose_console_logging = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            param_frame,
-            text="Verbose console logging (detailed algorithm messages)",
-            variable=self.verbose_console_logging,
-            command=self.save_ui_settings,
-        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(2, 0))
-
         # Output file options (defaults from config only)
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
             setattr(self, "output_" + opt_key, tk.BooleanVar(value=DEFAULT_OUTPUT_OPTIONS.get(opt_key, False)))
-        # Long-plot optimization (HTML debug traces)
         self.optimize_long_plots = tk.BooleanVar(value=False)
-        # Output location option
         self.output_to_input_dir = tk.BooleanVar(value=False)
+        self.output_all_passes = tk.BooleanVar(value=True)
+        self.verbose_console_logging = tk.BooleanVar(value=True)
 
-        # Output files section
+        # Output files section — left column then right column (top to bottom each)
         output_frame = ttk.LabelFrame(main_frame, text="Output Files", padding="10")
         output_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
 
-        # Output file checkboxes (driven from OUTPUT_FILE_OPTIONS)
+        n_opts = len(OUTPUT_FILE_OPTIONS)
+        half = (n_opts + 1) // 2
+
         def on_output_change(*args):
-            self._update_output_status()
             self.save_ui_settings()
 
-        for i, (opt_key, label) in enumerate(OUTPUT_FILE_OPTIONS):
-            var = getattr(self, "output_" + opt_key)
-            full_width = i >= 8
-            ttk.Checkbutton(
-                output_frame, text=label, variable=var, command=self._update_output_status
-            ).grid(
-                row=i // 2 if i < 8 else 4 + (i - 8),
-                column=0 if full_width else i % 2,
-                columnspan=2 if full_width else 1,
-                sticky="w",
-                padx=(0, 20),
-            )
-            var.trace("w", on_output_change)
+        for i in range(half):
+            for col, idx in enumerate([i, i + half]):
+                if idx >= n_opts:
+                    break
+                opt_key, label = OUTPUT_FILE_OPTIONS[idx]
+                var = getattr(self, "output_" + opt_key)
+                ttk.Checkbutton(
+                    output_frame, text=label, variable=var, command=self.save_ui_settings
+                ).grid(row=i, column=col, sticky="w", padx=(0, 20))
+                var.trace("w", on_output_change)
 
-        # Long-plot optimization option (does not change output type counts)
-        ttk.Checkbutton(
-            output_frame,
-            text="Optimize long HTML plots (>10 min): hide detailed debug traces to reduce file size",
-            variable=self.optimize_long_plots,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(10, 0))
-
-        # Output location option (does not change output type counts)
+        # Output location
         ttk.Checkbutton(
             output_frame,
             text="Save outputs next to input files (instead of 'processed_files')",
             variable=self.output_to_input_dir,
-        ).grid(row=7, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(10, 0))
+            command=self.save_ui_settings,
+        ).grid(row=half, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(8, 0))
 
         # Select All/None buttons
         btn_frame_output = ttk.Frame(output_frame)
-        btn_frame_output.grid(row=8, column=0, columnspan=2, pady=(10, 0))
-        ttk.Button(btn_frame_output, text="Select All", command=self.select_all_outputs, 
+        btn_frame_output.grid(row=half + 1, column=0, columnspan=2, pady=(10, 0))
+        ttk.Button(btn_frame_output, text="Select All", command=self.select_all_outputs,
                   bootstyle=SECONDARY).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(btn_frame_output, text="Select None", command=self.select_none_outputs, 
+        ttk.Button(btn_frame_output, text="Select None", command=self.select_none_outputs,
                   bootstyle=SECONDARY).grid(row=0, column=1)
 
-        # Output status label
-        self.output_status_label = ttk.Label(output_frame, text="", font=("TkDefaultFont", 9))
-        self.output_status_label.grid(row=9, column=0, columnspan=2, pady=(5, 0))
-
-        # Bind non-output-type options to save only (no status label update)
         self.output_to_input_dir.trace("w", lambda *args: self.save_ui_settings())
+
+        # Debugging options
+        debug_frame = ttk.LabelFrame(main_frame, text="Debugging Options", padding="10")
+        debug_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+
+        ttk.Checkbutton(
+            debug_frame,
+            text="Verbose console logging (detailed algorithm messages)",
+            variable=self.verbose_console_logging,
+            command=self.save_ui_settings,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=(0, 20))
+
+        ttk.Checkbutton(
+            debug_frame,
+            text="Optimize long HTML plots over 10 min by hiding detailed debug traces to reduce file size",
+            variable=self.optimize_long_plots,
+            command=self.save_ui_settings,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+
+        ttk.Checkbutton(
+            debug_frame,
+            text="Output all passes (preliminary, pass1, pass2)",
+            variable=self.output_all_passes,
+            command=self.save_ui_settings,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+
+        self.verbose_console_logging.trace("w", lambda *args: self.save_ui_settings())
         self.optimize_long_plots.trace("w", lambda *args: self.save_ui_settings())
+        self.output_all_passes.trace("w", lambda *args: self.save_ui_settings())
 
         # Action Buttons
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=3, column=0, sticky="ew", pady=20)
+        btn_frame.grid(row=4, column=0, sticky="ew", pady=20)
         self.analyze_btn = ttk.Button(btn_frame, text="Analyze", command=self.start_analysis_thread, bootstyle=SUCCESS, state=tk.DISABLED)
         self.analyze_btn.pack(side=tk.RIGHT, padx=5)
         self.open_html_btn = ttk.Button(btn_frame, text="Open Last HTML Report", command=self.open_last_html, bootstyle=INFO)
@@ -181,7 +186,7 @@ class BPMApp:
         # Status Bar
         self.status_var = tk.StringVar(value="Select one or more audio files to begin.")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=5)
-        status_bar.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        status_bar.grid(row=5, column=0, sticky="ew", pady=(10, 0))
 
         # Configure grid weights
         self.root.grid_rowconfigure(0, weight=1)
@@ -191,6 +196,7 @@ class BPMApp:
         param_frame.columnconfigure(1, weight=1)
         output_frame.columnconfigure(0, weight=1)
         output_frame.columnconfigure(1, weight=1)
+        debug_frame.columnconfigure(0, weight=1)
 
     def _fit_window_to_content(self):
         """Resize the window to fit the current content (all visible elements)."""
@@ -308,7 +314,7 @@ class BPMApp:
     _SETTINGS_VAR_KEYS = (
         ('process_all_channels', 'verbose_console_logging')
         + tuple('output_' + k for k, _ in OUTPUT_FILE_OPTIONS)
-        + ('optimize_long_plots', 'output_to_input_dir')
+        + ('optimize_long_plots', 'output_to_input_dir', 'output_all_passes')
     )
 
     def save_ui_settings(self):
@@ -358,11 +364,12 @@ class BPMApp:
             return
         
         # Find all HTML report files (BPM plot or FFT profiles); open the most recent
-        html_suffixes = ("_bpm_plot.html", "_fft_profiles.html")
+        # Open the most recently modified HTML report (preliminary, pass1, pass2, or FFT)
+        html_suffixes = ("_preliminary.html", "_pass1.html", "_pass2.html", "_fft_profiles.html")
         html_files = []
         try:
             for filename in os.listdir(output_dir):
-                if any(filename.endswith(suffix) for suffix in html_suffixes):
+                if filename.endswith(".html") and any(filename.endswith(suffix) for suffix in html_suffixes):
                     file_path = os.path.join(output_dir, filename)
                     mtime = os.path.getmtime(file_path)
                     html_files.append((mtime, file_path, filename))
@@ -407,20 +414,9 @@ class BPMApp:
 
     def get_output_options(self):
         """Get the current output file selection as a dictionary (keys match config.DEFAULT_OUTPUT_OPTIONS)."""
-        return {opt_key: getattr(self, "output_" + opt_key).get() for opt_key, _ in OUTPUT_FILE_OPTIONS}
-
-    def _update_output_status(self, *args):
-        """Update the output status label based on current selections."""
-        output_options = self.get_output_options()
-        selected_count = sum(output_options.values())
-        total_count = len(output_options)
-        
-        if selected_count == 0:
-            self.output_status_label.config(text="No output types selected", foreground="red")
-        elif selected_count == total_count:
-            self.output_status_label.config(text="All output types selected", foreground="green")
-        else:
-            self.output_status_label.config(text=f"{selected_count}/{total_count} output types selected", foreground="orange")
+        opts = {opt_key: getattr(self, "output_" + opt_key).get() for opt_key, _ in OUTPUT_FILE_OPTIONS}
+        opts["output_all_passes"] = self.output_all_passes.get()
+        return opts
 
     def start_analysis_thread(self):
         """Starts the analysis in a new thread."""

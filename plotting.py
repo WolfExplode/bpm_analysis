@@ -127,8 +127,12 @@ class Plotter:
         analysis_data: Dict,
         final_metrics: Dict,
         output_options: Optional[Dict] = None,
+        output_suffix: Optional[str] = None,
     ):
-        """Generates and saves the main analysis plot by calling helper methods."""
+        """Generates and saves the main analysis plot by calling helper methods.
+        output_suffix: if provided (e.g. '_pass1', '_pass2'), used for HTML/PNG/CSV filenames instead of '_bpm_plot'.
+        """
+        self.fig = make_subplots(specs=[[{"secondary_y": True}]])
         self.time_axis_sec = np.arange(len(audio_envelope)) / self.sample_rate
         self.audio_duration_sec = self.time_axis_sec[-1] if len(self.time_axis_sec) > 0 else 0
         
@@ -169,8 +173,9 @@ class Plotter:
         self._configure_layout()
 
         base_name = os.path.basename(os.path.splitext(self.file_name)[0])
-        output_html_path = os.path.join(self.output_directory, f"{base_name}_bpm_plot.html")
-        output_png_path = os.path.join(self.output_directory, f"{base_name}_bpm_plot.png")
+        suffix = output_suffix if output_suffix is not None else "_bpm_plot"
+        output_html_path = os.path.join(self.output_directory, f"{base_name}{suffix}.html")
+        output_png_path = os.path.join(self.output_directory, f"{base_name}{suffix}.png")
         plot_title = f"Heartbeat Analysis - {os.path.basename(self.file_name)}"
         plot_config = {
             "scrollZoom": True,
@@ -236,7 +241,7 @@ class Plotter:
             smoothed_bpm = final_metrics.get("smoothed_bpm")
             bpm_times = final_metrics.get("bpm_times")
             if smoothed_bpm is not None and not smoothed_bpm.empty and bpm_times is not None:
-                csv_path = os.path.join(self.output_directory, f"{base_name}_bpm_plot.csv")
+                csv_path = os.path.join(self.output_directory, f"{base_name}{suffix}.csv")
                 try:
                     with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
                         writer = csv.writer(csvfile)
@@ -251,6 +256,163 @@ class Plotter:
             logging.info("Skipping CSV generation as requested.")
 
         return self.fig
+
+    def _loess(
+        self,
+        t_evals: np.ndarray,
+        t_data: np.ndarray,
+        y_data: np.ndarray,
+        frac: float = 0.2,
+        degree: int = 1,
+    ) -> np.ndarray:
+        """LOESS: weighted local polynomial fit. For each t in t_evals, fit polynomial to nearby (t_data, y_data) with tricube weights; return fitted values."""
+        t_evals = np.asarray(t_evals, dtype=float)
+        t_data = np.asarray(t_data, dtype=float)
+        y_data = np.asarray(y_data, dtype=float)
+        n = len(t_data)
+        k = max(degree + 1, min(n, int(np.ceil(frac * n))))
+        y_out = np.zeros(len(t_evals), dtype=float)
+        for i, t in enumerate(t_evals):
+            dist = np.abs(t_data - t)
+            idx = np.argsort(dist)[:k]
+            d_max = float(dist[idx[-1]])
+            if d_max < 1e-9:
+                y_out[i] = float(np.mean(y_data[idx]))
+            else:
+                w = (1 - (dist[idx] / d_max) ** 3) ** 3
+                p = np.polyfit(t_data[idx], y_data[idx], degree, w=w)
+                y_out[i] = float(np.polyval(p, t))
+        return y_out
+
+    def plot_preliminary_save(
+        self,
+        audio_envelope: np.ndarray,
+        anchor_beats: np.ndarray,
+        bpm_series: pd.Series,
+        bpm_times: np.ndarray,
+        output_options: Optional[Dict] = None,
+        output_html_path: Optional[str] = None,
+    ):
+        """
+        Builds and saves a simple preliminary-pass plot: envelope, anchor beat markers, and BPM series.
+        """
+        self.time_axis_sec = np.arange(len(audio_envelope), dtype=float) / self.sample_rate
+        self.audio_duration_sec = float(self.time_axis_sec[-1]) if len(self.time_axis_sec) > 0 else 0.0
+        base_name = os.path.basename(os.path.splitext(self.file_name)[0])
+        if output_html_path is None:
+            output_html_path = os.path.join(self.output_directory, f"{base_name}_preliminary.html")
+
+        html_requested = True if output_options is None else output_options.get("html", True)
+        if not html_requested:
+            logging.info("Skipping preliminary HTML as requested.")
+            return
+
+        self.spectrogram_enabled = False
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        time_axis_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in self.time_axis_sec])
+
+        factor = self.params.get("plot_downsample_factor", 5)
+        plot_time = time_axis_dt[::factor] if factor > 1 and len(time_axis_dt) >= factor else time_axis_dt
+        plot_envelope = audio_envelope[::factor] if factor > 1 and len(audio_envelope) >= factor else audio_envelope
+        fig.add_trace(
+            go.Scatter(x=plot_time, y=plot_envelope, name="Audio Envelope", line=dict(color="#47a5c4")),
+            secondary_y=False,
+        )
+
+        if len(anchor_beats) > 0:
+            in_bounds = (anchor_beats >= 0) & (anchor_beats < len(audio_envelope))
+            ab = anchor_beats[in_bounds]
+            if len(ab) > 0:
+                anchor_times_sec = ab.astype(float) / self.sample_rate
+                anchor_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in anchor_times_sec])
+                y_at_beats = np.asarray(audio_envelope)[ab]
+                fig.add_trace(
+                    go.Scatter(
+                        x=anchor_times_dt,
+                        y=y_at_beats,
+                        name="Anchor beats",
+                        mode="markers",
+                        marker=dict(symbol="diamond", size=8, color="orange"),
+                    ),
+                    secondary_y=False,
+                )
+
+        # Instant BPM from consecutive anchor beats (scatter, no smoothing); remove local outliers via median + MAD
+        if len(anchor_beats) >= 2:
+            rr_sec = np.diff(anchor_beats.astype(float)) / self.sample_rate
+            valid = rr_sec > 1e-6
+            if np.any(valid):
+                instant_bpm = 60.0 / rr_sec[valid]
+                times_sec = (anchor_beats[1:] / self.sample_rate)[valid]
+                # Local window 10s: keep point if within median ± k*MAD of BPM in [t-10, t+10]
+                half_window_sec = float(self.params.get("prelim_bpm_outlier_window_sec", 10.0))
+                mad_k = float(self.params.get("prelim_bpm_outlier_mad_k", 2.5))
+                keep = np.ones(len(instant_bpm), dtype=bool)
+                for i in range(len(instant_bpm)):
+                    in_window = np.abs(times_sec - times_sec[i]) <= half_window_sec
+                    if not np.any(in_window):
+                        continue
+                    local_median = np.median(instant_bpm[in_window])
+                    local_mad = np.median(np.abs(instant_bpm[in_window] - local_median))
+                    if local_mad > 1e-9:
+                        keep[i] = np.abs(instant_bpm[i] - local_median) <= mad_k * local_mad
+                instant_bpm = instant_bpm[keep]
+                times_sec = times_sec[keep]
+                times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in times_sec])
+                # Scatter: instant BPM points (after outlier removal)
+                fig.add_trace(
+                    go.Scatter(
+                        x=times_dt,
+                        y=instant_bpm,
+                        name="Instant BPM (preliminary)",
+                        mode="markers",
+                        marker=dict(size=6, color="#e74c3c", symbol="circle"),
+                    ),
+                    secondary_y=True,
+                )
+                # LOESS curve of best fit, plotted as "BPM (preliminary)"
+                if len(times_sec) >= 3:
+                    loess_frac = float(self.params.get("prelim_bpm_loess_frac", 0.2))
+                    t_plot = np.linspace(float(times_sec.min()), float(times_sec.max()), 200)
+                    y_loess = self._loess(t_plot, times_sec, instant_bpm, frac=loess_frac)
+                    t_plot_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in t_plot])
+                    fig.add_trace(
+                        go.Scatter(
+                            x=t_plot_dt,
+                            y=y_loess,
+                            name="BPM (preliminary)",
+                            mode="lines",
+                            line=dict(color="orange", width=2),
+                        ),
+                        secondary_y=True,
+                    )
+                self.bpm_axis_center = float(np.median(instant_bpm)) if len(instant_bpm) > 0 else float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
+            else:
+                self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
+        else:
+            self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
+
+        self.fig = fig
+        if not (len(anchor_beats) >= 2 and np.any(np.diff(anchor_beats.astype(float)) / self.sample_rate > 1e-6)):
+            if bpm_series is not None and not bpm_series.empty:
+                self.bpm_axis_center = float(bpm_series.mean())
+            else:
+                self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
+        self._configure_layout()
+
+        plot_title = f"Preliminary pass - {os.path.basename(self.file_name)}"
+        plot_config = {
+            "scrollZoom": True,
+            "toImageButtonOptions": {"filename": plot_title, "format": "png", "scale": 2},
+            "showTips": False,
+        }
+        plotly_html = self.fig.to_html(config=plot_config, full_html=False, include_plotlyjs="cdn")
+        custom_html = self._generate_custom_html(plotly_html, plot_title, base_name)
+        with open(output_html_path, "w", encoding="utf-8") as f:
+            f.write(custom_html)
+        logging.info(f"Preliminary pass plot saved to {output_html_path}")
+
+        self.fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     def _prepare_bpm_axis_center(self, final_metrics: Dict):
         """Use detected BPM stats to keep the BPM axis centered without altering the per-file zoom."""

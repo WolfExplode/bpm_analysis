@@ -74,7 +74,7 @@ DEFAULT_PARAMS = {
     # =================================================================================
     # --- 4.1. Core Pairing Rules ---
     "pairing_confidence_threshold": 0.50,          # Confidence score required to classify two peaks as an S1-S2 pair.
-    "preliminary_pass_confidence_threshold": 0.75, # Higher threshold used for the first (anchor-finding) pass only.
+    "preliminary_pass_confidence_threshold": 0.7, # threshold used for the first (anchor-finding) pass only.
     "s1_s2_interval_cap_sec": 0.4,        # The absolute maximum time (seconds) allowed between S1 and S2.
     "min_s1_s2_interval_sec": 0.10,           # Absolute minimum (100ms)
     "min_s1_s2_interval_rr_fraction": 0.23,   # Or 23% of total RR interval
@@ -186,6 +186,9 @@ DEFAULT_PARAMS = {
     "plot_amplitude_scale_factor": 250.0,    # Adjusts the default y-axis range of the signal amplitude plot.
     # In plotting.py: avoid dashed lines (dash=...) for line traces--they cause noticeable lag.
     "plot_downsample_factor": 4,             # Downsample only large traces: Audio Envelope and Dynamic Noise Floor (keep 1 of every N points). Does NOT apply to Average S1/S2 contractility, BPM, HRV, or markers.
+    "prelim_bpm_outlier_window_sec": 10.0,   # Half-window (seconds) for preliminary BPM outlier removal: keep point if within median ± k*MAD in [t-window, t+window].
+    "prelim_bpm_outlier_mad_k": 2.5,         # Number of MADs: drop preliminary BPM point if |BPM - local_median| > k * local_MAD.
+    "prelim_bpm_loess_frac": 0.05,            # LOESS fraction of points used for local fit when drawing BPM (preliminary) curve (e.g. 0.2 = 20% nearest points).
     "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
     # --- 7.1. Long Plot Optimization ---
@@ -199,8 +202,8 @@ DEFAULT_PARAMS = {
     "fft_window_ms": 120.0,                      # Time window (ms) centered on each peak for FFT.
     "fft_max_peaks_per_type": 200,               # Max S1 and S2 peaks (each) for FFT; selected by highest pairing confidence. Lone S1s excluded.
     "fft_aggregate_sr": 32000,                   # Sample rate for multi-file FFT aggregation (common grid). Per-file uses native sr.
-    "fft_neutral_band_low_hz": 3000.0,           # Neutral band low (Hz) for S2→S1 alignment (force same level in this band).
-    "fft_neutral_band_high_hz": 5000.0,          # Neutral band high (Hz) for S2→S1 alignment.
+    "fft_neutral_band_low_hz": 10000.0,           # Neutral band low (Hz) for S2→S1 alignment (force same level in this band).
+    "fft_neutral_band_high_hz": 14000.0,          # Neutral band high (Hz) for S2→S1 alignment.
 
     # --- 7.2. Trapezoid Artifact Detection ---
     # These control detection of brief, trapezoid-shaped BPM jumps that are often extra-beat artifacts.
@@ -222,7 +225,6 @@ DEFAULT_OUTPUT_OPTIONS = {
     "summary": True,
     "debug": True,
     "filtered_wav": True,
-    "bpm_text": False,
     "spectrogram": True,
     "fft_profiles": True,
     "regression_log": False,

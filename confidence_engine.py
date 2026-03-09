@@ -124,6 +124,27 @@ def calculate_bpm_intervals(bpm: float, params: Dict) -> Dict[str, float]:
     }
 
 
+# Exponent for reactivity power law; higher = sharper slowdown near HR_max. Kept as variable for future tuning.
+REACTIVITY_POWER_EXPONENT = 2.0
+
+
+def hr_reactivity_factor(hr: float, hr_max: float, hr_rest: float, C: float = REACTIVITY_POWER_EXPONENT) -> float:
+    """
+    Power-law reactivity factor: as HR approaches HR_max, allowed rate of increase goes to zero.
+
+    reactivity_factor(HR) = ((HR_max - HR) / (HR_max - HR_rest))^C
+
+    When HR is low (near rest), factor is 1 (full reactivity). When HR is near max, factor -> 0
+    (heart cannot increase much more). C controls sharpness; default 2.
+    """
+    reserve = hr_max - hr_rest
+    if reserve <= 0:
+        return 1.0
+    ratio = (hr_max - hr) / reserve
+    ratio = np.clip(ratio, 0.0, 1.0)
+    return float(ratio ** C)
+
+
 def update_long_term_bpm(new_rr_sec: float, current_long_term_bpm: float, params: Dict) -> float:
     """Updates the long-term BPM belief based on a new R-R interval."""
     instant_bpm = 60.0 / new_rr_sec
