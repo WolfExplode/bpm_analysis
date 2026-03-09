@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import logging
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional, Any, Callable
 from peak_utils import (
     PeakType,
     get_peak_prominence_details,
@@ -30,9 +30,9 @@ class AnalysisState:
         smoothed_dev_series: Time-indexed series of normalized peak-to-peak amplitude
             deviations, smoothed over time. This captures rhythm stability and is used
             as context when reasoning about sudden changes in the waveform.
-        long_term_bpm: Slowly adapting belief about the underlying heart rate, updated
-            by `update_long_term_bpm()`. This is the BPM value the algorithm trusts when
-            computing expected S1-S2 and R-R intervals.
+        long_term_bpm: BPM value used when computing expected S1-S2 and R-R intervals.
+            Set each iteration from the preliminary BPM prior (time-varying) when available;
+            otherwise the initial start_bpm and not updated.
         analysis_data: Bag of analysis artifacts that downstream plotting/reporting
             relies on (e.g., `dynamic_noise_floor_series`, `trough_indices`,
             `deviation_series`, `beat_debug_info`, `long_term_bpm_series`).
@@ -41,8 +41,8 @@ class AnalysisState:
         beat_debug_info: Mapping from raw peak index to a structured debug record
             explaining how that peak was classified. This powers the debug log and
             interactive plot tooltips.
-        long_term_bpm_history: Sequence of `(time_sec, bpm)` tuples capturing how the
-            long-term BPM belief evolved over the recording.
+        long_term_bpm_history: Sequence of `(time_sec, bpm)` tuples for plotting (BPM trend).
+        prelim_bpm_prior: Optional callable time_sec -> bpm from the preliminary pass curve.
         sorted_troughs: Sorted list of trough indices mirroring `trough_indices`,
             kept in list form for fast neighbor lookups and iteration.
         consecutive_rr_rejections: Count of consecutive Lone S1 rhythm rejections, used
@@ -71,6 +71,7 @@ class AnalysisState:
     candidate_beats: List[int] = field(default_factory=list)
     beat_debug_info: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     long_term_bpm_history: List[Tuple[float, float]] = field(default_factory=list)
+    prelim_bpm_prior: Optional[Callable[[float], float]] = None
     sorted_troughs: List[int] = field(default_factory=list)
     consecutive_rr_rejections: int = 0
     loop_idx: int = 0
@@ -146,20 +147,14 @@ def hr_reactivity_factor(hr: float, hr_max: float, hr_rest: float, C: float = RE
 
 
 def update_long_term_bpm(new_rr_sec: float, current_long_term_bpm: float, params: Dict) -> float:
-    """Updates the long-term BPM belief based on a new R-R interval."""
+    """Updates the long-term BPM belief from a new R-R interval. Only used when no preliminary BPM prior (e.g. preliminary pass)."""
     instant_bpm = 60.0 / new_rr_sec
     lr = params.get("bpm_belief_learning_rate", 0.05)
     max_change_per_beat = params.get("bpm_belief_max_change_per_beat", 3.0)
-
-    # Calculate the target BPM using an exponential moving average
     target_bpm = ((1 - lr) * current_long_term_bpm) + (lr * instant_bpm)
-
-    # Limit how much the BPM can change in a single beat (a "speed limiter")
-    max_change = max_change_per_beat * new_rr_sec  # Scale limit by interval duration
+    max_change = max_change_per_beat * new_rr_sec
     proposed_change = target_bpm - current_long_term_bpm
     limited_change = np.clip(proposed_change, -max_change, max_change)
-
-    # Apply the limited change and enforce absolute min/max BPM boundaries
     new_bpm = current_long_term_bpm + limited_change
     return max(params['min_bpm'], min(new_bpm, params['max_bpm']))
 

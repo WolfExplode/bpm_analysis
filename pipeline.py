@@ -3,7 +3,9 @@ import logging
 import time
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, Callable
+
+from scipy.interpolate import interp1d
 
 from audio_preprocessing import preprocess_audio
 from config import DEFAULT_OUTPUT_OPTIONS
@@ -17,6 +19,7 @@ from validation import (
 from classifier import PeakClassifier
 from hrv import (
     calculate_bpm_series,
+    compute_preliminary_bpm_curve,
     find_recovery_phase,
     detect_trapezoid_discontinuities,
     find_major_hr_inclines,
@@ -61,10 +64,11 @@ def _run_preliminary_pass(audio_envelope: np.ndarray, sample_rate: int, params: 
                           noise_floor: pd.Series, troughs: np.ndarray,
                           start_bpm_hint: Optional[float],
                           band_envelopes: Optional[Dict[str, np.ndarray]] = None,
-                          ) -> Tuple[float, Optional[float], Optional[float], np.ndarray, pd.Series, np.ndarray]:
+                          ) -> Tuple[float, Optional[float], Optional[float], np.ndarray, Optional[Dict], Dict]:
     """
     Runs a high-confidence first pass to estimate global BPM and find the recovery phase.
-    Returns (start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, prelim_bpm_series, prelim_bpm_times).
+    Returns (start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, prelim_bpm, prelim_analysis_data).
+    prelim_bpm is the canonical curve (outlier-filtered + LOESS) used for prior and all plots, or None if insufficient data.
     """
     logging.info("--- STAGE 2: Running High-Confidence pass to find anchor beats ---")
     params_pass_1 = params.copy()
@@ -74,7 +78,7 @@ def _run_preliminary_pass(audio_envelope: np.ndarray, sample_rate: int, params: 
     # Use the classifier for a high-confidence dry run
     classifier = PeakClassifier(audio_envelope, sample_rate, params_pass_1, start_bpm_hint,
                                 noise_floor, troughs, None, None, band_envelopes)
-    anchor_beats, _, _ = classifier.classify_peaks()
+    anchor_beats, _, prelim_analysis_data = classifier.classify_peaks()
 
     global_bpm_estimate = None
     if len(anchor_beats) >= 10:
@@ -86,10 +90,40 @@ def _run_preliminary_pass(audio_envelope: np.ndarray, sample_rate: int, params: 
     # Determine the starting BPM for the main analysis
     start_bpm = start_bpm_hint or global_bpm_estimate or 80.0
 
-    prelim_bpm_series, prelim_bpm_times = calculate_bpm_series(anchor_beats, sample_rate, params)
-    peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(prelim_bpm_series, prelim_bpm_times, params)
+    # Canonical preliminary BPM curve (outlier filter + LOESS) — same data used for prior and all plots
+    prelim_bpm = compute_preliminary_bpm_curve(anchor_beats, sample_rate, params)
+    if prelim_bpm is not None:
+        curve_series = pd.Series(prelim_bpm["curve_bpm"])
+        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(curve_series, prelim_bpm["curve_times"], params)
+    else:
+        prelim_bpm_series, prelim_bpm_times = calculate_bpm_series(anchor_beats, sample_rate, params)
+        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(prelim_bpm_series, prelim_bpm_times, params)
 
-    return start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, prelim_bpm_series, prelim_bpm_times
+    return start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, prelim_bpm, prelim_analysis_data
+
+
+def _build_prelim_bpm_prior(
+    prelim_bpm_times: np.ndarray,
+    prelim_bpm_series: pd.Series,
+) -> Optional[Callable[[float], float]]:
+    """Build a time -> BPM callable from the preliminary BPM series for use as a time-varying prior. Returns None if insufficient data."""
+    if prelim_bpm_times is None or prelim_bpm_series is None or len(prelim_bpm_times) < 2 or prelim_bpm_series.empty:
+        return None
+    times = np.asarray(prelim_bpm_times, dtype=float)
+    values = np.asarray(prelim_bpm_series.values, dtype=float)
+    if len(times) != len(values) or len(times) < 2:
+        return None
+    try:
+        interp = interp1d(
+            times,
+            values,
+            kind="linear",
+            bounds_error=False,
+            fill_value=(float(values[0]), float(values[-1])),
+        )
+        return lambda t_sec: float(interp(t_sec))
+    except Exception:
+        return None
 
 
 def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
@@ -203,11 +237,11 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     # STAGE 1: Initialization
     audio_envelope, sample_rate, band_envelopes, noise_floor, troughs = preprocess_audio(wav_file_path, params, output_directory, output_options)
 
-    start_bpm, peak_time, recovery_time, anchor_beats, prelim_bpm_series, prelim_bpm_times = _run_preliminary_pass(
+    start_bpm, peak_time, recovery_time, anchor_beats, prelim_bpm, prelim_analysis_data = _run_preliminary_pass(
         audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint, band_envelopes
     )
 
-    # Preliminary pass plot (simple: envelope + anchor beats + BPM series); skip when only last pass requested
+    # Preliminary pass plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
     _opts = output_options if output_options is not None else DEFAULT_OUTPUT_OPTIONS.copy()
     if _opts.get("html", True) and _opts.get("output_all_passes", True):
         plotter_prelim = Plotter(
@@ -222,17 +256,30 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
         plotter_prelim.plot_preliminary_save(
             audio_envelope,
             anchor_beats,
-            prelim_bpm_series,
-            prelim_bpm_times,
             _opts,
             prelim_html_path,
+            prelim_analysis_data=prelim_analysis_data,
+            prelim_bpm_data=prelim_bpm,
         )
 
-    # STAGE 3: Main Analysis, now informed by the preliminary pass
+    # STAGE 3: Main Analysis, now informed by the preliminary pass (time-varying BPM prior from canonical curve)
     logging.info("--- STAGE 3: Running Main Analysis Pass ---")
+    prelim_bpm_prior = (
+        _build_prelim_bpm_prior(prelim_bpm["curve_times"], pd.Series(prelim_bpm["curve_bpm"]))
+        if prelim_bpm is not None
+        else None
+    )
     classifier = PeakClassifier(
-        audio_envelope, sample_rate, params, start_bpm,
-        noise_floor, troughs, peak_time, recovery_time, band_envelopes
+        audio_envelope,
+        sample_rate,
+        params,
+        start_bpm,
+        noise_floor,
+        troughs,
+        peak_time,
+        recovery_time,
+        band_envelopes,
+        prelim_bpm_prior=prelim_bpm_prior,
     )
     s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
 
@@ -263,7 +310,14 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
         )
         metrics_pass1 = _calculate_final_metrics(s1_peaks, sample_rate, params)
         plotter.plot_and_save(
-            audio_envelope, all_raw_peaks, analysis_data, metrics_pass1, output_options, output_suffix="_pass1"
+            audio_envelope,
+            all_raw_peaks,
+            analysis_data,
+            metrics_pass1,
+            output_options,
+            output_suffix="_pass1",
+            prelim_bpm_series=pd.Series(prelim_bpm["curve_bpm"]) if prelim_bpm is not None else None,
+            prelim_bpm_times=prelim_bpm["curve_times"] if prelim_bpm is not None else None,
         )
 
     # STAGE 4 & 5: Correction and Refinement
@@ -319,7 +373,14 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                 source_audio_path=wav_file_path,
             )
         plotly_figure = plotter.plot_and_save(
-            audio_envelope, all_raw_peaks, analysis_data, final_metrics, output_options, output_suffix="_pass2"
+            audio_envelope,
+            all_raw_peaks,
+            analysis_data,
+            final_metrics,
+            output_options,
+            output_suffix="_pass2",
+            prelim_bpm_series=pd.Series(prelim_bpm["curve_bpm"]) if prelim_bpm is not None else None,
+            prelim_bpm_times=prelim_bpm["curve_times"] if prelim_bpm is not None else None,
         )
     elif not needs_plot_outputs:
         logging.info("Skipping all plot outputs (HTML/PNG/CSV) as requested.")

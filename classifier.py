@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 import logging
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional, Any, Callable
 
 from confidence_engine import (
     AnalysisState,
@@ -35,7 +35,8 @@ class PeakClassifier:
                  start_bpm_hint: Optional[float], precomputed_noise_floor: pd.Series,
                  precomputed_troughs: np.ndarray, peak_bpm_time_sec: Optional[float],
                  recovery_end_time_sec: Optional[float],
-                 band_envelopes: Optional[Dict[str, np.ndarray]] = None):
+                 band_envelopes: Optional[Dict[str, np.ndarray]] = None,
+                 prelim_bpm_prior: Optional[Callable[[float], float]] = None):
 
         self.audio_envelope = audio_envelope
         self.sample_rate = sample_rate
@@ -53,10 +54,10 @@ class PeakClassifier:
         )
 
         self.state = self._initialize_state(
-            start_bpm_hint, precomputed_noise_floor, precomputed_troughs
+            start_bpm_hint, precomputed_noise_floor, precomputed_troughs, prelim_bpm_prior
         )
 
-    def _initialize_state(self, start_bpm_hint, precomputed_noise_floor, precomputed_troughs) -> AnalysisState:
+    def _initialize_state(self, start_bpm_hint, precomputed_noise_floor, precomputed_troughs, prelim_bpm_prior=None) -> AnalysisState:
         """Pre-calculates all necessary data and initializes the state for the peak finding loop."""
         analysis_data: Dict[str, Any] = {}
         dynamic_noise_floor, trough_indices = precomputed_noise_floor, precomputed_troughs
@@ -90,6 +91,7 @@ class PeakClassifier:
             long_term_bpm=long_term_bpm,
             analysis_data=analysis_data,
             sorted_troughs=sorted(trough_indices),
+            prelim_bpm_prior=prelim_bpm_prior,
         )
 
     def classify_peaks(self) -> Tuple[np.ndarray, np.ndarray, Dict]:
@@ -98,13 +100,18 @@ class PeakClassifier:
             return self.state.all_peaks, self.state.all_peaks, {"beat_debug_info": {}}
 
         while self.state.loop_idx < len(self.state.all_peaks):
+            current_peak_idx = self.state.all_peaks[self.state.loop_idx]
+            current_time_sec = current_peak_idx / self.sample_rate
+            # Set BPM from preliminary curve (time-varying prior) when available
+            if self.state.prelim_bpm_prior is not None:
+                self.state.long_term_bpm = float(self.state.prelim_bpm_prior(current_time_sec))
+
             # Calculate pairing ratio once per iteration so all consumers
             # (kick-start recovery, pairing engine, lookahead skipper) share
             # the same view of recent rhythm stability.
             pairing_ratio = self._calculate_pairing_ratio()
 
             kickstart_msg = self._kickstart_check(pairing_ratio)
-            current_peak_idx = self.state.all_peaks[self.state.loop_idx]
             is_last_peak = self.state.loop_idx >= len(self.state.all_peaks) - 1
 
             if is_last_peak:
@@ -112,7 +119,7 @@ class PeakClassifier:
             else:
                 self._process_peak_pair(current_peak_idx, pairing_ratio, kickstart_msg=kickstart_msg)
 
-            self._update_long_term_bpm()
+            self._append_bpm_history()
 
         return self._finalize_results()
 
@@ -320,13 +327,14 @@ class PeakClassifier:
         self._classify_lone_peak(current_peak_idx, steps, kickstart_msg=kickstart_msg)
         self.state.loop_idx += 1
 
-    def _update_long_term_bpm(self):
-        """Updates the long-term BPM belief after each decision."""
-        if len(self.state.candidate_beats) > 1:
+    def _append_bpm_history(self):
+        """When no preliminary prior: update long_term_bpm from last R-R (preliminary pass). Then append (time, bpm) for plotting."""
+        if self.state.prelim_bpm_prior is None and len(self.state.candidate_beats) > 1:
             new_rr = (self.state.candidate_beats[-1] - self.state.candidate_beats[-2]) / self.sample_rate
             if new_rr > 0:
-                self.state.long_term_bpm = update_long_term_bpm(new_rr, self.state.long_term_bpm, self.params)
-
+                self.state.long_term_bpm = update_long_term_bpm(
+                    new_rr, self.state.long_term_bpm, self.params
+                )
         if self.state.candidate_beats:
             time_sec = self.state.candidate_beats[-1] / self.sample_rate
             self.state.long_term_bpm_history.append((time_sec, self.state.long_term_bpm))

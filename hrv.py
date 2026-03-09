@@ -178,6 +178,81 @@ def calculate_global_hrv_frequency(
     }
 
 
+def _loess(
+    t_evals: np.ndarray,
+    t_data: np.ndarray,
+    y_data: np.ndarray,
+    frac: float = 0.2,
+    degree: int = 1,
+) -> np.ndarray:
+    """LOESS: weighted local polynomial fit. For each t in t_evals, fit polynomial to nearby (t_data, y_data) with tricube weights; return fitted values."""
+    t_evals = np.asarray(t_evals, dtype=float)
+    t_data = np.asarray(t_data, dtype=float)
+    y_data = np.asarray(y_data, dtype=float)
+    n = len(t_data)
+    k = max(degree + 1, min(n, int(np.ceil(frac * n))))
+    y_out = np.zeros(len(t_evals), dtype=float)
+    for i, t in enumerate(t_evals):
+        dist = np.abs(t_data - t)
+        idx = np.argsort(dist)[:k]
+        d_max = float(dist[idx[-1]])
+        if d_max < 1e-9:
+            y_out[i] = float(np.mean(y_data[idx]))
+        else:
+            w = (1 - (dist[idx] / d_max) ** 3) ** 3
+            p = np.polyfit(t_data[idx], y_data[idx], degree, w=w)
+            y_out[i] = float(np.polyval(p, t))
+    return y_out
+
+
+def compute_preliminary_bpm_curve(
+    anchor_beats: np.ndarray, sample_rate: int, params: Dict
+) -> Optional[Dict[str, np.ndarray]]:
+    """
+    Canonical preliminary BPM curve: instant BPM from anchor beats, outlier removal (median+MAD), then LOESS.
+    Used for the time-varying prior, recovery phase, and all plots so display matches algorithm input.
+    Returns dict with curve_times, curve_bpm (dense LOESS), scatter_times, scatter_bpm (filtered instant), or None if insufficient data.
+    """
+    if anchor_beats is None or len(anchor_beats) < 2:
+        return None
+    peak_times = anchor_beats.astype(float) / sample_rate
+    rr_sec = np.diff(peak_times)
+    valid = rr_sec > 1e-6
+    if not np.any(valid):
+        return None
+    instant_bpm = 60.0 / rr_sec[valid]
+    times_sec = peak_times[1:][valid]
+
+    # Outlier removal: keep point if within median ± k*MAD in local window
+    half_window_sec = float(params.get("prelim_bpm_outlier_window_sec", 10.0))
+    mad_k = float(params.get("prelim_bpm_outlier_mad_k", 2.5))
+    keep = np.ones(len(instant_bpm), dtype=bool)
+    for i in range(len(instant_bpm)):
+        in_window = np.abs(times_sec - times_sec[i]) <= half_window_sec
+        if not np.any(in_window):
+            continue
+        local_median = np.median(instant_bpm[in_window])
+        local_mad = np.median(np.abs(instant_bpm[in_window] - local_median))
+        if local_mad > 1e-9:
+            keep[i] = np.abs(instant_bpm[i] - local_median) <= mad_k * local_mad
+    scatter_bpm = np.asarray(instant_bpm[keep], dtype=float)
+    scatter_times = np.asarray(times_sec[keep], dtype=float)
+
+    if len(scatter_times) < 3:
+        return None
+
+    loess_frac = float(params.get("prelim_bpm_loess_frac", 0.2))
+    curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
+    curve_bpm = _loess(curve_times, scatter_times, scatter_bpm, frac=loess_frac)
+
+    return {
+        "curve_times": curve_times,
+        "curve_bpm": curve_bpm,
+        "scatter_times": scatter_times,
+        "scatter_bpm": scatter_bpm,
+    }
+
+
 def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> Tuple[pd.Series, np.ndarray]:
     """Calculates and smooths the final BPM series from S1 peaks."""
     if len(peaks) < 2:

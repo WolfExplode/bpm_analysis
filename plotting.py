@@ -128,6 +128,8 @@ class Plotter:
         final_metrics: Dict,
         output_options: Optional[Dict] = None,
         output_suffix: Optional[str] = None,
+        prelim_bpm_series: Optional[pd.Series] = None,
+        prelim_bpm_times: Optional[np.ndarray] = None,
     ):
         """Generates and saves the main analysis plot by calling helper methods.
         output_suffix: if provided (e.g. '_pass1', '_pass2'), used for HTML/PNG/CSV filenames instead of '_bpm_plot'.
@@ -153,7 +155,11 @@ class Plotter:
             analysis_data.get("trough_indices"),
         )
         self._add_bpm_hrv_traces(
-            final_metrics.get("smoothed_bpm"), analysis_data, final_metrics.get("windowed_hrv_df")
+            final_metrics.get("smoothed_bpm"),
+            analysis_data,
+            final_metrics.get("windowed_hrv_df"),
+            prelim_bpm_series=prelim_bpm_series,
+            prelim_bpm_times=prelim_bpm_times,
         )
         self._add_slope_traces(
             final_metrics.get("major_inclines"),
@@ -257,44 +263,18 @@ class Plotter:
 
         return self.fig
 
-    def _loess(
-        self,
-        t_evals: np.ndarray,
-        t_data: np.ndarray,
-        y_data: np.ndarray,
-        frac: float = 0.2,
-        degree: int = 1,
-    ) -> np.ndarray:
-        """LOESS: weighted local polynomial fit. For each t in t_evals, fit polynomial to nearby (t_data, y_data) with tricube weights; return fitted values."""
-        t_evals = np.asarray(t_evals, dtype=float)
-        t_data = np.asarray(t_data, dtype=float)
-        y_data = np.asarray(y_data, dtype=float)
-        n = len(t_data)
-        k = max(degree + 1, min(n, int(np.ceil(frac * n))))
-        y_out = np.zeros(len(t_evals), dtype=float)
-        for i, t in enumerate(t_evals):
-            dist = np.abs(t_data - t)
-            idx = np.argsort(dist)[:k]
-            d_max = float(dist[idx[-1]])
-            if d_max < 1e-9:
-                y_out[i] = float(np.mean(y_data[idx]))
-            else:
-                w = (1 - (dist[idx] / d_max) ** 3) ** 3
-                p = np.polyfit(t_data[idx], y_data[idx], degree, w=w)
-                y_out[i] = float(np.polyval(p, t))
-        return y_out
-
     def plot_preliminary_save(
         self,
         audio_envelope: np.ndarray,
         anchor_beats: np.ndarray,
-        bpm_series: pd.Series,
-        bpm_times: np.ndarray,
         output_options: Optional[Dict] = None,
         output_html_path: Optional[str] = None,
+        prelim_analysis_data: Optional[Dict] = None,
+        prelim_bpm_data: Optional[Dict] = None,
     ):
         """
-        Builds and saves a simple preliminary-pass plot: envelope, anchor beat markers, and BPM series.
+        Builds and saves the preliminary-pass plot: envelope, anchor beats, BPM scatter + curve (canonical, same as algorithm), and BPM Trend (Belief).
+        prelim_bpm_data: dict with curve_times, curve_bpm, scatter_times, scatter_bpm from compute_preliminary_bpm_curve (display = algorithm input).
         """
         self.time_axis_sec = np.arange(len(audio_envelope), dtype=float) / self.sample_rate
         self.audio_duration_sec = float(self.time_axis_sec[-1]) if len(self.time_axis_sec) > 0 else 0.0
@@ -337,67 +317,57 @@ class Plotter:
                     secondary_y=False,
                 )
 
-        # Instant BPM from consecutive anchor beats (scatter, no smoothing); remove local outliers via median + MAD
-        if len(anchor_beats) >= 2:
-            rr_sec = np.diff(anchor_beats.astype(float)) / self.sample_rate
-            valid = rr_sec > 1e-6
-            if np.any(valid):
-                instant_bpm = 60.0 / rr_sec[valid]
-                times_sec = (anchor_beats[1:] / self.sample_rate)[valid]
-                # Local window 10s: keep point if within median ± k*MAD of BPM in [t-10, t+10]
-                half_window_sec = float(self.params.get("prelim_bpm_outlier_window_sec", 10.0))
-                mad_k = float(self.params.get("prelim_bpm_outlier_mad_k", 2.5))
-                keep = np.ones(len(instant_bpm), dtype=bool)
-                for i in range(len(instant_bpm)):
-                    in_window = np.abs(times_sec - times_sec[i]) <= half_window_sec
-                    if not np.any(in_window):
-                        continue
-                    local_median = np.median(instant_bpm[in_window])
-                    local_mad = np.median(np.abs(instant_bpm[in_window] - local_median))
-                    if local_mad > 1e-9:
-                        keep[i] = np.abs(instant_bpm[i] - local_median) <= mad_k * local_mad
-                instant_bpm = instant_bpm[keep]
-                times_sec = times_sec[keep]
-                times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in times_sec])
-                # Scatter: instant BPM points (after outlier removal)
+        # Canonical preliminary BPM (same as algorithm): scatter + curve from prelim_bpm_data
+        if prelim_bpm_data and "scatter_times" in prelim_bpm_data and "scatter_bpm" in prelim_bpm_data:
+            st = prelim_bpm_data["scatter_times"]
+            sb = prelim_bpm_data["scatter_bpm"]
+            if len(st) > 0 and len(st) == len(sb):
+                scatter_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in st])
                 fig.add_trace(
                     go.Scatter(
-                        x=times_dt,
-                        y=instant_bpm,
+                        x=scatter_dt,
+                        y=sb,
                         name="Instant BPM (preliminary)",
                         mode="markers",
                         marker=dict(size=6, color="#e74c3c", symbol="circle"),
                     ),
                     secondary_y=True,
                 )
-                # LOESS curve of best fit, plotted as "BPM (preliminary)"
-                if len(times_sec) >= 3:
-                    loess_frac = float(self.params.get("prelim_bpm_loess_frac", 0.2))
-                    t_plot = np.linspace(float(times_sec.min()), float(times_sec.max()), 200)
-                    y_loess = self._loess(t_plot, times_sec, instant_bpm, frac=loess_frac)
-                    t_plot_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in t_plot])
-                    fig.add_trace(
-                        go.Scatter(
-                            x=t_plot_dt,
-                            y=y_loess,
-                            name="BPM (preliminary)",
-                            mode="lines",
-                            line=dict(color="orange", width=2),
-                        ),
-                        secondary_y=True,
-                    )
-                self.bpm_axis_center = float(np.median(instant_bpm)) if len(instant_bpm) > 0 else float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
-            else:
-                self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
-        else:
+                self.bpm_axis_center = float(np.median(sb))
+        if prelim_bpm_data and "curve_times" in prelim_bpm_data and "curve_bpm" in prelim_bpm_data:
+            ct = prelim_bpm_data["curve_times"]
+            cb = prelim_bpm_data["curve_bpm"]
+            if len(ct) > 0 and len(ct) == len(cb):
+                curve_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in ct])
+                fig.add_trace(
+                    go.Scatter(
+                        x=curve_dt,
+                        y=cb,
+                        name="BPM (preliminary)",
+                        mode="lines",
+                        line=dict(color="orange", width=2),
+                    ),
+                    secondary_y=True,
+                )
+        if not (prelim_bpm_data and "scatter_bpm" in prelim_bpm_data and len(prelim_bpm_data["scatter_bpm"]) > 0):
             self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
 
+        # BPM Trend (Belief) from preliminary pass (EMA from accepted beats during that pass)
+        if prelim_analysis_data and "long_term_bpm_series" in prelim_analysis_data and not prelim_analysis_data["long_term_bpm_series"].empty:
+            lt_series = prelim_analysis_data["long_term_bpm_series"]
+            lt_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in lt_series.index])
+            fig.add_trace(
+                go.Scatter(
+                    x=lt_times_dt,
+                    y=lt_series.values,
+                    name="BPM Trend (Belief)",
+                    mode="lines",
+                    line=dict(color="orange", width=2),
+                ),
+                secondary_y=True,
+            )
+
         self.fig = fig
-        if not (len(anchor_beats) >= 2 and np.any(np.diff(anchor_beats.astype(float)) / self.sample_rate > 1e-6)):
-            if bpm_series is not None and not bpm_series.empty:
-                self.bpm_axis_center = float(bpm_series.mean())
-            else:
-                self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
         self._configure_layout()
 
         plot_title = f"Preliminary pass - {os.path.basename(self.file_name)}"
@@ -827,8 +797,15 @@ class Plotter:
                     t_centers, mean_proms, "Average contractility", "#aaa", "legendonly", window_size=1
                 )
 
-    def _add_bpm_hrv_traces(self, smoothed_bpm, analysis_data, windowed_hrv_df):
-        """Adds BPM, BPM trend, and HRV traces."""
+    def _add_bpm_hrv_traces(
+        self,
+        smoothed_bpm,
+        analysis_data,
+        windowed_hrv_df,
+        prelim_bpm_series: Optional[pd.Series] = None,
+        prelim_bpm_times: Optional[np.ndarray] = None,
+    ):
+        """Adds BPM, preliminary BPM curve (when provided), and HRV traces. BPM Trend (Belief) is only on the preliminary plot."""
         if smoothed_bpm is not None and not smoothed_bpm.empty:
             self.fig.add_trace(
                 go.Scatter(
@@ -837,14 +814,19 @@ class Plotter:
                 secondary_y=True,
             )
 
-        if "long_term_bpm_series" in analysis_data and not analysis_data["long_term_bpm_series"].empty:
-            lt_series = analysis_data["long_term_bpm_series"]
-            lt_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in lt_series.index])
+        # Preliminary BPM curve (time-varying prior used by main pass)
+        if (
+            prelim_bpm_series is not None
+            and not prelim_bpm_series.empty
+            and prelim_bpm_times is not None
+            and len(prelim_bpm_times) == len(prelim_bpm_series)
+        ):
+            prelim_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in prelim_bpm_times])
             self.fig.add_trace(
                 go.Scatter(
-                    x=lt_times_dt,
-                    y=lt_series.values,
-                    name="BPM Trend (Belief)",
+                    x=prelim_times_dt,
+                    y=prelim_bpm_series.values,
+                    name="BPM (preliminary)",
                     line=dict(color="orange", width=2),
                     visible="legendonly",
                 ),
