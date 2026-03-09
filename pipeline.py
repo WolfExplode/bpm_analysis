@@ -23,7 +23,6 @@ from hrv import (
     filter_instant_bpm_mad,
     find_recovery_phase,
     smooth_bpm_series_from_instant,
-    detect_trapezoid_discontinuities,
     find_major_hr_inclines,
     find_major_hr_declines,
     calculate_hrr,
@@ -32,7 +31,6 @@ from hrv import (
     calculate_windowed_hrv,
     calculate_global_hrv_frequency,
 )
-from correction import correct_peaks_by_rhythm, fix_rhythmic_discontinuities
 from fft_profiles import compute_fft_profiles, save_fft_profiles_html
 
 
@@ -44,9 +42,6 @@ class _NoisyAlgorithmLogFilter(logging.Filter):
 
     # Substrings that identify "noisy" algorithm-detail logs.
     _NOISY_SUBSTRINGS = (
-        "KICK-START:",
-        "CASCADE RESET:",
-        "Trapezoid #",
         "LOOKAHEAD ",
     )
 
@@ -129,63 +124,28 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                               analysis_data: Dict, audio_envelope: np.ndarray,
                               sample_rate: int, params: Dict) -> Tuple[np.ndarray, Dict]:
     """
-    Applies rhythmic and iterative contextual correction passes to refine S1 peaks.
+    Phase 3 template.
+    Replace with new Stage 4/5 correction logic.
     """
-    logging.info("--- STAGES 4 & 5: Refining peaks with rhythmic and contextual correction ---")
-
-    # STAGE 4: Simple rhythmic correction (e.g., remove beats that are too close)
-    s1_peaks_rhythm_corrected = correct_peaks_by_rhythm(s1_peaks, audio_envelope, sample_rate, params)
-
-    # Prepare data for the iterative pass
-    dynamic_noise_floor = analysis_data['dynamic_noise_floor_series']
-    current_debug_info = analysis_data["beat_debug_info"].copy()
-    final_peaks = s1_peaks_rhythm_corrected
-
-    # iterative correction loop
-    # Safety cap: in practice 1-2 passes suffice; 5 prevents a runaway loop if
-    # the corrections destabilize and re-introduce the same errors each time.
-    max_iterations = 1
-    for i in range(max_iterations):
-        logging.info(f"Correction Pass Iteration {i + 1}...")
-
-        new_peaks, new_debug_info, corrections_made = fix_rhythmic_discontinuities(
-            s1_peaks=final_peaks,
-            all_raw_peaks=all_raw_peaks,
-            debug_info=current_debug_info,
-            audio_envelope=audio_envelope,
-            dynamic_noise_floor=dynamic_noise_floor,
-            params=params,
-            sample_rate=sample_rate
-        )
-
-        final_peaks = new_peaks
-        current_debug_info = new_debug_info
-
-        if corrections_made == 0:
-            logging.info("Correction process stabilized. Exiting loop.")
-            break
-        else:
-            logging.info(f"Made {corrections_made} corrections in iteration {i + 1}.")
-    else:
-        logging.warning("Correction process reached max iterations without stabilizing.")
-
-    analysis_data["beat_debug_info"] = current_debug_info
-    return final_peaks, analysis_data
+    _ = all_raw_peaks, audio_envelope, sample_rate, params
+    logging.info("--- STAGES 4 & 5 TEMPLATE: pass 3 correction currently disabled ---")
+    if "beat_debug_info" not in analysis_data or analysis_data["beat_debug_info"] is None:
+        analysis_data["beat_debug_info"] = {}
+    return np.asarray(s1_peaks), analysis_data
 
 
-def _calculate_final_metrics(final_peaks: np.ndarray, sample_rate: int, params: Dict) -> Dict:
-    """Calculates all final BPM, HRV, and slope metrics for reporting."""
+def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: Dict) -> Dict:
+    """Calculates BPM, HRV, and slope metrics from a peak list. Used by any pass (pass 2, pass 3, etc.)."""
     metrics = {}
-    metrics['smoothed_bpm'], metrics['bpm_times'], metrics['instant_bpm'] = calculate_bpm_series(final_peaks, sample_rate, params)
-    metrics['trapezoids'] = detect_trapezoid_discontinuities(metrics['smoothed_bpm'], metrics['bpm_times'], params)
+    metrics['smoothed_bpm'], metrics['bpm_times'], metrics['instant_bpm'] = calculate_bpm_series(peaks, sample_rate, params)
     metrics['major_inclines'] = find_major_hr_inclines(metrics['smoothed_bpm'])
     metrics['major_declines'] = find_major_hr_declines(metrics['smoothed_bpm'])
     metrics['hrr_stats'] = calculate_hrr(metrics['smoothed_bpm'])
     metrics['peak_recovery_stats'] = find_peak_recovery_rate(metrics['smoothed_bpm'])
     metrics['peak_exertion_stats'] = find_peak_exertion_rate(metrics['smoothed_bpm'])
-    metrics['windowed_hrv_df'] = calculate_windowed_hrv(final_peaks, sample_rate, params)
+    metrics['windowed_hrv_df'] = calculate_windowed_hrv(peaks, sample_rate, params)
     if params.get("enable_hrv_frequency_domain", False):
-        metrics['hrv_global_freq'] = calculate_global_hrv_frequency(final_peaks, sample_rate, params)
+        metrics['hrv_global_freq'] = calculate_global_hrv_frequency(peaks, sample_rate, params)
     else:
         metrics['hrv_global_freq'] = None
 
@@ -296,18 +256,12 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
         output_options.get('csv', True),
     ])
     plotter = None
+    metrics_pass2 = None
 
-    # Pass 2 plot: main classifier output (before refinement); skip when only last pass requested
+    # Compute pass 2 metrics when we might need them (pass 2 plot and/or pass 3 prior curve)
     output_all_passes = output_options.get("output_all_passes", True)
-    if needs_plot_outputs and output_all_passes and len(s1_peaks) >= 2:
-        plotter = Plotter(
-            original_file_path,
-            params,
-            sample_rate,
-            output_directory,
-            source_audio_path=wav_file_path,
-        )
-        metrics_pass2 = _calculate_final_metrics(s1_peaks, sample_rate, params)
+    if needs_plot_outputs and len(s1_peaks) >= 2:
+        metrics_pass2 = _calculate_metrics_from_peaks(s1_peaks, sample_rate, params)
         # Pass 2: BPM curve and all derived stats from MAD-filtered instantaneous BPM (same logic as algorithm input)
         bt = metrics_pass2.get("bpm_times")
         ib = metrics_pass2.get("instant_bpm")
@@ -318,7 +272,6 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                 metrics_pass2["smoothed_bpm"] = smoothed_bpm
                 metrics_pass2["bpm_times"] = bpm_times
                 metrics_pass2["instant_bpm"] = instant_bpm
-                metrics_pass2["trapezoids"] = detect_trapezoid_discontinuities(smoothed_bpm, bpm_times, params)
                 metrics_pass2["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
                 metrics_pass2["major_declines"] = find_major_hr_declines(smoothed_bpm)
                 metrics_pass2["hrr_stats"] = calculate_hrr(smoothed_bpm)
@@ -330,29 +283,59 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                     hrv_summary["min_bpm"] = float(smoothed_bpm.min())
                     hrv_summary["max_bpm"] = float(smoothed_bpm.max())
                     metrics_pass2["hrv_summary"] = hrv_summary
-        plotter.plot_and_save(
-            audio_envelope,
-            all_raw_peaks,
-            analysis_data,
-            metrics_pass2,
-            output_options,
-            output_suffix="_pass2",
-            pass1_bpm_series=pd.Series(pass1_bpm["curve_bpm"]) if pass1_bpm is not None else None,
-            pass1_bpm_times=pass1_bpm["curve_times"] if pass1_bpm is not None else None,
-        )
+        if output_all_passes:
+            plotter = Plotter(
+                original_file_path,
+                params,
+                sample_rate,
+                output_directory,
+                source_audio_path=wav_file_path,
+            )
+            plotter.plot_and_save(
+                audio_envelope,
+                all_raw_peaks,
+                analysis_data,
+                metrics_pass2,
+                output_options,
+                output_suffix="_pass2",
+                pass1_bpm_series=pd.Series(pass1_bpm["curve_bpm"]) if pass1_bpm is not None else None,
+                pass1_bpm_times=pass1_bpm["curve_times"] if pass1_bpm is not None else None,
+            )
 
-    # STAGE 4 & 5: Correction and Refinement
-    final_peaks, analysis_data = _refine_and_correct_peaks(
-        s1_peaks, all_raw_peaks, analysis_data, audio_envelope, sample_rate, params
+    # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
+    peaks_after_pass2 = s1_peaks
+    peaks_after_pass3, analysis_data = _refine_and_correct_peaks(
+        peaks_after_pass2, all_raw_peaks, analysis_data, audio_envelope, sample_rate, params
     )
 
-    # STAGE 6: Final Reporting
-    if len(final_peaks) < 2:
+    # STAGE 6: Metrics from latest pass (pass 3). Use same MAD-based BPM as pass 2 so curves match when no correction.
+    if len(peaks_after_pass3) < 2:
         logging.warning("Not enough S1 peaks detected to generate full report.")
         return None
 
     logging.info("--- STAGE 6: Calculating Metrics and Generating Outputs ---")
-    final_metrics = _calculate_final_metrics(final_peaks, sample_rate, params)
+    metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass3, sample_rate, params)
+    # Apply MAD-based BPM (same as pass 2) so BPM (Pass 3) is consistent and matches pass 2 when peaks unchanged
+    bt = metrics_after_pass3.get("bpm_times")
+    ib = metrics_after_pass3.get("instant_bpm")
+    if bt is not None and ib is not None and len(bt) == len(ib) and len(bt) >= 2:
+        t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
+        if len(t_filt) > 0:
+            smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
+            metrics_after_pass3["smoothed_bpm"] = smoothed_bpm
+            metrics_after_pass3["bpm_times"] = bpm_times
+            metrics_after_pass3["instant_bpm"] = instant_bpm
+            metrics_after_pass3["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
+            metrics_after_pass3["major_declines"] = find_major_hr_declines(smoothed_bpm)
+            metrics_after_pass3["hrr_stats"] = calculate_hrr(smoothed_bpm)
+            metrics_after_pass3["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
+            metrics_after_pass3["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
+            if not smoothed_bpm.empty:
+                hrv_summary = metrics_after_pass3.get("hrv_summary") or {}
+                hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
+                hrv_summary["min_bpm"] = float(smoothed_bpm.min())
+                hrv_summary["max_bpm"] = float(smoothed_bpm.max())
+                metrics_after_pass3["hrv_summary"] = hrv_summary
 
     # OPTIONAL: Validation against manually labeled peaks (if a CSV exists next to the WAV).
     # This lets you batch-run a dataset and get an objective error count per file
@@ -383,8 +366,8 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
 
     plotly_figure = None
 
-    # Pass 3 plot: after refinement
-    if needs_plot_outputs and len(final_peaks) >= 2:
+    # Pass 3 plot: after refinement (uses metrics_after_pass3; prior curve = BPM from pass 2)
+    if needs_plot_outputs and len(peaks_after_pass3) >= 2:
         if plotter is None:
             plotter = Plotter(
                 original_file_path,
@@ -393,15 +376,24 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                 output_directory,
                 source_audio_path=wav_file_path,
             )
+        # Pass 3 plot: show BPM (Pass 2) as the prior curve, not BPM (Pass 1)
+        prior_bpm_series = None
+        prior_bpm_times = None
+        if metrics_pass2 is not None and metrics_pass2.get("smoothed_bpm") is not None and not metrics_pass2["smoothed_bpm"].empty:
+            prior_bpm_series = metrics_pass2["smoothed_bpm"]
+            prior_bpm_times = metrics_pass2.get("bpm_times")
+        if prior_bpm_series is None and pass1_bpm is not None:
+            prior_bpm_series = pd.Series(pass1_bpm["curve_bpm"])
+            prior_bpm_times = pass1_bpm["curve_times"]
         plotly_figure = plotter.plot_and_save(
             audio_envelope,
             all_raw_peaks,
             analysis_data,
-            final_metrics,
+            metrics_after_pass3,
             output_options,
             output_suffix="_pass3",
-            pass1_bpm_series=pd.Series(pass1_bpm["curve_bpm"]) if pass1_bpm is not None else None,
-            pass1_bpm_times=pass1_bpm["curve_times"] if pass1_bpm is not None else None,
+            pass1_bpm_series=prior_bpm_series,
+            pass1_bpm_times=prior_bpm_times,
         )
     elif not needs_plot_outputs:
         logging.info("Skipping all plot outputs (HTML/PNG/CSV) as requested.")
@@ -416,12 +408,12 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
         reporter = ReportGenerator(original_file_path, output_directory)
 
         if output_options.get('summary', True):
-            reporter.save_analysis_summary(final_metrics)
+            reporter.save_analysis_summary(metrics_after_pass3)
         else:
             logging.info("Skipping summary generation as requested.")
 
         if output_options.get('debug', True):
-            reporter.create_chronological_log(audio_envelope, sample_rate, all_raw_peaks, analysis_data, final_metrics)
+            reporter.create_chronological_log(audio_envelope, sample_rate, all_raw_peaks, analysis_data, metrics_after_pass3)
         else:
             logging.info("Skipping debug log generation as requested.")
     else:

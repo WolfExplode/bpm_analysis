@@ -26,20 +26,20 @@ class ReportGenerator:
         self.file_name_no_ext = os.path.splitext(file_name)[0]
         self.base_name = os.path.basename(self.file_name_no_ext)
 
-    def save_analysis_summary(self, final_metrics: Dict):
-        """Saves a comprehensive Markdown summary of the analysis results."""
+    def save_analysis_summary(self, metrics: Dict):
+        """Saves a comprehensive Markdown summary of the analysis results. metrics: BPM/HRV from latest pass."""
         output_path = os.path.join(self.output_directory, f"{self.base_name}_Analysis_Summary.md")
 
         with open(output_path, "w", encoding="utf-8") as f:
             self._write_summary_header(f)
-            self._write_overall_summary(f, final_metrics.get("hrv_summary"), final_metrics.get("hrr_stats"))
+            self._write_overall_summary(f, metrics.get("hrv_summary"), metrics.get("hrr_stats"))
             self._write_steepest_slopes(
-                f, final_metrics.get("peak_exertion_stats"), final_metrics.get("peak_recovery_stats")
+                f, metrics.get("peak_exertion_stats"), metrics.get("peak_recovery_stats")
             )
             self._write_significant_changes(
-                f, final_metrics.get("major_inclines"), final_metrics.get("major_declines")
+                f, metrics.get("major_inclines"), metrics.get("major_declines")
             )
-            self._write_heartbeat_data_table(f, final_metrics.get("smoothed_bpm"), final_metrics.get("bpm_times"))
+            self._write_heartbeat_data_table(f, metrics.get("smoothed_bpm"), metrics.get("bpm_times"))
 
         logging.info(f"Markdown analysis summary saved to {output_path}")
 
@@ -49,9 +49,9 @@ class ReportGenerator:
         sample_rate: int,
         all_raw_peaks: np.ndarray,
         analysis_data: Dict,
-        final_metrics: Dict,
+        metrics: Dict,
     ):
-        """Creates a detailed, readable debug log file."""
+        """Creates a detailed, readable debug log file. metrics: BPM/HRV from latest pass."""
         output_log_path = os.path.join(self.output_directory, f"{self.base_name}_Debug_Log.md")
         logging.info(f"Generating readable debug log at '{output_log_path}'...")
         merged_df = self._prepare_log_data(
@@ -59,8 +59,8 @@ class ReportGenerator:
             sample_rate,
             all_raw_peaks,
             analysis_data,
-            final_metrics.get("smoothed_bpm"),
-            final_metrics.get("bpm_times"),
+            metrics.get("smoothed_bpm"),
+            metrics.get("bpm_times"),
         )
         with open(output_log_path, "w", encoding="utf-8") as log_file:
             if merged_df is None or merged_df.empty:

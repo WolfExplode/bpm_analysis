@@ -135,13 +135,6 @@ DEFAULT_PARAMS = {
     "s1_s2_expected_history_count": 10,        # Number of past S1-S2 intervals to average.
     "s1_s2_expected_history_min": 1,           # Minimum history length before using average (else fallback to BPM).
 
-    # --- 4.5. Kick-Start Mechanism to Recover from Pairing Failure ---
-    "kickstart_check_threshold": 0.3,           # Only run the check if pairing_ratio is BELOW this value.
-    "kickstart_override_ratio": 0.60,           # The temporary pairing ratio to use if kick-start is triggered.
-    "kickstart_history_beats": 4,               # Look-back window: how many recent beats to inspect for the pattern.
-    "kickstart_min_lone_s1s": 3,                # How many of those beats must be Lone S1 candidates.
-    "kickstart_min_noise_matches": 3,           # How many of those Lone S1s must be immediately followed by a Noise peak.
-
     # =================================================================================
     # 5. Rhythm Plausibility & Validation
     # Rules for the algorithm's long-term BPM belief and beat-to-beat timing checks.
@@ -163,16 +156,6 @@ DEFAULT_PARAMS = {
     "lone_s1_confidence_threshold": 0.50, # Final combined score needed to be accepted as a Lone S1.
     "lone_s1_rhythm_weight": 0.65,         # The weight given to the rhythmic timing score (0.0 to 1.0).
     "lone_s1_amplitude_weight": 0.35,      # The weight given to the amplitude consistency score.
-
-    # =================================================================================
-    # 6. Post-Processing Correction Pass
-    # Final analysis pass to identify and fix rhythmic discontinuities.
-    # =================================================================================
-    "enable_correction_pass": False,
-    "rr_correction_threshold_pct": 0.40,      # An R-R interval shorter than (Median R-R * this_value) is a "discontinuity".
-    "rr_correction_long_interval_pct": 1.70,  # An R-R interval longer than (Median R-R * this_value) is a "gap".
-    "penalty_waiver_strength_ratio": 4.0,     # Required signal-to-noise ratio for an S1 to be used in a correction.
-    "penalty_waiver_max_s2_s1_ratio": 2.5,    # Safety rail: S2/S1 amp ratio must be below this to allow a correction.
 
     # =================================================================================
     # 7. Output, HRV & Reporting
@@ -207,15 +190,6 @@ DEFAULT_PARAMS = {
     "fft_neutral_band_low_hz": 10000.0,           # Neutral band low (Hz) for S2→S1 alignment (force same level in this band).
     "fft_neutral_band_high_hz": 14000.0,          # Neutral band high (Hz) for S2→S1 alignment.
 
-    # --- 7.2. Trapezoid Artifact Detection ---
-    # These control detection of brief, trapezoid-shaped BPM jumps that are often extra-beat artifacts.
-    "trapezoid_rate_threshold": 7.0,            # BPM/s: physiologically implausible rate for rise/fall edges.
-    "trapezoid_max_edge_duration_sec": 2,       # Maximum duration (seconds) for the rise/fall edges.
-    "trapezoid_min_plateau_duration_sec": 1.5,  # Minimum plateau length between rise and fall.
-    "trapezoid_max_plateau_duration_sec": 15.0, # Maximum plateau length between rise and fall.
-    "trapezoid_baseline_tolerance_bpm": 5.0,    # Allowed BPM difference between pre- and post-artifact baseline.
-    "trapezoid_min_jump_bpm": 3.0,              # Minimum BPM jump from baseline to plateau median.
-    "trapezoid_min_fall_delta_bpm": 3.0,        # Minimum absolute BPM drop across the fall edge (start vs end of fall).
 }
 
 # Single source of truth for pipeline output toggles. GUI and analyze_wav_file use this;

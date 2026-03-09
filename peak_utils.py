@@ -21,7 +21,6 @@ class PeakType(Enum):
     S1_PAIRED = "S1 (Paired)"
     S2_PAIRED = "S2 (Paired)"
     LONE_S1_VALIDATED = "Lone S1"
-    LONE_S1_CASCADE = "Lone S1 (Corrected by Cascade Reset)"
     LONE_S1_LAST = "Lone S1 (Last Peak)"
     NOISE = "Noise/Rejected"
     S1_CORRECTED_GAP = "S1 (Paired - Corrected from Gap)"
@@ -115,11 +114,6 @@ def format_debug_entry(debug_entry: Dict) -> List[str]:
                         lines.append(f"    - {step_name}: {detail} → {result_str}")
                     else:
                         lines.append(f"    - {step_name}: → {result_str}")
-
-        elif sec_type == "kickstart":
-            msg = sec.get("text") or sec.get("message")
-            if msg:
-                lines.append(f"- {msg}")
 
         elif sec_type == "correction_reason":
             msg = sec.get("text")

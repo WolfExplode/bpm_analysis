@@ -45,13 +45,8 @@ class AnalysisState:
         pass1_bpm_prior: Optional callable time_sec -> bpm from the pass 1 curve.
         sorted_troughs: Sorted list of trough indices mirroring `trough_indices`,
             kept in list form for fast neighbor lookups and iteration.
-        consecutive_rr_rejections: Count of consecutive Lone S1 rhythm rejections, used
-            to trigger the "cascade reset" safety mechanism when the rhythm model fails.
         loop_idx: Current index into `all_peaks` for the main classification loop. This
             is the loop counter that drives progression through raw peaks.
-        pairing_ratio_override: Optional override for the recent pairing stability ratio
-            set by the kick-start recovery logic when the algorithm gets stuck in
-            "Lone S1 only" mode.
         s1_s2_interval_history: Rolling window of the last N accepted S1-S2 intervals
             (in seconds). Used by `PairingEngine` to build an empirical expected
             S1-S2 interval once enough paired beats have been observed.
@@ -73,9 +68,7 @@ class AnalysisState:
     long_term_bpm_history: List[Tuple[float, float]] = field(default_factory=list)
     pass1_bpm_prior: Optional[Callable[[float], float]] = None
     sorted_troughs: List[int] = field(default_factory=list)
-    consecutive_rr_rejections: int = 0
     loop_idx: int = 0
-    pairing_ratio_override: Optional[float] = None
     s1_s2_interval_history: List[float] = field(default_factory=list)  # Last N accepted S1-S2 intervals (sec) for expected-S1-S2
     s1_s2_contractility_history: List[float] = field(default_factory=list)  # Last N accepted S1/S2 prominence ratios for expected contractility
     recent_s1_outcomes: List[Tuple[float, bool]] = field(default_factory=list)  # (time_sec, was_paired) for pair-rate window

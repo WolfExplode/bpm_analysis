@@ -7,6 +7,7 @@ import shutil
 import json
 from typing import Dict, Optional, List, Any
 from peak_utils import PeakType, _get_peak_type_from_debug, format_debug_entry, get_peak_prominence_details
+from confidence_engine import PairingEngine
 
 import numpy as np
 import pandas as pd
@@ -125,13 +126,14 @@ class Plotter:
         audio_envelope: np.ndarray,
         all_raw_peaks: np.ndarray,
         analysis_data: Dict,
-        final_metrics: Dict,
+        pass_metrics: Dict,
         output_options: Optional[Dict] = None,
         output_suffix: Optional[str] = None,
         pass1_bpm_series: Optional[pd.Series] = None,
         pass1_bpm_times: Optional[np.ndarray] = None,
     ):
         """Generates and saves the main analysis plot by calling helper methods.
+        pass_metrics: BPM/HRV/slope metrics for the pass being plotted (pass 2, pass 3, etc.).
         output_suffix: if provided (e.g. '_pass2', '_pass3'), used for HTML/PNG/CSV filenames instead of '_bpm_plot'.
         """
         self.fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -155,29 +157,28 @@ class Plotter:
             analysis_data.get("trough_indices"),
         )
         self._add_bpm_hrv_traces(
-            final_metrics.get("smoothed_bpm"),
+            pass_metrics.get("smoothed_bpm"),
             analysis_data,
-            final_metrics.get("windowed_hrv_df"),
+            pass_metrics.get("windowed_hrv_df"),
             output_suffix=output_suffix,
             pass1_bpm_series=pass1_bpm_series,
             pass1_bpm_times=pass1_bpm_times,
-            instant_bpm=final_metrics.get("instant_bpm"),
-            bpm_times=final_metrics.get("bpm_times"),
+            instant_bpm=pass_metrics.get("instant_bpm"),
+            bpm_times=pass_metrics.get("bpm_times"),
         )
         self._add_slope_traces(
-            final_metrics.get("major_inclines"),
-            final_metrics.get("major_declines"),
-            final_metrics.get("peak_recovery_stats"),
-            final_metrics.get("peak_exertion_stats"),
+            pass_metrics.get("major_inclines"),
+            pass_metrics.get("major_declines"),
+            pass_metrics.get("peak_recovery_stats"),
+            pass_metrics.get("peak_exertion_stats"),
         )
-        self._add_trapezoid_shapes(final_metrics.get("trapezoids"))
         self._add_annotations_and_summary(
-            final_metrics.get("smoothed_bpm"),
-            final_metrics.get("hrv_summary"),
-            final_metrics.get("hrr_stats"),
-            final_metrics.get("peak_recovery_stats"),
+            pass_metrics.get("smoothed_bpm"),
+            pass_metrics.get("hrv_summary"),
+            pass_metrics.get("hrr_stats"),
+            pass_metrics.get("peak_recovery_stats"),
         )
-        self._prepare_bpm_axis_center(final_metrics)
+        self._prepare_bpm_axis_center(pass_metrics)
 
         self._configure_layout()
 
@@ -247,8 +248,8 @@ class Plotter:
                 logging.warning(f"Failed to export Plot PNG (requires kaleido): {e}")
 
         if output_options is None or output_options.get("csv", True):
-            smoothed_bpm = final_metrics.get("smoothed_bpm")
-            bpm_times = final_metrics.get("bpm_times")
+            smoothed_bpm = pass_metrics.get("smoothed_bpm")
+            bpm_times = pass_metrics.get("bpm_times")
             if smoothed_bpm is not None and not smoothed_bpm.empty and bpm_times is not None:
                 csv_path = os.path.join(self.output_directory, f"{base_name}{suffix}.csv")
                 csv_bpm_header = "BPM (Pass 2)" if suffix == "_pass2" else "BPM (Pass 3)" if suffix == "_pass3" else "Average BPM"
@@ -389,11 +390,11 @@ class Plotter:
 
         self.fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    def _prepare_bpm_axis_center(self, final_metrics: Dict):
+    def _prepare_bpm_axis_center(self, pass_metrics: Dict):
         """Use detected BPM stats to keep the BPM axis centered without altering the per-file zoom."""
-        hrv_summary = final_metrics.get("hrv_summary") or {}
+        hrv_summary = pass_metrics.get("hrv_summary") or {}
         avg_bpm = hrv_summary.get("avg_bpm")
-        smoothed_bpm = final_metrics.get("smoothed_bpm")
+        smoothed_bpm = pass_metrics.get("smoothed_bpm")
         if avg_bpm is None and smoothed_bpm is not None and not smoothed_bpm.empty:
             avg_bpm = float(smoothed_bpm.mean())
         if avg_bpm is None:
@@ -555,19 +556,38 @@ class Plotter:
             and len(all_raw_peaks) > 0
         ):
             eps = 1e-9
-            total = s1_band + s2_band + eps
-            s1_proportion = s1_band / total
-            s2_proportion = s2_band / total
             scale = float(np.max(plot_envelope)) if len(plot_envelope) > 0 else 1.0
             if scale < 1e-9:
                 scale = 1.0
-            # Sample at peak indices only (same as pairing logic)
             peak_indices = np.asarray(all_raw_peaks)
-            in_bounds = (peak_indices >= 0) & (peak_indices < len(s1_proportion))
+            in_bounds = (peak_indices >= 0) & (peak_indices < len(s1_band))
             peak_indices = peak_indices[in_bounds]
             if len(peak_indices) > 0:
-                s1_at_peaks = s1_proportion[peak_indices] * scale
-                s2_at_peaks = s2_proportion[peak_indices] * scale
+                # Use same Gaussian-windowed band energy as multiband pairing in confidence_engine.
+                n = len(audio_envelope)
+                window_ms = float(self.params.get("multiband_peak_window_ms", 100.0))
+                sigma_ms = float(self.params.get("multiband_gaussian_sigma_ms", 25.0))
+                window_samples = max(1, int(round(window_ms * 0.001 * self.sample_rate)))
+                if window_samples % 2 == 0:
+                    window_samples += 1
+                half = min((window_samples - 1) // 2, n // 2)
+                sigma_samp = max(1e-6, sigma_ms * 0.001 * self.sample_rate)
+                s1_proportion_w = []
+                s2_proportion_w = []
+                for peak_idx in peak_indices:
+                    e_s1 = PairingEngine._gaussian_weighted_energy(
+                        s1_band, int(peak_idx), half, sigma_samp, n
+                    )
+                    e_s2 = PairingEngine._gaussian_weighted_energy(
+                        s2_band, int(peak_idx), half, sigma_samp, n
+                    )
+                    total_w = e_s1 + e_s2 + eps
+                    s1_proportion_w.append(e_s1 / total_w)
+                    s2_proportion_w.append(e_s2 / total_w)
+                s1_proportion_w = np.array(s1_proportion_w)
+                s2_proportion_w = np.array(s2_proportion_w)
+                s1_at_peaks = s1_proportion_w * scale
+                s2_at_peaks = s2_proportion_w * scale
                 peak_times_sec = peak_indices.astype(float) / self.sample_rate
                 peak_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in peak_times_sec])
                 self.fig.add_trace(
@@ -578,7 +598,7 @@ class Plotter:
                         name=f"S1 proportion at peaks ({s1_low:.0f}-{s1_high:.0f} Hz)",
                         marker=dict(color="darkorange", size=6, symbol="triangle-up"),
                         hovertemplate="S1 proportion: %{customdata:.3f}<extra></extra>",
-                        customdata=s1_proportion[peak_indices],
+                        customdata=s1_proportion_w,
                         visible="legendonly",
                     ),
                     secondary_y=False,
@@ -591,7 +611,7 @@ class Plotter:
                         name=f"S2 proportion at peaks ({s2_low:.0f}-{s2_high:.0f} Hz)",
                         marker=dict(color="purple", size=6, symbol="triangle-down"),
                         hovertemplate="S2 proportion: %{customdata:.3f}<extra></extra>",
-                        customdata=s2_proportion[peak_indices],
+                        customdata=s2_proportion_w,
                         visible="legendonly",
                     ),
                     secondary_y=False,
@@ -850,19 +870,20 @@ class Plotter:
                 secondary_y=True,
             )
 
-        # Pass 1 BPM curve (time-varying prior used by pass 2 and pass 3)
+        # Prior BPM curve: pass 1 on pass 2 plot, pass 2 on pass 3 plot
         if (
             pass1_bpm_series is not None
             and not pass1_bpm_series.empty
             and pass1_bpm_times is not None
             and len(pass1_bpm_times) == len(pass1_bpm_series)
         ):
+            prior_curve_name = "BPM (Pass 2)" if output_suffix == "_pass3" else "BPM (pass 1)"
             pass1_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in pass1_bpm_times])
             self.fig.add_trace(
                 go.Scatter(
                     x=pass1_times_dt,
                     y=pass1_bpm_series.values,
-                    name="BPM (pass 1)",
+                    name=prior_curve_name,
                     line=dict(color="orange", width=2),
                     visible="legendonly",
                 ),
@@ -1030,40 +1051,6 @@ class Plotter:
                     hovertemplate="<b>Peak Exertion Slope</b><br>Slope: +%{customdata[0]:.2f} BPM/sec<br>Duration: %{customdata[1]:.1f}s<extra></extra>",
                     customdata=np.array([[stats["slope_bpm_per_sec"], stats["duration_sec"]]] * 2),
                 )
-            )
-
-    def _add_trapezoid_shapes(self, trapezoids: Optional[List[Dict]]):
-        """Draws trapezoid outlines and markers for detected HR artifacts."""
-        if not trapezoids:
-            return
-
-        for idx, trap in enumerate(trapezoids, start=1):
-            event_sequence = [
-                ("Start of rise", trap["t_start_rise"], trap["bpm_start_rise"]),
-                ("End of rise", trap["t_end_rise"], trap["bpm_end_rise"]),
-                ("Start of fall", trap["t_start_fall"], trap["bpm_start_fall"]),
-                ("End of fall", trap["t_end_fall"], trap["bpm_end_fall"]),
-            ]
-            x_times = [seconds_to_datetime(t) for _, t, _ in event_sequence]
-            y_values = [bpm for _, _, bpm in event_sequence]
-            customdata = [
-                f"<b>{label}</b><br>{t:.3f}s<br>{bpm:.1f} BPM" for label, t, bpm in event_sequence
-            ]
-
-            self.fig.add_trace(
-                go.Scatter(
-                    x=x_times,
-                    y=y_values,
-                    mode="lines+markers",
-                    name="Trapezoid Artifacts",
-                    marker=dict(symbol="circle-open", size=8, color="#ffd166"),
-                    line=dict(color="#ffd166", width=2),
-                    customdata=customdata,
-                    hovertemplate="%{customdata}<extra></extra>",
-                    legendgroup="Trapezoid Artifacts",
-                    showlegend=(idx == 1),
-                ),
-                secondary_y=True,
             )
 
     def _generate_custom_html(

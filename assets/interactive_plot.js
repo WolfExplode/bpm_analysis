@@ -552,7 +552,6 @@
     "S2 Beats",
     "Noise/Rejected",
     "BPM Trend (Belief)",
-    "Trapezoid Artifacts",
     "Manual S1",
     "Manual S2",
     "Manual Noise",
