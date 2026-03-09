@@ -36,7 +36,7 @@ class PeakClassifier:
                  precomputed_troughs: np.ndarray, peak_bpm_time_sec: Optional[float],
                  recovery_end_time_sec: Optional[float],
                  band_envelopes: Optional[Dict[str, np.ndarray]] = None,
-                 prelim_bpm_prior: Optional[Callable[[float], float]] = None):
+                 pass1_bpm_prior: Optional[Callable[[float], float]] = None):
 
         self.audio_envelope = audio_envelope
         self.sample_rate = sample_rate
@@ -54,10 +54,10 @@ class PeakClassifier:
         )
 
         self.state = self._initialize_state(
-            start_bpm_hint, precomputed_noise_floor, precomputed_troughs, prelim_bpm_prior
+            start_bpm_hint, precomputed_noise_floor, precomputed_troughs, pass1_bpm_prior
         )
 
-    def _initialize_state(self, start_bpm_hint, precomputed_noise_floor, precomputed_troughs, prelim_bpm_prior=None) -> AnalysisState:
+    def _initialize_state(self, start_bpm_hint, precomputed_noise_floor, precomputed_troughs, pass1_bpm_prior=None) -> AnalysisState:
         """Pre-calculates all necessary data and initializes the state for the peak finding loop."""
         analysis_data: Dict[str, Any] = {}
         dynamic_noise_floor, trough_indices = precomputed_noise_floor, precomputed_troughs
@@ -91,7 +91,7 @@ class PeakClassifier:
             long_term_bpm=long_term_bpm,
             analysis_data=analysis_data,
             sorted_troughs=sorted(trough_indices),
-            prelim_bpm_prior=prelim_bpm_prior,
+            pass1_bpm_prior=pass1_bpm_prior,
         )
 
     def classify_peaks(self) -> Tuple[np.ndarray, np.ndarray, Dict]:
@@ -102,9 +102,9 @@ class PeakClassifier:
         while self.state.loop_idx < len(self.state.all_peaks):
             current_peak_idx = self.state.all_peaks[self.state.loop_idx]
             current_time_sec = current_peak_idx / self.sample_rate
-            # Set BPM from preliminary curve (time-varying prior) when available
-            if self.state.prelim_bpm_prior is not None:
-                self.state.long_term_bpm = float(self.state.prelim_bpm_prior(current_time_sec))
+            # Set BPM from pass 1 curve (time-varying prior) when available
+            if self.state.pass1_bpm_prior is not None:
+                self.state.long_term_bpm = float(self.state.pass1_bpm_prior(current_time_sec))
 
             # Calculate pairing ratio once per iteration so all consumers
             # (kick-start recovery, pairing engine, lookahead skipper) share
@@ -328,8 +328,8 @@ class PeakClassifier:
         self.state.loop_idx += 1
 
     def _append_bpm_history(self):
-        """When no preliminary prior: update long_term_bpm from last R-R (preliminary pass). Then append (time, bpm) for plotting."""
-        if self.state.prelim_bpm_prior is None and len(self.state.candidate_beats) > 1:
+        """When no pass 1 prior: update long_term_bpm from last R-R (pass 1 run). Then append (time, bpm) for plotting."""
+        if self.state.pass1_bpm_prior is None and len(self.state.candidate_beats) > 1:
             new_rr = (self.state.candidate_beats[-1] - self.state.candidate_beats[-2]) / self.sample_rate
             if new_rr > 0:
                 self.state.long_term_bpm = update_long_term_bpm(

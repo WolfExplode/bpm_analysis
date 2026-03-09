@@ -74,7 +74,7 @@ DEFAULT_PARAMS = {
     # =================================================================================
     # --- 4.1. Core Pairing Rules ---
     "pairing_confidence_threshold": 0.50,          # Confidence score required to classify two peaks as an S1-S2 pair.
-    "preliminary_pass_confidence_threshold": 0.7, # threshold used for the first (anchor-finding) pass only.
+    "pass1_confidence_threshold": 0.7,  # Confidence threshold for pass 1 (anchor-finding run) only.
     "s1_s2_interval_cap_sec": 0.4,        # The absolute maximum time (seconds) allowed between S1 and S2.
     "min_s1_s2_interval_sec": 0.10,           # Absolute minimum (100ms)
     "min_s1_s2_interval_rr_fraction": 0.23,   # Or 23% of total RR interval
@@ -120,7 +120,7 @@ DEFAULT_PARAMS = {
     "contractility_boost_max": 0.2,              # Max multiplicative boost at expected: confidence *= (1 + boost).
     "contractility_penalty_max": 0.5,             # Max multiplicative penalty when far outside band.
     "recovery_phase_duration_sec": 120,      # Duration (seconds) of the high-contractility state after peak BPM.
-    "recovery_phase_min_peak_bpm": 110,      # Only enable recovery-phase adjust if preliminary peak BPM >= this (avoids activating when BPM stays low).
+    "recovery_phase_min_peak_bpm": 110,      # Only enable recovery-phase adjust if pass 1 peak BPM >= this (avoids activating when BPM stays low).
 
     # --- 4.4. V-Shaped Interval: boost near expected, penalty outside ---
     # Linear boost from 0 at expected±zero_crossing to max at expected; linear penalty outside that band.
@@ -186,9 +186,11 @@ DEFAULT_PARAMS = {
     "plot_amplitude_scale_factor": 250.0,    # Adjusts the default y-axis range of the signal amplitude plot.
     # In plotting.py: avoid dashed lines (dash=...) for line traces--they cause noticeable lag.
     "plot_downsample_factor": 4,             # Downsample only large traces: Audio Envelope and Dynamic Noise Floor (keep 1 of every N points). Does NOT apply to Average S1/S2 contractility, BPM, HRV, or markers.
-    "prelim_bpm_outlier_window_sec": 10.0,   # Half-window (seconds) for preliminary BPM outlier removal: keep point if within median ± k*MAD in [t-window, t+window].
-    "prelim_bpm_outlier_mad_k": 2.5,         # Number of MADs: drop preliminary BPM point if |BPM - local_median| > k * local_MAD.
-    "prelim_bpm_loess_frac": 0.05,            # LOESS fraction of points used for local fit when drawing BPM (preliminary) curve (e.g. 0.2 = 20% nearest points).
+    "pass1_bpm_outlier_window_sec": 10.0,   # Half-window (seconds) for pass 1 BPM outlier removal: keep point if within median ± k*MAD in [t-window, t+window].
+    "pass1_bpm_outlier_mad_k": 2.5,         # Number of MADs. Lower = more aggressive outlier removal.
+    "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2 instantaneous BPM display: MAD outlier removal.
+    "pass2_instant_bpm_outlier_mad_k": 8,       # Number of MADs for pass 2 instantaneous BPM display. lower = more aggressive outlier removal.
+    "pass1_bpm_loess_frac": 0.02,           # LOESS fraction for pass 1 BPM curve (lower = tighter fit).
     "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
     # --- 7.1. Long Plot Optimization ---

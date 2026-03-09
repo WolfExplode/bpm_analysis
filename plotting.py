@@ -128,11 +128,11 @@ class Plotter:
         final_metrics: Dict,
         output_options: Optional[Dict] = None,
         output_suffix: Optional[str] = None,
-        prelim_bpm_series: Optional[pd.Series] = None,
-        prelim_bpm_times: Optional[np.ndarray] = None,
+        pass1_bpm_series: Optional[pd.Series] = None,
+        pass1_bpm_times: Optional[np.ndarray] = None,
     ):
         """Generates and saves the main analysis plot by calling helper methods.
-        output_suffix: if provided (e.g. '_pass1', '_pass2'), used for HTML/PNG/CSV filenames instead of '_bpm_plot'.
+        output_suffix: if provided (e.g. '_pass2', '_pass3'), used for HTML/PNG/CSV filenames instead of '_bpm_plot'.
         """
         self.fig = make_subplots(specs=[[{"secondary_y": True}]])
         self.time_axis_sec = np.arange(len(audio_envelope)) / self.sample_rate
@@ -158,8 +158,11 @@ class Plotter:
             final_metrics.get("smoothed_bpm"),
             analysis_data,
             final_metrics.get("windowed_hrv_df"),
-            prelim_bpm_series=prelim_bpm_series,
-            prelim_bpm_times=prelim_bpm_times,
+            output_suffix=output_suffix,
+            pass1_bpm_series=pass1_bpm_series,
+            pass1_bpm_times=pass1_bpm_times,
+            instant_bpm=final_metrics.get("instant_bpm"),
+            bpm_times=final_metrics.get("bpm_times"),
         )
         self._add_slope_traces(
             final_metrics.get("major_inclines"),
@@ -248,10 +251,11 @@ class Plotter:
             bpm_times = final_metrics.get("bpm_times")
             if smoothed_bpm is not None and not smoothed_bpm.empty and bpm_times is not None:
                 csv_path = os.path.join(self.output_directory, f"{base_name}{suffix}.csv")
+                csv_bpm_header = "BPM (Pass 2)" if suffix == "_pass2" else "BPM (Pass 3)" if suffix == "_pass3" else "Average BPM"
                 try:
                     with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
                         writer = csv.writer(csvfile)
-                        writer.writerow(["Time (s)", "Average BPM"])
+                        writer.writerow(["Time (s)", csv_bpm_header])
                         for t, bpm in zip(bpm_times, smoothed_bpm.values):
                             if not np.isnan(bpm):
                                 writer.writerow([f"{t:.3f}", f"{bpm:.3f}"])
@@ -263,28 +267,28 @@ class Plotter:
 
         return self.fig
 
-    def plot_preliminary_save(
+    def plot_pass1_save(
         self,
         audio_envelope: np.ndarray,
         anchor_beats: np.ndarray,
         output_options: Optional[Dict] = None,
         output_html_path: Optional[str] = None,
-        prelim_analysis_data: Optional[Dict] = None,
-        prelim_bpm_data: Optional[Dict] = None,
+        pass1_analysis_data: Optional[Dict] = None,
+        pass1_bpm_data: Optional[Dict] = None,
     ):
         """
-        Builds and saves the preliminary-pass plot: envelope, anchor beats, BPM scatter + curve (canonical, same as algorithm), and BPM Trend (Belief).
-        prelim_bpm_data: dict with curve_times, curve_bpm, scatter_times, scatter_bpm from compute_preliminary_bpm_curve (display = algorithm input).
+        Builds and saves the pass 1 plot: envelope, anchor beats, BPM scatter + curve (canonical, same as algorithm), and BPM Trend (Belief).
+        pass1_bpm_data: dict with curve_times, curve_bpm, scatter_times, scatter_bpm from compute_pass1_bpm_curve (display = algorithm input).
         """
         self.time_axis_sec = np.arange(len(audio_envelope), dtype=float) / self.sample_rate
         self.audio_duration_sec = float(self.time_axis_sec[-1]) if len(self.time_axis_sec) > 0 else 0.0
         base_name = os.path.basename(os.path.splitext(self.file_name)[0])
         if output_html_path is None:
-            output_html_path = os.path.join(self.output_directory, f"{base_name}_preliminary.html")
+            output_html_path = os.path.join(self.output_directory, f"{base_name}_pass1.html")
 
         html_requested = True if output_options is None else output_options.get("html", True)
         if not html_requested:
-            logging.info("Skipping preliminary HTML as requested.")
+            logging.info("Skipping pass 1 HTML as requested.")
             return
 
         self.spectrogram_enabled = False
@@ -317,44 +321,44 @@ class Plotter:
                     secondary_y=False,
                 )
 
-        # Canonical preliminary BPM (same as algorithm): scatter + curve from prelim_bpm_data
-        if prelim_bpm_data and "scatter_times" in prelim_bpm_data and "scatter_bpm" in prelim_bpm_data:
-            st = prelim_bpm_data["scatter_times"]
-            sb = prelim_bpm_data["scatter_bpm"]
+        # Canonical pass 1 BPM (same as algorithm): scatter + curve from pass1_bpm_data
+        if pass1_bpm_data and "scatter_times" in pass1_bpm_data and "scatter_bpm" in pass1_bpm_data:
+            st = pass1_bpm_data["scatter_times"]
+            sb = pass1_bpm_data["scatter_bpm"]
             if len(st) > 0 and len(st) == len(sb):
                 scatter_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in st])
                 fig.add_trace(
                     go.Scatter(
                         x=scatter_dt,
                         y=sb,
-                        name="Instant BPM (preliminary)",
+                        name="Instant BPM (pass 1)",
                         mode="markers",
                         marker=dict(size=6, color="#e74c3c", symbol="circle"),
                     ),
                     secondary_y=True,
                 )
                 self.bpm_axis_center = float(np.median(sb))
-        if prelim_bpm_data and "curve_times" in prelim_bpm_data and "curve_bpm" in prelim_bpm_data:
-            ct = prelim_bpm_data["curve_times"]
-            cb = prelim_bpm_data["curve_bpm"]
+        if pass1_bpm_data and "curve_times" in pass1_bpm_data and "curve_bpm" in pass1_bpm_data:
+            ct = pass1_bpm_data["curve_times"]
+            cb = pass1_bpm_data["curve_bpm"]
             if len(ct) > 0 and len(ct) == len(cb):
                 curve_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in ct])
                 fig.add_trace(
                     go.Scatter(
                         x=curve_dt,
                         y=cb,
-                        name="BPM (preliminary)",
+                        name="BPM (pass 1)",
                         mode="lines",
                         line=dict(color="orange", width=2),
                     ),
                     secondary_y=True,
                 )
-        if not (prelim_bpm_data and "scatter_bpm" in prelim_bpm_data and len(prelim_bpm_data["scatter_bpm"]) > 0):
+        if not (pass1_bpm_data and "scatter_bpm" in pass1_bpm_data and len(pass1_bpm_data["scatter_bpm"]) > 0):
             self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
 
-        # BPM Trend (Belief) from preliminary pass (EMA from accepted beats during that pass)
-        if prelim_analysis_data and "long_term_bpm_series" in prelim_analysis_data and not prelim_analysis_data["long_term_bpm_series"].empty:
-            lt_series = prelim_analysis_data["long_term_bpm_series"]
+        # BPM Trend (Belief) from pass 1 (EMA from accepted beats during that run)
+        if pass1_analysis_data and "long_term_bpm_series" in pass1_analysis_data and not pass1_analysis_data["long_term_bpm_series"].empty:
+            lt_series = pass1_analysis_data["long_term_bpm_series"]
             lt_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in lt_series.index])
             fig.add_trace(
                 go.Scatter(
@@ -363,6 +367,7 @@ class Plotter:
                     name="BPM Trend (Belief)",
                     mode="lines",
                     line=dict(color="orange", width=2),
+                    visible="legendonly",
                 ),
                 secondary_y=True,
             )
@@ -370,7 +375,7 @@ class Plotter:
         self.fig = fig
         self._configure_layout()
 
-        plot_title = f"Preliminary pass - {os.path.basename(self.file_name)}"
+        plot_title = f"Pass 1 - {os.path.basename(self.file_name)}"
         plot_config = {
             "scrollZoom": True,
             "toImageButtonOptions": {"filename": plot_title, "format": "png", "scale": 2},
@@ -802,31 +807,62 @@ class Plotter:
         smoothed_bpm,
         analysis_data,
         windowed_hrv_df,
-        prelim_bpm_series: Optional[pd.Series] = None,
-        prelim_bpm_times: Optional[np.ndarray] = None,
+        output_suffix: Optional[str] = None,
+        pass1_bpm_series: Optional[pd.Series] = None,
+        pass1_bpm_times: Optional[np.ndarray] = None,
+        instant_bpm: Optional[np.ndarray] = None,
+        bpm_times: Optional[np.ndarray] = None,
     ):
-        """Adds BPM, preliminary BPM curve (when provided), and HRV traces. BPM Trend (Belief) is only on the preliminary plot."""
+        """Adds BPM, pass 1 BPM curve (when provided), and HRV traces. BPM Trend (Belief) is only on the pass 1 plot."""
+        # Label smoothed BPM by pass when known (Pass 2 / Pass 3), else generic
+        if output_suffix == "_pass2":
+            bpm_trace_name = "BPM (Pass 2)"
+        elif output_suffix == "_pass3":
+            bpm_trace_name = "BPM (Pass 3)"
+        else:
+            bpm_trace_name = "Average BPM"
         if smoothed_bpm is not None and not smoothed_bpm.empty:
             self.fig.add_trace(
                 go.Scatter(
-                    x=smoothed_bpm.index, y=smoothed_bpm.values, name="Average BPM", line=dict(color="#4a4a4a", width=3)
+                    x=smoothed_bpm.index, y=smoothed_bpm.values, name=bpm_trace_name, line=dict(color="#4a4a4a", width=3)
                 ),
                 secondary_y=True,
             )
 
-        # Preliminary BPM curve (time-varying prior used by main pass)
+        # Instantaneous BPM at each beat (pass 2 only)
         if (
-            prelim_bpm_series is not None
-            and not prelim_bpm_series.empty
-            and prelim_bpm_times is not None
-            and len(prelim_bpm_times) == len(prelim_bpm_series)
+            output_suffix == "_pass2"
+            and instant_bpm is not None
+            and bpm_times is not None
+            and len(instant_bpm) == len(bpm_times)
+            and len(bpm_times) > 0
         ):
-            prelim_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in prelim_bpm_times])
+            instant_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in bpm_times])
             self.fig.add_trace(
                 go.Scatter(
-                    x=prelim_times_dt,
-                    y=prelim_bpm_series.values,
-                    name="BPM (preliminary)",
+                    x=instant_times_dt,
+                    y=instant_bpm,
+                    name="Instantaneous BPM (Pass 2)",
+                    mode="markers",
+                    marker=dict(size=5, color="#4a4a4a", symbol="circle"),
+                    visible="legendonly",
+                ),
+                secondary_y=True,
+            )
+
+        # Pass 1 BPM curve (time-varying prior used by pass 2 and pass 3)
+        if (
+            pass1_bpm_series is not None
+            and not pass1_bpm_series.empty
+            and pass1_bpm_times is not None
+            and len(pass1_bpm_times) == len(pass1_bpm_series)
+        ):
+            pass1_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in pass1_bpm_times])
+            self.fig.add_trace(
+                go.Scatter(
+                    x=pass1_times_dt,
+                    y=pass1_bpm_series.values,
+                    name="BPM (pass 1)",
                     line=dict(color="orange", width=2),
                     visible="legendonly",
                 ),

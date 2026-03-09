@@ -205,11 +205,11 @@ def _loess(
     return y_out
 
 
-def compute_preliminary_bpm_curve(
+def compute_pass1_bpm_curve(
     anchor_beats: np.ndarray, sample_rate: int, params: Dict
 ) -> Optional[Dict[str, np.ndarray]]:
     """
-    Canonical preliminary BPM curve: instant BPM from anchor beats, outlier removal (median+MAD), then LOESS.
+    Canonical pass 1 BPM curve: instant BPM from anchor beats, outlier removal (median+MAD), then LOESS.
     Used for the time-varying prior, recovery phase, and all plots so display matches algorithm input.
     Returns dict with curve_times, curve_bpm (dense LOESS), scatter_times, scatter_bpm (filtered instant), or None if insufficient data.
     """
@@ -224,8 +224,8 @@ def compute_preliminary_bpm_curve(
     times_sec = peak_times[1:][valid]
 
     # Outlier removal: keep point if within median ± k*MAD in local window
-    half_window_sec = float(params.get("prelim_bpm_outlier_window_sec", 10.0))
-    mad_k = float(params.get("prelim_bpm_outlier_mad_k", 2.5))
+    half_window_sec = float(params.get("pass1_bpm_outlier_window_sec", 10.0))
+    mad_k = float(params.get("pass1_bpm_outlier_mad_k", 2.5))
     keep = np.ones(len(instant_bpm), dtype=bool)
     for i in range(len(instant_bpm)):
         in_window = np.abs(times_sec - times_sec[i]) <= half_window_sec
@@ -241,7 +241,7 @@ def compute_preliminary_bpm_curve(
     if len(scatter_times) < 3:
         return None
 
-    loess_frac = float(params.get("prelim_bpm_loess_frac", 0.2))
+    loess_frac = float(params.get("pass1_bpm_loess_frac", 0.2))
     curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
     curve_bpm = _loess(curve_times, scatter_times, scatter_bpm, frac=loess_frac)
 
@@ -253,19 +253,66 @@ def compute_preliminary_bpm_curve(
     }
 
 
-def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> Tuple[pd.Series, np.ndarray]:
-    """Calculates and smooths the final BPM series from S1 peaks."""
+def filter_instant_bpm_mad(
+    bpm_times: np.ndarray, instant_bpm: np.ndarray, params: Dict
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Apply MAD-based outlier removal to instantaneous BPM (e.g. for pass 2).
+    Keeps points where |BPM - local_median| <= k * local_MAD in a time window.
+    Returns (filtered_bpm_times, filtered_instant_bpm).
+    """
+    if bpm_times is None or instant_bpm is None or len(bpm_times) != len(instant_bpm) or len(bpm_times) < 2:
+        return np.array([]), np.array([])
+    bpm_times = np.asarray(bpm_times, dtype=float)
+    instant_bpm = np.asarray(instant_bpm, dtype=float)
+    half_window_sec = float(params.get("pass2_instant_bpm_outlier_window_sec", 10.0))
+    mad_k = float(params.get("pass2_instant_bpm_outlier_mad_k", 2.5))
+    keep = np.ones(len(instant_bpm), dtype=bool)
+    for i in range(len(instant_bpm)):
+        in_window = np.abs(bpm_times - bpm_times[i]) <= half_window_sec
+        if not np.any(in_window):
+            continue
+        local_median = np.median(instant_bpm[in_window])
+        local_mad = np.median(np.abs(instant_bpm[in_window] - local_median))
+        if local_mad > 1e-9:
+            keep[i] = np.abs(instant_bpm[i] - local_median) <= mad_k * local_mad
+    return bpm_times[keep], instant_bpm[keep]
+
+
+def smooth_bpm_series_from_instant(
+    bpm_times: np.ndarray, instant_bpm: np.ndarray, params: Dict
+) -> Tuple[pd.Series, np.ndarray, np.ndarray]:
+    """
+    Build smoothed BPM series from given (bpm_times, instant_bpm) using the same
+    rolling window as calculate_bpm_series. Returns (smoothed_bpm, bpm_times, instant_bpm).
+    """
+    if bpm_times is None or instant_bpm is None or len(bpm_times) != len(instant_bpm) or len(bpm_times) == 0:
+        return pd.Series(dtype=np.float64), np.array([]), np.array([])
+    bpm_times = np.asarray(bpm_times, dtype=float)
+    instant_bpm = np.asarray(instant_bpm, dtype=float)
+    start_time = datetime.datetime.fromtimestamp(0)
+    valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
+    bpm_series = pd.Series(instant_bpm, index=valid_peak_times_dt)
+    smoothing_window_sec = params["output_smoothing_window_sec"]
+    smoothing_window_str = f"{smoothing_window_sec}s"
+    smoothed_bpm = bpm_series.rolling(window=smoothing_window_str, min_periods=1, center=True).mean()
+    return smoothed_bpm, bpm_times, instant_bpm
+
+
+def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> Tuple[pd.Series, np.ndarray, np.ndarray]:
+    """Calculates and smooths the final BPM series from S1 peaks. Returns (smoothed_bpm, bpm_times, instant_bpm)."""
     if len(peaks) < 2:
-        return pd.Series(dtype=np.float64), np.array([])
+        return pd.Series(dtype=np.float64), np.array([]), np.array([])
     peak_times = peaks / sample_rate
     time_diffs = np.diff(peak_times)
     valid_diffs = time_diffs > 1e-6
     if not np.any(valid_diffs):
-        return pd.Series(dtype=np.float64), np.array([])
+        return pd.Series(dtype=np.float64), np.array([]), np.array([])
 
-    instant_bpm = 60.0 / time_diffs[valid_diffs]
+    instant_bpm = np.asarray(60.0 / time_diffs[valid_diffs], dtype=float)
+    bpm_times = peak_times[1:][valid_diffs]
     start_time = datetime.datetime.fromtimestamp(0)
-    valid_peak_times_dt = [start_time + datetime.timedelta(seconds=t) for t in peak_times[1:][valid_diffs]]
+    valid_peak_times_dt = [start_time + datetime.timedelta(seconds=t) for t in bpm_times]
     bpm_series = pd.Series(instant_bpm, index=valid_peak_times_dt)
     avg_heart_rate = np.median(instant_bpm)
     if avg_heart_rate > 0:
@@ -275,8 +322,7 @@ def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> T
     else:
         smoothed_bpm = pd.Series(dtype=np.float64)
 
-    # Return the original numpy time points for compatibility with older functions that need it
-    return smoothed_bpm, peak_times[1:][valid_diffs]
+    return smoothed_bpm, bpm_times, instant_bpm
 
 
 def detect_trapezoid_discontinuities(smoothed_bpm: pd.Series, bpm_times_sec: np.ndarray, params: Dict) -> List[Dict]:
@@ -612,10 +658,10 @@ def calculate_hrr(smoothed_bpm_series: pd.Series, interval_sec: int = 60) -> Opt
 
 
 def find_recovery_phase(bpm_series: pd.Series, bpm_times_sec: np.ndarray, params: Dict) -> Tuple[Optional[float], Optional[float]]:
-    """Analyzes a preliminary BPM series to find the peak heart rate and define the subsequent recovery phase window.
+    """Analyzes a pass 1 BPM series to find the peak heart rate and define the subsequent recovery phase window.
     Returns (None, None) if BPM stays low (no exertion/recovery), so recovery-phase adjust is not applied."""
     if bpm_times_sec is None or len(bpm_times_sec) < 2:
-        logging.warning("Not enough preliminary beats to determine a recovery phase.")
+        logging.warning("Not enough pass 1 beats to determine a recovery phase.")
         return None, None
     bpm_values = bpm_series.to_numpy()
     peak_idx = np.argmax(bpm_values)
@@ -623,11 +669,11 @@ def find_recovery_phase(bpm_series: pd.Series, bpm_times_sec: np.ndarray, params
     min_peak_bpm = params.get("recovery_phase_min_peak_bpm", 95.0)
     if peak_bpm < min_peak_bpm:
         logging.info(
-            f"Recovery phase not used: peak BPM in preliminary pass is {peak_bpm:.1f} (below {min_peak_bpm:.0f}). "
+            f"Recovery phase not used: peak BPM in pass 1 is {peak_bpm:.1f} (below {min_peak_bpm:.0f}). "
             "BPM remains low throughout -- no exertion/recovery assumed."
         )
         return None, None
     peak_time_sec = float(bpm_times_sec[peak_idx])
     recovery_end_time_sec = peak_time_sec + params.get("recovery_phase_duration_sec", 120.0)
-    logging.info(f"Peak BPM detected in preliminary pass at {peak_time_sec:.2f}s ({peak_bpm:.1f} BPM). High-contractility state defined until {recovery_end_time_sec:.2f}s.")
+    logging.info(f"Peak BPM detected in pass 1 at {peak_time_sec:.2f}s ({peak_bpm:.1f} BPM). High-contractility state defined until {recovery_end_time_sec:.2f}s.")
     return peak_time_sec, recovery_end_time_sec

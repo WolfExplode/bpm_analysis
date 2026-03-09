@@ -166,7 +166,7 @@ class BPMApp:
 
         ttk.Checkbutton(
             debug_frame,
-            text="Output all passes (preliminary, pass1, pass2)",
+            text="Output all passes (pass 1, pass 2, pass 3)",
             variable=self.output_all_passes,
             command=self.save_ui_settings,
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
@@ -364,8 +364,8 @@ class BPMApp:
             return
         
         # Find all HTML report files (BPM plot or FFT profiles); open the most recent
-        # Open the most recently modified HTML report (preliminary, pass1, pass2, or FFT)
-        html_suffixes = ("_preliminary.html", "_pass1.html", "_pass2.html", "_fft_profiles.html")
+        # Open the most recently modified HTML report (pass 1, pass 2, pass 3, or FFT)
+        html_suffixes = ("_pass1.html", "_pass2.html", "_pass3.html", "_fft_profiles.html")
         html_files = []
         try:
             for filename in os.listdir(output_dir):
