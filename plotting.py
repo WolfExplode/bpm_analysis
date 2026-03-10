@@ -7,8 +7,6 @@ import shutil
 import json
 from typing import Dict, Optional, List, Any
 from peak_utils import PeakType, _get_peak_type_from_debug, format_debug_entry, get_peak_prominence_details
-from confidence_engine import PairingEngine
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -152,7 +150,7 @@ class Plotter:
         self._add_trough_markers(audio_envelope, analysis_data)
         self._add_peak_traces(
             all_raw_peaks,
-            analysis_data.get("beat_debug_info", {}),
+            analysis_data.get("peak_classifications", {}),
             audio_envelope,
             analysis_data.get("trough_indices"),
         )
@@ -508,114 +506,6 @@ class Plotter:
                 ),
                 secondary_y=False,
             )
-
-        # S1/S2 band energy (continuous) and proportion at peaks (what the algorithm uses).
-        s1_band = analysis_data.get("s1_band")
-        s2_band = analysis_data.get("s2_band")
-        s1_low = self.params.get("s1_band_low_hz", 20)
-        s1_high = self.params.get("s1_band_high_hz", 60)
-        s2_low = self.params.get("s2_band_low_hz", 60)
-        s2_high = self.params.get("s2_band_high_hz", 200)
-        if (
-            s1_band is not None
-            and s2_band is not None
-            and len(s1_band) == len(audio_envelope)
-            and len(s2_band) == len(audio_envelope)
-        ):
-            # Continuous band energy traces (raw envelope in each band; may appear temporally smeared).
-            plot_s1_band = s1_band[::factor] if factor > 1 and len(s1_band) >= factor else s1_band
-            plot_s2_band = s2_band[::factor] if factor > 1 and len(s2_band) >= factor else s2_band
-            self.fig.add_trace(
-                go.Scatter(
-                    x=plot_time_axis_dt,
-                    y=plot_s1_band,
-                    name=f"S1 band energy ({s1_low:.0f}-{s1_high:.0f} Hz)",
-                    line=dict(color="darkorange", width=1.2),
-                    hovertemplate="S1 band: %{y:.4f}<extra></extra>",
-                    visible="legendonly",
-                ),
-                secondary_y=False,
-            )
-            self.fig.add_trace(
-                go.Scatter(
-                    x=plot_time_axis_dt,
-                    y=plot_s2_band,
-                    name=f"S2 band energy ({s2_low:.0f}-{s2_high:.0f} Hz)",
-                    line=dict(color="purple", width=1.2),
-                    hovertemplate="S2 band: %{y:.4f}<extra></extra>",
-                    visible="legendonly",
-                ),
-                secondary_y=False,
-            )
-        if (
-            s1_band is not None
-            and s2_band is not None
-            and len(s1_band) == len(audio_envelope)
-            and len(s2_band) == len(audio_envelope)
-            and all_raw_peaks is not None
-            and len(all_raw_peaks) > 0
-        ):
-            eps = 1e-9
-            scale = float(np.max(plot_envelope)) if len(plot_envelope) > 0 else 1.0
-            if scale < 1e-9:
-                scale = 1.0
-            peak_indices = np.asarray(all_raw_peaks)
-            in_bounds = (peak_indices >= 0) & (peak_indices < len(s1_band))
-            peak_indices = peak_indices[in_bounds]
-            if len(peak_indices) > 0:
-                # Use same Gaussian-windowed band energy as multiband pairing in confidence_engine.
-                n = len(audio_envelope)
-                window_ms = float(self.params.get("multiband_peak_window_ms", 100.0))
-                sigma_ms = float(self.params.get("multiband_gaussian_sigma_ms", 25.0))
-                window_samples = max(1, int(round(window_ms * 0.001 * self.sample_rate)))
-                if window_samples % 2 == 0:
-                    window_samples += 1
-                half = min((window_samples - 1) // 2, n // 2)
-                sigma_samp = max(1e-6, sigma_ms * 0.001 * self.sample_rate)
-                s1_proportion_w = []
-                s2_proportion_w = []
-                for peak_idx in peak_indices:
-                    e_s1 = PairingEngine._gaussian_weighted_energy(
-                        s1_band, int(peak_idx), half, sigma_samp, n
-                    )
-                    e_s2 = PairingEngine._gaussian_weighted_energy(
-                        s2_band, int(peak_idx), half, sigma_samp, n
-                    )
-                    total_w = e_s1 + e_s2 + eps
-                    s1_proportion_w.append(e_s1 / total_w)
-                    s2_proportion_w.append(e_s2 / total_w)
-                s1_proportion_w = np.array(s1_proportion_w)
-                s2_proportion_w = np.array(s2_proportion_w)
-                s1_at_peaks = s1_proportion_w * scale
-                s2_at_peaks = s2_proportion_w * scale
-                peak_times_sec = peak_indices.astype(float) / self.sample_rate
-                peak_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in peak_times_sec])
-                self.fig.add_trace(
-                    go.Scatter(
-                        x=peak_times_dt,
-                        y=s1_at_peaks,
-                        mode="markers",
-                        name=f"S1 proportion at peaks ({s1_low:.0f}-{s1_high:.0f} Hz)",
-                        marker=dict(color="darkorange", size=6, symbol="triangle-up"),
-                        hovertemplate="S1 proportion: %{customdata:.3f}<extra></extra>",
-                        customdata=s1_proportion_w,
-                        visible="legendonly",
-                    ),
-                    secondary_y=False,
-                )
-                self.fig.add_trace(
-                    go.Scatter(
-                        x=peak_times_dt,
-                        y=s2_at_peaks,
-                        mode="markers",
-                        name=f"S2 proportion at peaks ({s2_low:.0f}-{s2_high:.0f} Hz)",
-                        marker=dict(color="purple", size=6, symbol="triangle-down"),
-                        hovertemplate="S2 proportion: %{customdata:.3f}<extra></extra>",
-                        customdata=s2_proportion_w,
-                        visible="legendonly",
-                    ),
-                    secondary_y=False,
-                )
 
     def _add_trough_markers(self, audio_envelope: np.ndarray, analysis_data: Dict):
         """Adds trough markers to the plot using original full-resolution data for accuracy."""

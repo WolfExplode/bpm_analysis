@@ -286,7 +286,7 @@ we can deduce that this is a noise peak if the next peak is substantially higher
         if i < len(all_peaks) - 1:
             next_peak_idx = all_peaks[i+1]
             if audio_envelope[next_peak_idx] > audio_envelope[current_peak_idx] * 1.5:
-                beat_debug_info[current_peak_idx] = f"Noise (Vetoed by larger subsequent peak at {next_peak_idx/sample_rate:.2f}s)"
+                peak_classifications[current_peak_idx] = f"Noise (Vetoed by larger subsequent peak at {next_peak_idx/sample_rate:.2f}s)"
                 i += 1
                 continue # Skip this peak entirely
 ```
@@ -659,7 +659,7 @@ or we can also add a ideal amp range for the potential S2 by comparing its amp t
 the High local noise confidence could be expanded upon.
 ```
 if noise_confidence > params['noise_confidence_threshold'] and not is_potential_s2 and not strong_peak_override:  
-    beat_debug_info[current_peak_idx] = "Noise (High local noise confidence)"  
+    peak_classifications[current_peak_idx] = "Noise (High local noise confidence)"  
     i += 1  
     continue
 ```

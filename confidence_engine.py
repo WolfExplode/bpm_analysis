@@ -35,12 +35,12 @@ class AnalysisState:
             otherwise the initial start_bpm and not updated.
         analysis_data: Bag of analysis artifacts that downstream plotting/reporting
             relies on (e.g., `dynamic_noise_floor_series`, `trough_indices`,
-            `deviation_series`, `beat_debug_info`, `long_term_bpm_series`).
+            `deviation_series`, `peak_classifications`, `long_term_bpm_series`).
         candidate_beats: Sample indices of peaks that have been accepted as S1 heartbeats
             (either paired S1 or validated Lone S1) during the main loop.
-        beat_debug_info: Mapping from raw peak index to a structured debug record
-            explaining how that peak was classified. This powers the debug log and
-            interactive plot tooltips.
+        peak_classifications: Mapping from raw peak index to a structured record
+            (peak_type, sections) for how that peak was classified (S1/S2/Lone S1/Noise).
+            Used by algorithm logic (e.g. FFT, pass 3), debug log, and plot tooltips.
         long_term_bpm_history: Sequence of `(time_sec, bpm)` tuples for plotting (BPM trend).
         pass1_bpm_prior: Optional callable time_sec -> bpm from the pass 1 curve.
         sorted_troughs: Sorted list of trough indices mirroring `trough_indices`,
@@ -64,7 +64,7 @@ class AnalysisState:
     long_term_bpm: float
     analysis_data: Dict[str, Any] = field(default_factory=dict)
     candidate_beats: List[int] = field(default_factory=list)
-    beat_debug_info: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    peak_classifications: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     long_term_bpm_history: List[Tuple[float, float]] = field(default_factory=list)
     pass1_bpm_prior: Optional[Callable[[float], float]] = None
     sorted_troughs: List[int] = field(default_factory=list)
@@ -427,7 +427,7 @@ def _get_recent_s1_prominences_for_state(
     giving it write access to classifier internals.
     """
     recent_s1_types = [
-        state.beat_debug_info.get(idx, {}).get("peak_type")
+        state.peak_classifications.get(idx, {}).get("peak_type")
         for idx in state.candidate_beats[-50:]
     ]
     return [
@@ -458,28 +458,12 @@ class PairingEngine:
         params: Dict,
         peak_bpm_time_sec: Optional[float],
         recovery_end_time_sec: Optional[float],
-        band_envelopes: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
         self.audio_envelope = audio_envelope
         self.sample_rate = sample_rate
         self.params = params
         self.peak_bpm_time_sec = peak_bpm_time_sec
         self.recovery_end_time_sec = recovery_end_time_sec
-        self.band_envelopes = band_envelopes
-
-    @staticmethod
-    def _gaussian_weighted_energy(
-        band_arr: np.ndarray, peak_idx: int, half: int, sigma_samp: float, n: int
-    ) -> float:
-        """Gaussian-windowed energy of a band envelope centred on a peak sample."""
-        lo = max(0, peak_idx - half)
-        hi = min(n, peak_idx + half + 1)
-        if hi <= lo:
-            return 0.0
-        offsets = np.arange(lo, hi, dtype=np.float64) - float(peak_idx)
-        weights = np.exp(-0.5 * (offsets / sigma_samp) ** 2)
-        weights /= weights.sum()
-        return float(np.sum(weights * band_arr[lo:hi]))
 
     def attempt_pair(
         self,
@@ -637,41 +621,6 @@ class PairingEngine:
                         ),
                         "result": confidence,
                     })
-
-        # --- Multi-band S1 vs S2: spectral fingerprint adjustment ---
-        if self.params.get("enable_multiband_s1_s2", True) and self.band_envelopes is not None:
-            s1_band = self.band_envelopes.get("s1_band")
-            s2_band = self.band_envelopes.get("s2_band")
-            if s1_band is not None and s2_band is not None:
-                n = len(self.audio_envelope)
-                window_ms = float(self.params.get("multiband_peak_window_ms", 100.0))
-                sigma_ms = float(self.params.get("multiband_gaussian_sigma_ms", 25.0))
-                window_samples = max(1, int(round(window_ms * 0.001 * self.sample_rate)))
-                if window_samples % 2 == 0:
-                    window_samples += 1
-                half = min((window_samples - 1) // 2, n // 2)
-                sigma_samp = max(1e-6, sigma_ms * 0.001 * self.sample_rate)
-
-                e_s1_at_first  = self._gaussian_weighted_energy(s1_band, s1_candidate_idx, half, sigma_samp, n)
-                e_s2_at_first  = self._gaussian_weighted_energy(s2_band, s1_candidate_idx, half, sigma_samp, n)
-                e_s1_at_second = self._gaussian_weighted_energy(s1_band, s2_candidate_idx, half, sigma_samp, n)
-                e_s2_at_second = self._gaussian_weighted_energy(s2_band, s2_candidate_idx, half, sigma_samp, n)
-
-                # For correct S1-S2: first peak should have more S1-band, second more S2-band.
-                # consistency > 1 means bands support this pair; < 1 means bands suggest wrong order.
-                consistency = (e_s1_at_first * e_s2_at_second) / (e_s2_at_first * e_s1_at_second + 1e-9)
-                mb_boost_max   = self.params.get("multiband_boost_max", 0.12)
-                mb_penalty_max = self.params.get("multiband_penalty_max", 0.15)
-                if consistency >= 1.2:
-                    delta = min(mb_boost_max, (consistency - 1.0) * 0.5)
-                    confidence = min(1.0, confidence + delta)
-                    steps.append({"step": "Multiband", "detail": f"bands support pair (ratio {consistency:.2f}) → +{delta:.2f}", "result": confidence})
-                elif consistency <= 0.85:
-                    delta = min(mb_penalty_max, (1.0 - consistency) * 0.5)
-                    confidence = max(0.0, confidence - delta)
-                    steps.append({"step": "Multiband", "detail": f"bands oppose pair (ratio {consistency:.2f}) → -{delta:.2f}", "result": confidence})
-                else:
-                    steps.append({"step": "Multiband", "detail": f"bands neutral (ratio {consistency:.2f}) → no change", "result": confidence})
 
         # --- V-shaped interval: linear boost when close to expected, linear penalty outside the boost zone ---
         # Hard cutoffs already applied above.

@@ -237,25 +237,6 @@ def split_wav_to_mono_channels(file_path: str, output_directory: str) -> List[st
     return channel_paths
 
 
-def _compute_band_envelope(
-    audio: np.ndarray, sample_rate: int, low_hz: float, high_hz: float, smooth_window: int
-) -> np.ndarray:
-    """Bandpass filter, Hilbert envelope, and rolling mean for one frequency band."""
-    nyquist = 0.5 * sample_rate
-    low = max(1e-6, low_hz / nyquist)
-    high = min(1.0 - 1e-6, high_hz / nyquist)
-    if low >= high:
-        return np.zeros_like(audio, dtype=np.float64)
-    sos = butter(2, [low, high], btype="band", output="sos")
-    filtered = sosfiltfilt(sos, audio)
-    analytic = hilbert(filtered)
-    envelope_raw = np.abs(analytic).astype(np.float64)
-    envelope = pd.Series(envelope_raw).rolling(
-        window=smooth_window, min_periods=1, center=True
-    ).mean().values
-    return envelope
-
-
 def _calculate_dynamic_noise_floor(
     audio_envelope: np.ndarray, sample_rate: int, params: Dict
 ) -> Tuple[pd.Series, np.ndarray]:
@@ -392,21 +373,5 @@ def preprocess_audio(
         window=smooth_window, min_periods=1, center=True
     ).mean().values
 
-    # Multi-band S1 vs S2: separate envelopes for S1-band (e.g. 20-60 Hz) and S2-band (e.g. 60-200 Hz).
-    band_envelopes = None
-    if params.get("enable_multiband_s1_s2", True):
-        s1_low = float(params.get("s1_band_low_hz", 20.0))
-        s1_high = float(params.get("s1_band_high_hz", 60.0))
-        s2_low = float(params.get("s2_band_low_hz", 60.0))
-        s2_high = float(params.get("s2_band_high_hz", 200.0))
-        band_envelopes = {
-            "s1_band": _compute_band_envelope(
-                audio_filtered, new_sample_rate, s1_low, s1_high, smooth_window
-            ),
-            "s2_band": _compute_band_envelope(
-                audio_filtered, new_sample_rate, s2_low, s2_high, smooth_window
-            ),
-        }
-
     noise_floor, trough_indices = _calculate_dynamic_noise_floor(audio_envelope, new_sample_rate, params)
-    return audio_envelope, new_sample_rate, band_envelopes, noise_floor, trough_indices
+    return audio_envelope, new_sample_rate, noise_floor, trough_indices

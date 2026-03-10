@@ -72,7 +72,7 @@ class ReportGenerator:
     def _prepare_log_data(self, audio_envelope, sample_rate, all_raw_peaks, analysis_data, smoothed_bpm, bpm_times):
         """Prepares and merges all data sources into a single DataFrame for logging."""
         events = []
-        debug_info = analysis_data.get("beat_debug_info", {})
+        debug_info = analysis_data.get("peak_classifications", {})
 
         for p in all_raw_peaks:
             reason = debug_info.get(p)

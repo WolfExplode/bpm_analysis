@@ -31,7 +31,7 @@ from hrv import (
     calculate_windowed_hrv,
     calculate_global_hrv_frequency,
 )
-from fft_profiles import compute_fft_profiles, save_fft_profiles_html
+from fft_profiles import compute_fft_profiles, compute_frequency_separation, save_fft_profiles_html
 
 
 class _NoisyAlgorithmLogFilter(logging.Filter):
@@ -60,7 +60,6 @@ class _NoisyAlgorithmLogFilter(logging.Filter):
 def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
                noise_floor: pd.Series, troughs: np.ndarray,
                start_bpm_hint: Optional[float],
-               band_envelopes: Optional[Dict[str, np.ndarray]] = None,
                ) -> Tuple[float, Optional[float], Optional[float], np.ndarray, Optional[Dict], Dict]:
     """
     Runs pass 1 (high-confidence anchor-finding) to estimate global BPM and find the recovery phase.
@@ -72,7 +71,7 @@ def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
     params_pass1["pairing_confidence_threshold"] = params.get("pass1_confidence_threshold", 0.75)
 
     classifier = PeakClassifier(audio_envelope, sample_rate, params_pass1, start_bpm_hint,
-                               noise_floor, troughs, None, None, band_envelopes)
+                               noise_floor, troughs, None, None)
     anchor_beats, _, pass1_analysis_data = classifier.classify_peaks()
 
     global_bpm_estimate = None
@@ -129,8 +128,10 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
     """
     _ = all_raw_peaks, audio_envelope, sample_rate, params
     logging.info("--- STAGES 4 & 5 TEMPLATE: pass 3 correction currently disabled ---")
-    if "beat_debug_info" not in analysis_data or analysis_data["beat_debug_info"] is None:
-        analysis_data["beat_debug_info"] = {}
+    if "peak_classifications" not in analysis_data or analysis_data["peak_classifications"] is None:
+        analysis_data["peak_classifications"] = {}
+    if "s1_s2_pairs" not in analysis_data:
+        analysis_data["s1_s2_pairs"] = []
     return np.asarray(s1_peaks), analysis_data
 
 
@@ -194,10 +195,10 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     logging.info(f"--- Processing file: {os.path.basename(original_file_path)} ---")
 
     # STAGE 1: Initialization
-    audio_envelope, sample_rate, band_envelopes, noise_floor, troughs = preprocess_audio(wav_file_path, params, output_directory, output_options)
+    audio_envelope, sample_rate, noise_floor, troughs = preprocess_audio(wav_file_path, params, output_directory, output_options)
 
     start_bpm, peak_time, recovery_time, anchor_beats, pass1_bpm, pass1_analysis_data = _run_pass1(
-        audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint, band_envelopes
+        audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
     )
 
     # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
@@ -237,15 +238,9 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
         troughs,
         peak_time,
         recovery_time,
-        band_envelopes,
         pass1_bpm_prior=pass1_bpm_prior,
     )
     s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
-
-    # Attach band envelopes to analysis_data for plotting (S1/S2 band debug traces)
-    if band_envelopes is not None:
-        analysis_data["s1_band"] = band_envelopes.get("s1_band")
-        analysis_data["s2_band"] = band_envelopes.get("s2_band")
 
     # Set default output options if none provided (needed for pass 2/pass 3 plot decisions)
     if output_options is None:
@@ -429,7 +424,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                 target_sr = int(params.get("fft_aggregate_sr", 32000))
                 fft_result = compute_fft_profiles(
                     wav_file_path,
-                    analysis_data.get("beat_debug_info", {}),
+                    analysis_data.get("peak_classifications", {}),
                     sample_rate,
                     audio_envelope,
                     params,
@@ -437,7 +432,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                 )
                 save_fft_profiles_html(
                     wav_file_path,
-                    analysis_data.get("beat_debug_info", {}),
+                    analysis_data.get("peak_classifications", {}),
                     sample_rate,
                     fft_output_path,
                     audio_envelope,
@@ -446,14 +441,30 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                 )
                 fft_aggregate_data = fft_result
             else:
+                fft_result = compute_fft_profiles(
+                    wav_file_path,
+                    analysis_data.get("peak_classifications", {}),
+                    sample_rate,
+                    audio_envelope,
+                    params,
+                )
                 save_fft_profiles_html(
                     wav_file_path,
-                    analysis_data.get("beat_debug_info", {}),
+                    analysis_data.get("peak_classifications", {}),
                     sample_rate,
                     fft_output_path,
                     audio_envelope,
                     params,
+                    fft_result=fft_result,
                 )
+            # Store S1 vs S2 frequency separation (10–15000 Hz) for future use; not used by any logic yet.
+            if fft_result is not None and len(fft_result[0]) > 0:
+                freqs, raw_s1_db, raw_s2_db = fft_result[0], fft_result[1], fft_result[2]
+                analysis_data["fft_separation"] = compute_frequency_separation(
+                    freqs, raw_s1_db, raw_s2_db, params
+                )
+            else:
+                analysis_data["fft_separation"] = None
         except Exception as e:
             logging.warning(f"FFT profiles generation failed: {e}")
 

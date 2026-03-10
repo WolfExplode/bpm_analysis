@@ -111,7 +111,7 @@ def _build_predicted_labels_for_validation(
     Builds a mapping of rounded time_sec ('%.3f') -> coarse label ('S1'/'S2'/'Noise'/'Unknown')
     from the analysis debug info.
     """
-    debug_info = analysis_data.get("beat_debug_info", {})
+    debug_info = analysis_data.get("peak_classifications", {})
     labels_by_time: Dict[str, str] = {}
 
     if not debug_info:

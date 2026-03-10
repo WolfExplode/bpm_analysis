@@ -28,17 +28,6 @@ DEFAULT_PARAMS = {
 
     "envelope_smooth_window_ms": 40,      # Rolling window (ms) for smoothing Hilbert envelope after abs(analytic). Matches common PCG practice (e.g. 50 ms).
 
-    # --- Multi-band S1 vs S2 (spectral fingerprint) ---
-    "enable_multiband_s1_s2": True,      # Use S1-band vs S2-band energy to adjust pairing confidence.
-    "s1_band_low_hz": 25.0,             # S1 typical range 20-60 Hz.
-    "s1_band_high_hz": 60.0,
-    "s2_band_low_hz": 200.0,             # S2 typical range 60-200 Hz.
-    "s2_band_high_hz": 290.0,
-    "multiband_boost_max": 0.1,         # Max confidence boost when band energies support S1-S2.
-    "multiband_penalty_max": 0.1,      # Max confidence penalty when bands suggest wrong order.
-    "multiband_peak_window_ms": 130.0,   # Time window (ms) centered on each peak; covers whole beat. Converted to samples using sample rate.
-    "multiband_gaussian_sigma_ms": 25.0, # Gaussian sigma (ms) for weighting; typically window/4 so weight falls off by edges. Used for Gaussian-weighted sum of band energy.
-
     # =================================================================================
     # 2. Signal Feature Detection
     # Governs the initial identification of peaks and troughs in the audio envelope.
@@ -189,6 +178,8 @@ DEFAULT_PARAMS = {
     "fft_aggregate_sr": 32000,                   # Sample rate for multi-file FFT aggregation (common grid). Per-file uses native sr.
     "fft_neutral_band_low_hz": 10000.0,           # Neutral band low (Hz) for S2→S1 alignment (force same level in this band).
     "fft_neutral_band_high_hz": 14000.0,          # Neutral band high (Hz) for S2→S1 alignment.
+    "fft_separation_low_hz": 10.0,                # Low bound (Hz) for S1 vs S2 frequency separation vector (algorithm use).
+    "fft_separation_high_hz": 15000.0,            # High bound (Hz) for S1 vs S2 frequency separation vector.
 
 }
 

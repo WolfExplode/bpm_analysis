@@ -18,6 +18,7 @@ from confidence_engine import (
 )
 from peak_utils import (
     PeakType,
+    _get_peak_type_from_debug,
     _is_s1_paired_debug,
     _is_lone_s1_debug,
     _is_noise_debug,
@@ -35,7 +36,6 @@ class PeakClassifier:
                  start_bpm_hint: Optional[float], precomputed_noise_floor: pd.Series,
                  precomputed_troughs: np.ndarray, peak_bpm_time_sec: Optional[float],
                  recovery_end_time_sec: Optional[float],
-                 band_envelopes: Optional[Dict[str, np.ndarray]] = None,
                  pass1_bpm_prior: Optional[Callable[[float], float]] = None):
 
         self.audio_envelope = audio_envelope
@@ -47,7 +47,6 @@ class PeakClassifier:
         # Helper components that encapsulate specific decision logic.
         self.pairing_engine = PairingEngine(
             audio_envelope, sample_rate, params, peak_bpm_time_sec, recovery_end_time_sec,
-            band_envelopes=band_envelopes,
         )
         self.lookahead_skipper = LookaheadSkipper(
             audio_envelope, sample_rate, params, self.pairing_engine
@@ -97,7 +96,7 @@ class PeakClassifier:
     def classify_peaks(self) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """Main classification loop to iterate through all raw peaks."""
         if len(self.state.all_peaks) < 2:
-            return self.state.all_peaks, self.state.all_peaks, {"beat_debug_info": {}}
+            return self.state.all_peaks, self.state.all_peaks, {"peak_classifications": {}}
 
         while self.state.loop_idx < len(self.state.all_peaks):
             current_peak_idx = self.state.all_peaks[self.state.loop_idx]
@@ -121,7 +120,7 @@ class PeakClassifier:
     def _handle_last_peak(self, peak_idx: int):
         """Classify the final peak in the sequence."""
         self.state.candidate_beats.append(peak_idx)
-        self.state.beat_debug_info[peak_idx] = {
+        self.state.peak_classifications[peak_idx] = {
             "peak_type": PeakType.LONE_S1_LAST.value,
             "sections": []
         }
@@ -136,7 +135,7 @@ class PeakClassifier:
         recent_beats = self.state.candidate_beats[-history_window:]
         paired_count = sum(
             1 for beat_idx in recent_beats
-            if _is_s1_paired_debug(self.state.beat_debug_info.get(beat_idx))
+            if _is_s1_paired_debug(self.state.peak_classifications.get(beat_idx))
         )
         return paired_count / history_window
 
@@ -169,13 +168,13 @@ class PeakClassifier:
             _append_s1_s2_contractility(
                 self.state, s1_idx, s2_idx, self.audio_envelope, self.state.trough_indices, self.sample_rate, self.params
             )
-            self.state.beat_debug_info[s1_idx] = {
+            self.state.peak_classifications[s1_idx] = {
                 "peak_type": PeakType.S1_PAIRED.value,
                 "sections": pair_sections,
             }
 
-            original_middle_debug = self.state.beat_debug_info.get(middle_idx)
-            self.state.beat_debug_info[middle_idx] = {
+            original_middle_debug = self.state.peak_classifications.get(middle_idx)
+            self.state.peak_classifications[middle_idx] = {
                 "peak_type": PeakType.NOISE.value,
                 "sections": [
                     {"type": "lookahead", "text": middle_noise_msg},
@@ -183,7 +182,7 @@ class PeakClassifier:
                 ],
             }
 
-            self.state.beat_debug_info[s2_idx] = {
+            self.state.peak_classifications[s2_idx] = {
                 "peak_type": PeakType.S2_PAIRED.value,
                 "sections": pair_sections,
             }
@@ -208,11 +207,11 @@ class PeakClassifier:
                 {"type": "confidence_trace", "steps": steps},
                 {"type": "prominence", "details": prominence_context},
             ]
-            self.state.beat_debug_info[current_peak_idx] = {
+            self.state.peak_classifications[current_peak_idx] = {
                 "peak_type": PeakType.S1_PAIRED.value,
                 "sections": sections,
             }
-            self.state.beat_debug_info[next_peak_idx] = {
+            self.state.peak_classifications[next_peak_idx] = {
                 "peak_type": PeakType.S2_PAIRED.value,
                 "sections": sections,
             }
@@ -241,15 +240,15 @@ class PeakClassifier:
                     {"type": "confidence_trace", "steps": steps_skip},
                     {"type": "prominence", "details": prominence_context_skip},
                 ]
-                self.state.beat_debug_info[current_peak_idx] = {
+                self.state.peak_classifications[current_peak_idx] = {
                     "peak_type": PeakType.S1_PAIRED.value,
                     "sections": skip_one_sections,
                 }
-                self.state.beat_debug_info[middle_idx] = {
+                self.state.peak_classifications[middle_idx] = {
                     "peak_type": PeakType.NOISE.value,
                     "sections": [{"type": "skip_one", "text": "Skipped as noise (S2 was next peak)."}],
                 }
-                self.state.beat_debug_info[next_next_peak_idx] = {
+                self.state.peak_classifications[next_next_peak_idx] = {
                     "peak_type": PeakType.S2_PAIRED.value,
                     "sections": skip_one_sections,
                 }
@@ -273,10 +272,29 @@ class PeakClassifier:
             time_sec = self.state.candidate_beats[-1] / self.sample_rate
             self.state.long_term_bpm_history.append((time_sec, self.state.long_term_bpm))
 
+    def _build_s1_s2_pairs(self) -> List[Tuple[int, int]]:
+        """Build list of (s1_idx, s2_idx) for each paired S1-S2 from classifications (pass 2 output)."""
+        pairs: List[Tuple[int, int]] = []
+        pc = self.state.peak_classifications
+        for i, idx in enumerate(self.state.all_peaks):
+            pt = _get_peak_type_from_debug(pc.get(idx)) or ""
+            if pt != PeakType.S1_PAIRED.value:
+                continue
+            for j in range(i + 1, len(self.state.all_peaks)):
+                nxt = self.state.all_peaks[j]
+                npt = _get_peak_type_from_debug(pc.get(nxt)) or ""
+                if npt == PeakType.S2_PAIRED.value:
+                    pairs.append((int(idx), int(nxt)))
+                    break
+                if PeakType.is_s1(npt):
+                    break
+        return pairs
+
     def _finalize_results(self) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """Finalizes and returns the analysis results."""
         final_peaks = np.array(sorted(list(dict.fromkeys(self.state.candidate_beats))))
-        self.state.analysis_data["beat_debug_info"] = self.state.beat_debug_info
+        self.state.analysis_data["peak_classifications"] = self.state.peak_classifications
+        self.state.analysis_data["s1_s2_pairs"] = self._build_s1_s2_pairs()
         if self.state.long_term_bpm_history:
             lt_bpm_times, lt_bpm_values = zip(*self.state.long_term_bpm_history)
             self.state.analysis_data["long_term_bpm_series"] = pd.Series(lt_bpm_values, index=lt_bpm_times)
@@ -363,12 +381,12 @@ class PeakClassifier:
         ]
         if is_valid:
             self.state.candidate_beats.append(peak_idx)
-            self.state.beat_debug_info[peak_idx] = {
+            self.state.peak_classifications[peak_idx] = {
                 "peak_type": PeakType.LONE_S1_VALIDATED.value,
                 "sections": sections,
             }
         else:
-            self.state.beat_debug_info[peak_idx] = {
+            self.state.peak_classifications[peak_idx] = {
                 "peak_type": PeakType.NOISE.value,
                 "sections": sections,
             }
@@ -389,7 +407,7 @@ class PeakClassifier:
 
         # --- 2. Absolute prominence guardrail ---
         # Track only high-quality S1s (avoid contaminating reference with noise)
-        recent_s1_types = [self.state.beat_debug_info.get(idx, {}).get("peak_type")
+        recent_s1_types = [self.state.peak_classifications.get(idx, {}).get("peak_type")
                         for idx in self.state.candidate_beats[-20:]]  # Last 20 beats
         recent_prominences = [
             calculate_peak_prominence(idx, self.audio_envelope, self.state.trough_indices)

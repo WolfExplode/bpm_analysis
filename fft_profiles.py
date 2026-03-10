@@ -31,13 +31,13 @@ def _get_pairing_confidence(entry) -> Optional[float]:
 
 
 def _collect_s1_s2_indices(
-    beat_debug_info: Dict, paired_s1_only: bool = False
+    peak_classifications: Dict, paired_s1_only: bool = False
 ) -> Tuple[list, list]:
-    """Extract S1 and S2 peak indices (at envelope sample rate) from beat_debug_info.
+    """Extract S1 and S2 peak indices (at envelope sample rate) from peak_classifications.
     If paired_s1_only is True, only include paired S1s (exclude Lone S1)."""
     s1_indices = []
     s2_indices = []
-    for peak_idx, entry in beat_debug_info.items():
+    for peak_idx, entry in peak_classifications.items():
         pt = _get_peak_type_from_debug(entry) or ""
         if PeakType.is_s1(pt):
             if paired_s1_only and pt.strip().startswith("Lone S1"):
@@ -49,7 +49,7 @@ def _collect_s1_s2_indices(
 
 
 def _select_top_peaks_by_confidence(
-    beat_debug_info: Dict,
+    peak_classifications: Dict,
     s1_indices: list,
     s2_indices: list,
     max_per_type: int = 100,
@@ -57,7 +57,7 @@ def _select_top_peaks_by_confidence(
     """Return up to max_per_type S1 and S2 indices with highest pairing confidence."""
     def sort_and_cap(indices: list) -> list:
         with_conf = [
-            (idx, _get_pairing_confidence(beat_debug_info.get(idx)) or 0.0)
+            (idx, _get_pairing_confidence(peak_classifications.get(idx)) or 0.0)
             for idx in indices
         ]
         with_conf.sort(key=lambda x: x[1], reverse=True)
@@ -158,7 +158,7 @@ def _compute_profiles_from_audio(
 
 def compute_fft_profiles(
     audio_path: str,
-    beat_debug_info: Dict,
+    peak_classifications: Dict,
     envelope_sample_rate: int,
     audio_envelope: np.ndarray,
     params: Optional[Dict] = None,
@@ -187,9 +187,9 @@ def compute_fft_profiles(
         empty = np.array([])
         return (empty, empty, empty, empty, empty, 0, 0)
 
-    s1_indices, s2_indices = _collect_s1_s2_indices(beat_debug_info, paired_s1_only=True)
+    s1_indices, s2_indices = _collect_s1_s2_indices(peak_classifications, paired_s1_only=True)
     s1_selected, s2_selected = _select_top_peaks_by_confidence(
-        beat_debug_info, s1_indices, s2_indices, max_per_type=max_peaks_per_type
+        peak_classifications, s1_indices, s2_indices, max_per_type=max_peaks_per_type
     )
     s1_full = _peak_indices_to_full_rate(s1_selected, envelope_sample_rate, full_sr)
     s2_full = _peak_indices_to_full_rate(s2_selected, envelope_sample_rate, full_sr)
@@ -242,6 +242,33 @@ def _align_s2_to_s1_in_band(
     mean_s2 = float(np.nanmean(profile_s2_db[mask]))
     offset = mean_s1 - mean_s2
     return profile_s1_db, profile_s2_db + offset
+
+
+def compute_frequency_separation(
+    freqs: np.ndarray,
+    profile_s1_db: np.ndarray,
+    profile_s2_db: np.ndarray,
+    params: Optional[Dict] = None,
+) -> Optional[Dict]:
+    """
+    Build the S1 vs S2 frequency comparison vector over a configurable band (e.g. 10–15000 Hz).
+    separation_db = profile_s1_db - profile_s2_db; positive means S1 stronger at that frequency.
+    Not used for any logic yet; infrastructure for future pass 3 / classifier use.
+    Returns dict with keys "freqs" and "separation_db" (1d arrays in band), or None if invalid.
+    """
+    if freqs is None or len(freqs) == 0 or profile_s1_db is None or profile_s2_db is None:
+        return None
+    if len(profile_s1_db) != len(freqs) or len(profile_s2_db) != len(freqs):
+        return None
+    params = params or {}
+    low_hz = float(params.get("fft_separation_low_hz", 10.0))
+    high_hz = float(params.get("fft_separation_high_hz", 15000.0))
+    mask = (freqs >= low_hz) & (freqs <= high_hz)
+    if not np.any(mask):
+        return None
+    freqs_band = np.asarray(freqs[mask], dtype=np.float64)
+    separation_db = np.asarray(profile_s1_db[mask] - profile_s2_db[mask], dtype=np.float64)
+    return {"freqs": freqs_band, "separation_db": separation_db}
 
 
 def aggregate_fft_profiles(
@@ -391,7 +418,7 @@ def _write_fft_html(fig: go.Figure, output_path: str, page_title: str, header_la
 
 def save_fft_profiles_html(
     audio_path: str,
-    beat_debug_info: Dict,
+    peak_classifications: Dict,
     envelope_sample_rate: int,
     output_path: str,
     audio_envelope: np.ndarray,
@@ -403,7 +430,7 @@ def save_fft_profiles_html(
 
     Args:
         audio_path: Path to the WAV file.
-        beat_debug_info: From analysis_data["beat_debug_info"].
+        peak_classifications: From analysis_data["peak_classifications"] (pass 2 classification result).
         envelope_sample_rate: Sample rate used for peak detection (e.g. 600 Hz).
         output_path: Path for the output HTML file.
         audio_envelope: Envelope used for peak detection; amplitudes used for normalization.
@@ -420,7 +447,7 @@ def save_fft_profiles_html(
         fig = _build_fft_figure(freqs, raw_s1_db, raw_s2_db, preproc_s1_db, preproc_s2_db, window_ms)
         _write_fft_html(fig, output_path, f"S1 / S2 FFT Profiles - {os.path.basename(audio_path)}", os.path.basename(audio_path))
         return
-    s1_indices, s2_indices = _collect_s1_s2_indices(beat_debug_info, paired_s1_only=True)
+    s1_indices, s2_indices = _collect_s1_s2_indices(peak_classifications, paired_s1_only=True)
     n_s1, n_s2 = len(s1_indices), len(s2_indices)
     if n_s1 == 0:
         logging.info("FFT profiles: no paired S1 labels; skipping FFT profiles HTML.")
@@ -434,7 +461,7 @@ def save_fft_profiles_html(
         return
 
     result = compute_fft_profiles(
-        audio_path, beat_debug_info, envelope_sample_rate, audio_envelope, params
+        audio_path, peak_classifications, envelope_sample_rate, audio_envelope, params
     )
     freqs, raw_s1_db, raw_s2_db, preproc_s1_db, preproc_s2_db = result[0], result[1], result[2], result[3], result[4]
     if freqs.size == 0:
