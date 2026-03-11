@@ -253,6 +253,50 @@ def compute_pass1_bpm_curve(
     }
 
 
+def compute_s1_s2_interval_curve(
+    obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
+) -> Optional[Dict[str, np.ndarray]]:
+    """
+    Outlier removal (median+MAD in time window) + LOESS on measured S1-S2 intervals.
+    Reuses the same pattern as compute_pass1_bpm_curve.
+    Returns dict with curve_times, curve_intervals (LOESS), scatter_times, scatter_intervals (filtered),
+    or None if insufficient data.
+    """
+    if obs_times is None or obs_intervals is None or len(obs_times) != len(obs_intervals) or len(obs_times) < 3:
+        return None
+    obs_times = np.asarray(obs_times, dtype=float)
+    obs_intervals = np.asarray(obs_intervals, dtype=float)
+
+    # Outlier removal: keep point if within median ± k*MAD in local time window
+    half_window_sec = float(params.get("s1_s2_outlier_window_sec", 8.0))
+    mad_k = float(params.get("s1_s2_outlier_mad_k", 2.5))
+    keep = np.ones(len(obs_intervals), dtype=bool)
+    for i in range(len(obs_intervals)):
+        in_window = np.abs(obs_times - obs_times[i]) <= half_window_sec
+        if not np.any(in_window):
+            continue
+        local_median = np.median(obs_intervals[in_window])
+        local_mad = np.median(np.abs(obs_intervals[in_window] - local_median))
+        if local_mad > 1e-9:
+            keep[i] = np.abs(obs_intervals[i] - local_median) <= mad_k * local_mad
+    scatter_times = obs_times[keep]
+    scatter_intervals = obs_intervals[keep]
+
+    if len(scatter_times) < 3:
+        return None
+
+    loess_frac = float(params.get("s1_s2_loess_frac", 0.05))
+    curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
+    curve_intervals = _loess(curve_times, scatter_times, scatter_intervals, frac=loess_frac)
+
+    return {
+        "curve_times": curve_times,
+        "curve_intervals": curve_intervals,
+        "scatter_times": scatter_times,
+        "scatter_intervals": scatter_intervals,
+    }
+
+
 def filter_instant_bpm_mad(
     bpm_times: np.ndarray, instant_bpm: np.ndarray, params: Dict
 ) -> Tuple[np.ndarray, np.ndarray]:

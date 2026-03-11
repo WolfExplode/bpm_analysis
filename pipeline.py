@@ -380,6 +380,9 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
         if prior_bpm_series is None and pass1_bpm is not None:
             prior_bpm_series = pd.Series(pass1_bpm["curve_bpm"])
             prior_bpm_times = pass1_bpm["curve_times"]
+        # Pass 3 plot: include peak/recovery times for systolic shift (exertion vs all-time averaging)
+        metrics_after_pass3["peak_bpm_time_sec"] = peak_time
+        metrics_after_pass3["recovery_end_time_sec"] = recovery_time
         plotly_figure = plotter.plot_and_save(
             audio_envelope,
             all_raw_peaks,

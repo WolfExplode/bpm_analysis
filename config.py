@@ -37,9 +37,9 @@ DEFAULT_PARAMS = {
     "trough_prominence_quantile": 0.3,   # How much a dip must stand out to be considered a 'trough'.
 
     # Peak position refinement: shift each raw peak to super-Gaussian-weighted center-of-mass (~100 ms window).
-    "peak_refine_window_ms": 100,        # Window (ms) around each peak for CoM; ~100 ms covers typical S1 extent.
-    "peak_refine_max_shift_ms": 10,      # Cap shift so noisy envelope cannot pull peak more than this (ms).
-    "peak_refine_super_gaussian_n": 4,   # Super-Gaussian exponent (flat top); n=4 gives flat center, smooth falloff.
+    "peak_refine_window_ms": 150,        # Window (ms) around each peak for CoM; ~100 ms covers typical S1 extent.
+    "peak_refine_max_shift_ms": 40,      # Cap shift so noisy envelope cannot pull peak more than this (ms).
+    "peak_refine_super_gaussian_n": 5,   # Super-Gaussian exponent (flat top); higher = more flat top.
 
     # =================================================================================
     # 3. Noise Estimation & Rejection
@@ -67,10 +67,10 @@ DEFAULT_PARAMS = {
     "s1_s2_interval_cap_sec": 0.4,        # The absolute maximum time (seconds) allowed between S1 and S2.
     "min_s1_s2_interval_sec": 0.10,           # Absolute minimum (100ms)
     "min_s1_s2_interval_rr_fraction": 0.23,   # Or 23% of total RR interval
-    # BPM-dependent expected S1-S2 (Weissler: ET = ref_et - slope*(BPM - ref_bpm))
-    "s1_s2_expected_weissler_ref_et_ms": 300, # Reference ejection time (ms) at ref_bpm (e.g. ~300 ms at 60 BPM).
+    # BPM-dependent expected S1-S2 (Weissler: https://www.desmos.com/calculator/ebqshptip0)
+    "s1_s2_expected_weissler_ref_et_ms": 320, # Reference ejection time (ms) at ref_bpm.
     "s1_s2_expected_weissler_ref_bpm": 60,    # BPM at which ref_et_ms is defined.
-    "s1_s2_expected_weissler_slope_ms_per_bpm": 1.0,  # ET decrease (ms) per BPM increase (literature ~1.0-1.7).
+    "s1_s2_expected_weissler_slope_ms_per_bpm": 1.26,  # ET decrease (ms) per BPM.
     "noise_prominence_threshold": 0.35,   # Peaks below this ratio are "suspect noise"
     "enable_lookahead_skipping": True,    # Enable/disable lookahead skipping
 
@@ -163,6 +163,9 @@ DEFAULT_PARAMS = {
     "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2 instantaneous BPM display: MAD outlier removal.
     "pass2_instant_bpm_outlier_mad_k": 8,       # Number of MADs for pass 2 instantaneous BPM display. lower = more aggressive outlier removal.
     "pass1_bpm_loess_frac": 0.02,           # LOESS fraction for pass 1 BPM curve (lower = tighter fit).
+    "s1_s2_outlier_window_sec": 8.0,         # Half-window (seconds) for S1-S2 interval outlier removal: MAD in local time window.
+    "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for S1-S2 interval outlier removal.
+    "s1_s2_loess_frac": 0.05,               # LOESS fraction for S1-S2 interval best-fit curve.
     "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
     # --- 7.1. Long Plot Optimization ---

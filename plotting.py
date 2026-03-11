@@ -5,12 +5,15 @@ from time_utils import seconds_to_datetime
 import csv
 import shutil
 import json
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from peak_utils import PeakType, _get_peak_type_from_debug, format_debug_entry, get_peak_prominence_details
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+from confidence_engine import calculate_bpm_intervals
+from hrv import compute_s1_s2_interval_curve
 
 import librosa
 import librosa.display
@@ -18,6 +21,73 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend for spectrogram generation
 import matplotlib.pyplot as plt
+
+
+def _compute_systolic_interval_data(
+    analysis_data: Dict,
+    pass_metrics: Dict,
+    sample_rate: int,
+    params: Dict,
+) -> Tuple[List[float], List[float], List[float], List[float]]:
+    """
+    Compute measured S1-S2 intervals from labeled pairs and BPM-expected systolic curve.
+    Returns (observed_times, observed_intervals, expected_times, expected_intervals).
+    """
+    # Measured S1-S2 intervals from labeled pairs
+    pairs = analysis_data.get("s1_s2_pairs") or []
+    observed_times: List[float] = []
+    observed_intervals: List[float] = []
+    for s1_idx, s2_idx in pairs:
+        t = (s1_idx + s2_idx) / 2.0 / sample_rate
+        interval = (s2_idx - s1_idx) / sample_rate
+        observed_times.append(t)
+        observed_intervals.append(interval)
+
+    # BPM-expected systolic curve from pass metrics
+    smoothed_bpm = pass_metrics.get("smoothed_bpm")
+    bpm_times = pass_metrics.get("bpm_times")
+    expected_times: List[float] = []
+    expected_intervals: List[float] = []
+    if smoothed_bpm is not None and bpm_times is not None:
+        for t, bpm in zip(bpm_times, smoothed_bpm.values):
+            intervals = calculate_bpm_intervals(float(bpm), params)
+            expected_times.append(float(t))
+            expected_intervals.append(intervals["s1_s2_nominal"])
+
+    return observed_times, observed_intervals, expected_times, expected_intervals
+
+
+def _compute_systolic_shift(
+    obs_t: List[float],
+    obs_iv: List[float],
+    exp_t: List[float],
+    exp_iv: List[float],
+    peak_bpm_time_sec: Optional[float],
+) -> Optional[float]:
+    """
+    Compute shift to align expected S1-S2 curve to measured data.
+    If peak_bpm_time_sec: use exertion only (t < peak). Else: average across all time.
+    Returns shift (measured_avg - expected_avg) or None if insufficient data.
+    """
+    if not obs_t or not obs_iv or not exp_t or not exp_iv or len(exp_t) < 2:
+        return None
+    obs_t_arr = np.array(obs_t, dtype=float)
+    obs_iv_arr = np.array(obs_iv, dtype=float)
+    exp_t_arr = np.array(exp_t, dtype=float)
+    exp_iv_arr = np.array(exp_iv, dtype=float)
+
+    if peak_bpm_time_sec is not None:
+        mask = obs_t_arr < peak_bpm_time_sec
+    else:
+        mask = np.ones(len(obs_t_arr), dtype=bool)
+
+    if not np.any(mask):
+        return None
+
+    measured_avg = float(np.mean(obs_iv_arr[mask]))
+    expected_at_measured = np.interp(obs_t_arr[mask], exp_t_arr, exp_iv_arr)
+    expected_avg = float(np.mean(expected_at_measured))
+    return measured_avg - expected_avg
 
 
 class Plotter:
@@ -137,7 +207,8 @@ class Plotter:
         self.fig = make_subplots(specs=[[{"secondary_y": True}]])
         self.time_axis_sec = np.arange(len(audio_envelope)) / self.sample_rate
         self.audio_duration_sec = self.time_axis_sec[-1] if len(self.time_axis_sec) > 0 else 0
-        
+        self._has_systolic_traces = False
+
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
         long_threshold_sec = float(self.params.get("long_plot_duration_threshold_sec", 600.0))
@@ -163,6 +234,9 @@ class Plotter:
             pass1_bpm_times=pass1_bpm_times,
             instant_bpm=pass_metrics.get("instant_bpm"),
             bpm_times=pass_metrics.get("bpm_times"),
+        )
+        self._add_systolic_interval_traces(
+            analysis_data, pass_metrics, output_suffix,
         )
         self._add_slope_traces(
             pass_metrics.get("major_inclines"),
@@ -404,8 +478,8 @@ class Plotter:
         self.fig.update_layout(
             template="plotly_dark",
             dragmode="pan",
-            legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="right", x=1),
-            margin=dict(t=80, b=100, l=100, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1, xanchor="right", x=1),
+            margin=dict(t=70, b=30, l=40, r=00),
             hovermode="x unified",
             autosize=True,
             uirevision="layout-stable",
@@ -425,6 +499,8 @@ class Plotter:
             ticktext=ticktext,
             hoverformat="%M:%S.%L",
             automargin=False,
+            title_standoff=4,
+            domain=[0, 0.95],
         )
 
         # Use the audio envelope trace, if present, to scale the amplitude axis.
@@ -448,6 +524,7 @@ class Plotter:
             range=[0, robust_upper_limit * amplitude_scale],
             showgrid=False,
             automargin=False,
+            title_standoff=4,
         )
         half_span = self.bpm_axis_span / 2.0
         min_bpm = max(self.bpm_axis_center - half_span, 5)
@@ -458,7 +535,22 @@ class Plotter:
             range=[min_bpm, max_bpm],
             autorange=False,
             automargin=False,
+            title_standoff=0,
         )
+        if getattr(self, "_has_systolic_traces", False):
+            self.fig.update_layout(
+                yaxis3=dict(
+                    title="Systolic Interval (s)",
+                    overlaying="y",
+                    anchor="free",
+                    side="right",
+                    position=0.97,
+                    range=[0.1, 0.45],
+                    showgrid=False,
+                    automargin=False,
+                    title_standoff=0,
+                ),
+            )
 
     def _add_line_traces(
         self,
@@ -813,6 +905,85 @@ class Plotter:
                     secondary_y=True,
                 )
 
+    def _add_systolic_interval_traces(
+        self,
+        analysis_data: Dict,
+        pass_metrics: Dict,
+        output_suffix: Optional[str],
+    ) -> None:
+        """Add BPM-expected systolic curve, measured S1-S2 datapoints (outlier-filtered), and best-fit curve on yaxis3 (Pass 2 and Pass 3 only)."""
+        if output_suffix not in ("_pass2", "_pass3"):
+            return
+        obs_t, obs_iv, exp_t, exp_iv = _compute_systolic_interval_data(
+            analysis_data, pass_metrics, self.sample_rate, self.params
+        )
+        if not exp_t and not obs_t:
+            return
+        to_dt = lambda seq: pd.to_datetime([seconds_to_datetime(float(x)) for x in seq])
+        if exp_t:
+            # Pass 3: shift expected to align with measured (exertion-only if peak exists, else all-time)
+            plot_exp_iv = list(exp_iv)
+            if output_suffix == "_pass3":
+                peak_sec = pass_metrics.get("peak_bpm_time_sec")
+                shift = _compute_systolic_shift(obs_t, obs_iv, exp_t, exp_iv, peak_sec)
+                if shift is not None:
+                    plot_exp_iv = [v + shift for v in exp_iv]
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(exp_t),
+                    y=plot_exp_iv,
+                    name="Expected S1-S2 from BPM",
+                    line=dict(color="cyan", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if obs_t:
+            # Outlier removal + LOESS best-fit curve (reuses pass1 BPM pattern)
+            fit_data = compute_s1_s2_interval_curve(
+                np.array(obs_t), np.array(obs_iv), self.params
+            )
+            if fit_data is not None:
+                scatter_t = fit_data["scatter_times"]
+                scatter_iv = fit_data["scatter_intervals"]
+                curve_t = fit_data["curve_times"]
+                curve_iv = fit_data["curve_intervals"]
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=to_dt(curve_t),
+                        y=curve_iv,
+                        name="S1-S2 Interval",
+                        line=dict(color="orange", width=2),
+                        yaxis="y3",
+                        visible="legendonly",
+                    ),
+                )
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=to_dt(scatter_t),
+                        y=scatter_iv,
+                        name="Measured S1-S2",
+                        mode="markers",
+                        marker=dict(size=6, color="lime", symbol="circle"),
+                        yaxis="y3",
+                        visible="legendonly",
+                    ),
+                )
+            else:
+                # Fallback: plot raw if curve fit fails (e.g. too few points)
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=to_dt(obs_t),
+                        y=obs_iv,
+                        name="Measured S1-S2",
+                        mode="markers",
+                        marker=dict(size=6, color="lime", symbol="circle"),
+                        yaxis="y3",
+                        visible="legendonly",
+                    ),
+                )
+        self._has_systolic_traces = True
+
     def _add_annotations_and_summary(self, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats):
         """Adds min/max BPM annotations on the plot and builds plain-text summary for the HTML Analysis Summary modal."""
         if smoothed_bpm is not None and not smoothed_bpm.empty:
@@ -1091,6 +1262,6 @@ class Plotter:
             .replace("%%TOTAL_TIME%%", total_time_str)
             .replace("%%AUDIO_SOURCE_SELECT%%", audio_source_select_html)
             .replace("%%SPECTROGRAM_SRC%%", spectrogram_original_src)
-            .replace("%%CONFIG_JSON%%", config_json)
+            .replace("/* CONFIG_JSON */ {}", config_json)
             .replace("%%PLOTLY_HTML%%", plotly_html)
         )

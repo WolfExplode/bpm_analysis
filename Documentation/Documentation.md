@@ -15,6 +15,20 @@ In a ideal world, the user should only need to enter a file, press run, and get 
 > I'm treating the documentation like a developer's journal since I'm currently the only user of the tool. One of the best ways to make my codebase more maintainable is to write documentation to help explain the design decisions that led to the current state of the codebase.
 
 
+## Design requirements:
+It's important to lay out the design requirements and scope of this project. Initially I just made this project to plot bpm/time but we have since move way beyond that. simply plotting bpm/time now seems trivial.
+Now I'm updating the design requirement to:
+**Find the locations of every S1 and S2 heart sound**
+Primary challenges include but are not limited to: 
+- noise
+- lack of audible S2
+- very faint S2
+- split S1 or split S2
+- S3 heart sound
+
+Future design requirements:
+**Find the locations of every S1 and S2 heart sound and identify anomalies such as murmur etc..**
+
 
 # General knowledge:
 ## Phonocardiography (PCG)
@@ -105,10 +119,41 @@ url: "https://youtu.be/fYtVHhk3xJ0"
 favicon: ""
 aspectRatio: "56.25"
 ```
+Time and frequency domains are two extremes of this uncertainty. You can either know exactly what a value of function is at every time point, but at the cost of being completely ignorant about what frequencies are at that time point. On the other end of the spectrum in the frequency domain we know exactly what frequencies are present in the signal but we have no idea about the temporal dynamics of them.
+### Fourier transform
 The power spectral density is that graph shown in [FL studio Fruity Parametric EQ 2](https://youtu.be/YrGxCRlCvQI?t=124) when I play the audio. 
+The Fourier transform converts data from the time domain to the frequency domain. 
+
+```embed
+title: "What is Windowing in Signal Processing?"
+image: "https://i.ytimg.com/vi/1Hd72RpMFlQ/maxresdefault.jpg"
+description: "Explains the role of Windowing in signal processing, starting with an example of basic audio compression.* If you would like to support me to make these vide..."
+url: "https://youtu.be/1Hd72RpMFlQ"
+favicon: ""
+aspectRatio: "56.25"
+```
+
+```embed
+title: "Windows and Spectral Leakage"
+image: "https://i.ytimg.com/vi/pD7f6X9-_Kg/maxresdefault.jpg?sqp=-oaymwEmCIAKENAF8quKqQMa8AEB-AHUBoAC4AOKAgwIABABGE8gZShlMA8=&rs=AOn4CLAStUjGo6bYNkwzG5OKfC55rSb0UQ"
+description: "More information on the Simcenter Testing community: https://community.sw.siemens.com/s/article/windows-and-spectral-leakageAdditional resources from the Sim..."
+url: "https://youtu.be/pD7f6X9-_Kg?t=259"
+favicon: ""
+aspectRatio: "56.25"
+```
+
+```embed
+title: "How to use the FFT like a pro, 3 essential signal prep tips"
+image: "https://i.ytimg.com/vi/tjYMprOD3GI/maxresdefault.jpg"
+description: "Unsure how to use the FFT to get meaningful results from your data? Join me as I unveil 3 crucial signal preparation tips to ensure accurate frequency analys..."
+url: "https://youtu.be/tjYMprOD3GI?t=238"
+favicon: ""
+aspectRatio: "56.25"
+```
 
 
-The fourier transform converts data from the time domain to the frequency domain. 
+
+
 
 [Nyquist-Shannon Sampling Theorem](https://youtu.be/vrXGaFV1AmE)
 
@@ -116,8 +161,16 @@ The fourier transform converts data from the time domain to the frequency domain
 ### [Application of time frequency analysis](https://www.youtube.com/playlist?list=PLn0OLiymPak2BYu--bR0ADNBJsC4kuRWs)
 ### What is a Wavelet Transform?
 In order to do time series analysis, we must understand these fundamental concepts:
-What are [wavelets](https://youtu.be/jnxqHcObNK4)? 
-what is wavelet [convolution](https://youtu.be/jnxqHcObNK4?t=1282)?
+```embed
+title: "Wavelets: a mathematical microscope"
+image: "https://i.ytimg.com/vi/jnxqHcObNK4/maxresdefault.jpg"
+description: "=====My name is Artem, I'm a neuroscience PhD student at Harvard University. 🌎 Website and Social links: https://kirsanov.ai/📥 \"Receptive Field\" neuro-news..."
+url: "https://youtu.be/jnxqHcObNK4"
+favicon: ""
+aspectRatio: "56.25"
+```
+
+What is wavelet [convolution](https://youtu.be/jnxqHcObNK4?t=1282)?
 We need to find the contribution of a certain frequency around a timepoint. 
 By applying wavelet transform, to generate a wavelet scalogram, we can [view a sound's structure](https://youtu.be/jnxqHcObNK4?t=1813)
 
@@ -212,10 +265,48 @@ We calculate the ratio between  these energies and adjust pairing confidence acc
 
 We use a Gaussian‑weighted sum of the band energy to get the "energy of the whole beat". 100ms is average duration of the S1 heart sound, the width of the beat's Hilbert envelope. We make the gaussian this width and place it at the detected peak. Then use it to mask out the section of time we are interested in. 
 
+
+#### Does frequency separation exists?
 > [!think]
 > Each beat, S1 and S2 should have a distinct sound that gives it its unique "profile". S2's higher frequency components (up to 250 Hz) are different S1's lower frequencies. I think there should be a way to exploit this. I need to confirm whether or not this frequency separation exists in my dataset before I try to isolate it. 
 
 After implementing multiple frequency bands, it appears that there's minimal or inconsistent frequency separation in my dataset. I'm not sure what do do about this.
+
+going back to the idea of a spectral fingerprint, what if we can be more flexible than a preconfigured band for S1 and S2? What if we can look at already labeled peaks of high confidence and determine what characteristics they share, then build our band around that? This is another iterative idea though. 
+
+
+#### Fourier transform Profile for S1 and S2
+I'm plotting a frequency "profile" for S1 and S2 by taking the already labeled peaks and sampling around that peak with FFT to generate the frequency. Then adding up all the frequency values to average them up and plotting it. This gives me the pure frequency domain profile of my S1 and S2 beats. 
+
+I want to determine if frequency separation exists in my dataset. If I see frequency separation, then it validates that S1 and S2 are discernable in the frequency domain. 
+
+I cannot do this if the amplitudes of S1 and S2 differ because that would cause one to be constantly higher than the other. I tried to fix this by normalizing the data to make both graphs overlap but I'm having trouble doing this. 
+in a ideal world, we would see the frequency of 
+S1 be higher 0-100hz and lower at 100-500hz
+and S2 to be lower at 0-100hz and higher at 100-500hz
+then both graphs should converge to zero or whatever dB value after 500+hz
+
+Right now, I observe limited separation within the 0-500hz range and they do not converge at the 500-22,000 hz range. this should be opposite of what I want to see. separation should be higher within the 0-500hz range and lower within the 500-22,000 hz range. 
+
+The idea is, the FFT graph of S1 and S2 should always overlap except with in the 100-500hz range where S1 starts to separate and have a higher value. then within the 100-500hz range, S1 should also separate and be lower while S2 becomes higher. If we can figure out how to get our dataset to do this with the FFT, we can reverse our process and apply it back to the peaks labeling algorithm.
+
+Since we are aggregating all labeled S1 and S2 peaks into one FFT profile. we should be doing the same for the amplitude to generate a S1 amplitude and S2 amplitude profile. this will allow us to normalize the data and remove all amplitude data from our FFT profile. 
+- [x] implemented
+
+
+I think we should only select up to 100 labeled peaks, for each type, depending on how confident the pairing confidence was when the algoritm did the pairing.
+- [x] implemented
+
+I want to be able to aggregate the spectral profile data across multiple input files to get a more general idea of what distinguishes S1 vs S2. 
+- [x] implemented 
+
+
+
+
+
+
+
+
 
 
 
@@ -241,6 +332,8 @@ After implementing multiple frequency bands, it appears that there's minimal or 
 
 
 
+
+
 # Explanation of PCG Preprocessing
 ## Generating our audio envelope:
 ### How was the Audio Envelope calculated?
@@ -258,6 +351,24 @@ HRV is calculated from R-R intervals. Since HRV is so sensitive (standard deviat
 > [!think]
 > Maybe we can solve this in a simple way:
 > we just take the integral of the waveform between two troughs and place the peak such that it divides the area under the curve in half. This should result in a slightly more accurate placement of the labels.
+
+
+> [!say]
+> The algorithm never shifts the detected peaks after they have been detected. If the detected location is not center of mass for the volume of sound around it, then it's not at the center of the "beat"
+> right now the peaks detector only labels peaks at the peak of the envelope. This is fine but after we label the peaks we should go back and adjust the location slightly if needed.
+> how can this be done? we can use a gaussian to mask around that peak and integrate the amplitude around that peak. then find the center of mass for that beat and shift the peak to that location. this can be done as a post processing step. or maybe a pre processing step? I'm not sure
+> find_peaks returns the same local maxima for the detected peaks position. then we find center of mass after integrating around ~100ms of the local maxima. that becomes the location of the detected peak. 
+> so it kinda makes sense to do this before we label peaks step
+> 
+> I think HRV would improve from this actually. sometimes there's a split S1 and the peaks are placed at M1 and sometimes at T1, our idea will average them out giving CoM at the center for a more consistent HRV
+> we should use a Super-Gaussian (with flat top), a mix between full rectangle and fully smooth gradient. 
+- [x] implemented
+
+> [!think]
+> What if the peak we are shifting is a bit of noise and not S1 or S2?, what if it's really noisy and it causes the noise peak to wander? would this be a good thing? 
+
+
+
 ### Hilbert Envelope:
 [![|1645|1027x175](https://imgur.com/69ibaD7.jpg)
 
@@ -280,14 +391,6 @@ Homomorphic filtering explicitly separates the envelope from the carrier.
 > Perhaps we can use **Hilbert** for timing precision and **homomorphic** for amplitude comparison.
 
 After implementing Homomorphic envelope, it doesn't really make a improvement... I think I'll just use Hilbert
-
-
-
-
-
-
-
-
 
 
 
@@ -342,6 +445,37 @@ Also, if the timing deviates too much from expected, we hard reject the pairing 
 #### How is the expected interval calculated from BPM?
 using the Weissler regression (ET vs HR slope of approximately -1.0 to -1.7 ms per bpm increase)
 for example, At 135 bpm: 300 - (75 × 1.0) ≈ 225 ms 
+#### Math for nerds:
+$I_{obs}$ = observed S1–S2 interval in ms
+$I_{exp}$ = expected S1–S2 interval in ms
+$B_{max}$ = max boost
+$P_{max}$ = max penalty
+$a$ = interval_zero_crossing_fraction
+$a_{LongEnd}$ = interval_v_long_ramp_end_fraction
+$a_{ShortEnd}$ = interval_v_short_ramp_end_fraction
+
+The math for calculating the Δboost should be:
+$(L_{2}, -P_{max})$
+$(L_{1}, 0)$
+$(I_{exp}, B_{max})$
+$(R_{1}, 0)$
+$(R_{2}, -P_{max})$
+
+where
+$L_{2}=I_{exp}\cdot a_{ShortEnd}$
+$L_{1}=I_{exp}\left(1-a\right)$
+$R_{1}=I_{exp}\left(1+a\right)$
+$R_{2}=I_{exp}\cdot a_{LongEnd}$
+
+Then we draw a line connecting these points and that forms our function $f(I_{obs})$
+```embed
+title: "V-Shaped Interval"
+image: "https://www.desmos.com/calc_thumbs/production/version/t4k6ecobne/915e5a30-1a7d-11f1-a974-81ba6c8c6f9b.png"
+description: ""
+url: "https://www.desmos.com/calculator/t4k6ecobne"
+favicon: ""
+aspectRatio: "100"
+```
 
 
 > [!think] 📌
@@ -356,6 +490,10 @@ for example, At 135 bpm: 300 - (75 × 1.0) ≈ 225 ms
 > [!think]
 > we should make this a function of past S1-S2 pairs instead of BPM. I want to test how that would look. Maybe average the past 10 S1-S2 pairs to get a expected value. 
 - [x] implemented
+
+
+
+
 
 
 
@@ -715,14 +853,6 @@ Simply run `pyinstaller BPM_Analyzer.spec` to repackage and update binaries
 
 
 
-### Contributing.md
-```
-# Do not remove debugging code unless specified by the user
-# try to avoid further abstracting my code
-# try to avoid further segmenting my code
-# Do not over-engineer a solution, keep it simple
-```
-
 #### LLM prompts to maintain our codebase
 > [!say]
 > Let's do a codebase audit. Can you find areas of improvement to my codebase to make it more maintainable?
@@ -750,7 +880,8 @@ Simply run `pyinstaller BPM_Analyzer.spec` to repackage and update binaries
 > that was a large refactor, let's double check if all the decisions we made make sense in the larger context of what we are trying to do.
 
 
-
+> [!say]
+> I'm using the graphical display to debug and understand how my code works. I don't want anything for display only. display should always show what data the algorithm uses/processes. can you double check that all display data is direct data from the algorithm?
 
 
 
@@ -766,6 +897,9 @@ The code has several issues that don't fundamentally change the bpm estimation:
 
 > [!think]
 > I mean, if you really just want a accurate enough bpm/time graph, we can just plot all R-R intervals, remove the outliers and plot a line of best fit
+
+Before the second pass, we just remove outliers in the labeled dataset and draw a best fitting curve to the remaining data
+Then run second pass
 
 
 > [!think]
@@ -882,7 +1016,6 @@ In some files with low noise and a prominent S2 peak(s), it's easy to identify a
 
 
 ### Breathing:
-
 #### How Heavy Breathing Modifies Heart Sounds
 **During Inspiration:**
 - Increased venous return causes right ventricular preload to increase

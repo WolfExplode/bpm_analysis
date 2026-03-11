@@ -73,6 +73,8 @@
   let isPlaying = false;
   let isSynced = true;
   let isSpectrogramVisible = false;
+  const BEAT_HOVER_TRACES = ["S1 Beats", "S2 Beats", "Noise/Rejected"];
+  let beatHoverEnabled = true;
   let plotlyGraphDiv = null;
   let xAxisRange = null;
   let fullXAxisRange = null; // Store the full x-axis range for spectrogram positioning
@@ -402,6 +404,30 @@
     const nextState = !getAxisShowGrid(axisKey);
     button.classList.toggle("active", nextState);
     applyAxisGridState(axisKey, nextState);
+  }
+
+  function toggleBeatHover() {
+    if (!plotlyGraphDiv) return;
+    beatHoverEnabled = !beatHoverEnabled;
+    const indices = BEAT_HOVER_TRACES
+      .map((name) => findTraceIndexByName(name))
+      .filter((i) => i !== null);
+    if (!indices.length) return;
+    const hoverinfo = beatHoverEnabled ? "all" : "skip";
+    const hovertemplate = beatHoverEnabled
+      ? indices.map((i) => plotlyGraphDiv.data[i]._origHoverTemplate || "%{customdata}<extra></extra>")
+      : indices.map(() => null);
+    if (!beatHoverEnabled) {
+      indices.forEach((i) => {
+        if (!plotlyGraphDiv.data[i]._origHoverTemplate) {
+          plotlyGraphDiv.data[i]._origHoverTemplate = plotlyGraphDiv.data[i].hovertemplate || "%{customdata}<extra></extra>";
+        }
+      });
+    }
+    Plotly.restyle(plotlyGraphDiv, { hoverinfo, hovertemplate }, indices).then(() => {
+      const btn = document.getElementById("hover-toggle-btn");
+      if (btn) btn.classList.toggle("active", beatHoverEnabled);
+    });
   }
 
   function flushPendingAxisGridUpdates() {
@@ -1397,6 +1423,11 @@
         legendCategoryFilter.addEventListener("change", function () {
           applyLegendCategoryFilter(this.value);
         });
+      }
+      const hoverToggleBtn = document.getElementById("hover-toggle-btn");
+      if (hoverToggleBtn) {
+        hoverToggleBtn.classList.add("active");
+        hoverToggleBtn.addEventListener("click", toggleBeatHover);
       }
 
       function updateAxisRange() {
