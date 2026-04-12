@@ -60,6 +60,7 @@ class BPMApp:
         self.log_queue = queue.Queue()
         self.settings_file = os.path.join(os.getcwd(), "ui_settings.json")
         self._loading_settings = True  # Prevent saving during initialization
+        self._dnd_available = self._init_drag_drop(root)
         self.create_widgets()
         self.load_ui_settings()
         self._loading_settings = False  # Re-enable saving after load
@@ -72,13 +73,20 @@ class BPMApp:
         self.main_frame.grid(row=0, column=0, sticky="nsew")
         main_frame = self.main_frame
 
-        # File selection
+        # File selection (drag-and-drop onto this frame when tkinterdnd2 is available)
         file_frame = ttk.LabelFrame(main_frame, text="Audio File(s)", padding=10)
         file_frame.grid(row=0, column=0, sticky="ew", pady=5)
-        self.file_label = ttk.Label(file_frame, text="No files selected", wraplength=450)
+        hint = (
+            "No files selected — drag audio files here or click Browse"
+            if self._dnd_available
+            else "No files selected"
+        )
+        self.file_label = ttk.Label(file_frame, text=hint, wraplength=450)
         self.file_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
         browse_btn = ttk.Button(file_frame, text="Browse", command=self.select_file, bootstyle=INFO)
         browse_btn.pack(side=tk.RIGHT, padx=5)
+        if self._dnd_available:
+            self._register_file_drop_target(file_frame)
 
         # Parameters
         param_frame = ttk.LabelFrame(main_frame, text="Analysis Parameters", padding=10)
@@ -227,6 +235,55 @@ class BPMApp:
         finally:
             self.root.after(100, self.process_log_queue)
 
+    def _init_drag_drop(self, root):
+        """Load tkdnd on the root window so child widgets can accept file drops."""
+        try:
+            from tkinterdnd2 import TkinterDnD
+            TkinterDnD._require(root)
+            return True
+        except ImportError:
+            logging.warning("tkinterdnd2 not installed; drag-and-drop disabled.")
+            return False
+        except RuntimeError as e:
+            logging.warning("Drag-and-drop unavailable: %s", e)
+            return False
+
+    def _register_file_drop_target(self, widget):
+        from tkinterdnd2 import DND_FILES
+
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind("<<Drop>>", self._on_files_dropped)
+
+    def _on_files_dropped(self, event):
+        from tkinterdnd2 import COPY as DND_COPY
+
+        try:
+            paths = self.root.tk.splitlist(event.data)
+        except tk.TclError:
+            return DND_COPY
+        files = []
+        for p in paths:
+            norm = os.path.normpath(p)
+            if os.path.isfile(norm):
+                files.append(norm)
+        if files:
+            self._apply_selected_files(files)
+        return DND_COPY
+
+    def _apply_selected_files(self, paths):
+        """Apply a non-empty list of file paths (same behavior as Browse after selection)."""
+        if not paths:
+            return
+        self.current_files = list(paths)
+        self.file_label.config(text=f"{len(self.current_files)} files selected")
+        self.analyze_btn.config(state=tk.NORMAL)
+        self.save_ui_settings()
+        if len(self.current_files) == 1:
+            self._update_status("Ready to analyze the selected file.")
+        else:
+            self.bpm_entry.delete(0, tk.END)
+            self._update_status(f"Ready to analyze {len(self.current_files)} files.")
+
     def select_file(self):
         filetypes = [('Audio files', '*.wav *.mp3 *.m4a *.flac *.ogg *.mp4 *.mkv *.mov'), ('All files', '*.*')]
         filenames = filedialog.askopenfilename(
@@ -235,21 +292,7 @@ class BPMApp:
             multiple=True
         )
         if filenames:
-            self.current_files = list(filenames)
-            label_text = f"{len(self.current_files)} files selected"
-            self.file_label.config(text=label_text)
-            self.analyze_btn.config(state=tk.NORMAL)
-            
-            # Save the selected files to settings
-            self.save_ui_settings()
-
-            if len(self.current_files) == 1:
-                self._update_status("Ready to analyze the selected file.")
-            else:
-                # If multiple files are selected, clear the entry to avoid confusion.
-                # The user must enter a value to be used for the whole batch.
-                self.bpm_entry.delete(0, tk.END)
-                self._update_status(f"Ready to analyze {len(self.current_files)} files.")
+            self._apply_selected_files(list(filenames))
 
     def _find_initial_audio_file(self):
         """

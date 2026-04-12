@@ -46,9 +46,9 @@ DEFAULT_PARAMS = {
     # Rules for calculating the dynamic noise floor and vetoing noisy peaks.
     # =================================================================================
     # --- 3.1. Dynamic Noise Floor ---
-    "noise_floor_quantile": 0.20,        # Quantile of troughs used to calculate the noise floor. (0.2 = 20th percentile).
-    "noise_window_sec": 4,               # I Adjusted This✔ Rolling window in seconds. smaller means more sensitive to noise.
-    "trough_rejection_multiplier": 10.0, # I Adjusted This✔ A trough N-times higher than the draft noise floor is rejected.
+    "noise_floor_quantile": 0.25,        # Quantile of troughs used to calculate the noise floor. lower = more sensitive to noise.
+    "noise_window_sec": 2.5,               # I Adjusted This✔ Rolling window in seconds. smaller means more sensitive to noise.
+    "trough_rejection_multiplier": 6.0, # I Adjusted This✔ A trough N-times higher than the draft noise floor is rejected.
     # I wanted to keep this value high to be conservative
 
     # --- 3.2. Peak Noise Vetoing ---

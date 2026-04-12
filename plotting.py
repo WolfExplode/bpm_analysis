@@ -479,7 +479,7 @@ class Plotter:
             template="plotly_dark",
             dragmode="pan",
             legend=dict(orientation="h", yanchor="bottom", y=1, xanchor="right", x=1),
-            margin=dict(t=70, b=30, l=40, r=00),
+            margin=dict(t=90, b=30, l=40, r=00), # borders/margins
             hovermode="x unified",
             autosize=True,
             uirevision="layout-stable",
