@@ -14,7 +14,7 @@ import datetime
 from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
-from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS
+from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS, strip_output_filename_emojis
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -123,6 +123,12 @@ class BPMApp:
         self.output_to_input_dir = tk.BooleanVar(value=False)
         self.output_all_passes = tk.BooleanVar(value=True)
         self.verbose_console_logging = tk.BooleanVar(value=True)
+        self.html_s1_s2_hover_on_by_default = tk.BooleanVar(
+            value=DEFAULT_OUTPUT_OPTIONS.get("html_s1_s2_hover_on_by_default", False)
+        )
+        self.html_inline_interactive_script = tk.BooleanVar(
+            value=DEFAULT_OUTPUT_OPTIONS.get("html_inline_interactive_script", False)
+        )
 
         # Output files section — left column then right column (top to bottom each)
         output_frame = ttk.LabelFrame(main_frame, text="Output Files", padding="10")
@@ -153,9 +159,27 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=half, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(8, 0))
 
+        ttk.Checkbutton(
+            output_frame,
+            text="HTML: start with S1/S2 hover tooltips on (toolbar \u201cS1/S2 Hover info\u201d)",
+            variable=self.html_s1_s2_hover_on_by_default,
+            command=self.save_ui_settings,
+        ).grid(row=half + 1, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(4, 0))
+
+        self.html_s1_s2_hover_on_by_default.trace("w", lambda *args: self.save_ui_settings())
+
+        ttk.Checkbutton(
+            output_frame,
+            text="HTML: embed minimal script only (no interactive_plot.js; chart + hover + legend filter only)",
+            variable=self.html_inline_interactive_script,
+            command=self.save_ui_settings,
+        ).grid(row=half + 2, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+
+        self.html_inline_interactive_script.trace("w", lambda *args: self.save_ui_settings())
+
         # Select All/None buttons
         btn_frame_output = ttk.Frame(output_frame)
-        btn_frame_output.grid(row=half + 1, column=0, columnspan=2, pady=(10, 0))
+        btn_frame_output.grid(row=half + 3, column=0, columnspan=2, pady=(10, 0))
         ttk.Button(btn_frame_output, text="Select All", command=self.select_all_outputs,
                   bootstyle=SECONDARY).grid(row=0, column=0, padx=(0, 5))
         ttk.Button(btn_frame_output, text="Select None", command=self.select_none_outputs,
@@ -366,7 +390,13 @@ class BPMApp:
     _SETTINGS_VAR_KEYS = (
         ('process_all_channels', 'verbose_console_logging')
         + tuple('output_' + k for k, _ in OUTPUT_FILE_OPTIONS)
-        + ('optimize_long_plots', 'output_to_input_dir', 'output_all_passes')
+        + (
+            'optimize_long_plots',
+            'output_to_input_dir',
+            'output_all_passes',
+            'html_s1_s2_hover_on_by_default',
+            'html_inline_interactive_script',
+        )
     )
 
     def save_ui_settings(self):
@@ -489,6 +519,8 @@ class BPMApp:
         """Get the current output file selection as a dictionary (keys match config.DEFAULT_OUTPUT_OPTIONS)."""
         opts = {opt_key: getattr(self, "output_" + opt_key).get() for opt_key, _ in OUTPUT_FILE_OPTIONS}
         opts["output_all_passes"] = self.output_all_passes.get()
+        opts["html_s1_s2_hover_on_by_default"] = self.html_s1_s2_hover_on_by_default.get()
+        opts["html_inline_interactive_script"] = self.html_inline_interactive_script.get()
         return opts
 
     def start_analysis_thread(self):
@@ -499,7 +531,9 @@ class BPMApp:
 
         # Check if at least one output option is selected
         output_options = self.get_output_options()
-        if not any(output_options.values()):
+        _meta_html_keys = frozenset({"html_s1_s2_hover_on_by_default", "html_inline_interactive_script"})
+        required_outputs = {k: v for k, v in output_options.items() if k not in _meta_html_keys}
+        if not any(required_outputs.values()):
             messagebox.showerror("Error", "Please select at least one output file type to generate.")
             return
 
@@ -602,10 +636,11 @@ class BPMApp:
                     ext_lower = ext.lower()
 
                     if ext_lower != '.wav':
-                        base_name_only = os.path.basename(base_name)
+                        source_stem = os.path.basename(base_name)
                         source_dir = os.path.dirname(file_path)
-                        same_dir_wav = os.path.join(source_dir, base_name_only + ".wav")
-                        output_dir_wav = os.path.join(output_dir, base_name_only + ".wav")
+                        same_dir_wav = os.path.join(source_dir, source_stem + ".wav")
+                        output_stem = strip_output_filename_emojis(source_stem)
+                        output_dir_wav = os.path.join(output_dir, output_stem + ".wav")
 
                         if os.path.exists(same_dir_wav):
                             # Reuse an existing WAV next to the input file, copying to output_dir if needed.
@@ -639,7 +674,10 @@ class BPMApp:
                         if os.path.abspath(output_dir) == os.path.abspath(input_dir):
                             wav_path = file_path
                         else:
-                            wav_path = os.path.join(output_dir, os.path.basename(file_path))
+                            orig_base = os.path.basename(file_path)
+                            o_stem, o_ext = os.path.splitext(orig_base)
+                            out_wav_name = strip_output_filename_emojis(o_stem) + o_ext
+                            wav_path = os.path.join(output_dir, out_wav_name)
                             shutil.copy(file_path, wav_path)
 
                     # Decide which WAV(s) to analyze: either the single mixed file, or

@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path, strip_output_filename_emojis
 from confidence_engine import calculate_bpm_intervals
 from hrv import compute_s1_s2_interval_curve
 
@@ -102,6 +103,7 @@ class Plotter:
         source_audio_path: Optional[str] = None,
     ):
         self.file_name = file_name
+        self.output_stem = output_stem_from_path(file_name)
         self.params = params
         self.sample_rate = sample_rate
         self.output_directory = output_directory
@@ -254,7 +256,7 @@ class Plotter:
 
         self._configure_layout()
 
-        base_name = os.path.basename(os.path.splitext(self.file_name)[0])
+        base_name = self.output_stem
         suffix = output_suffix if output_suffix is not None else "_bpm_plot"
         output_html_path = os.path.join(self.output_directory, f"{base_name}{suffix}.html")
         output_png_path = os.path.join(self.output_directory, f"{base_name}{suffix}.png")
@@ -291,7 +293,9 @@ class Plotter:
             plotly_html = self.fig.to_html(config=plot_config, full_html=False, include_plotlyjs='cdn')
 
             # Generate custom HTML with audio player and playhead
-            custom_html = self._generate_custom_html(plotly_html, plot_title, base_name)
+            custom_html = self._generate_custom_html(
+                plotly_html, plot_title, base_name, output_options=output_options
+            )
 
             with open(output_html_path, 'w', encoding='utf-8') as f:
                 f.write(custom_html)
@@ -355,7 +359,7 @@ class Plotter:
         """
         self.time_axis_sec = np.arange(len(audio_envelope), dtype=float) / self.sample_rate
         self.audio_duration_sec = float(self.time_axis_sec[-1]) if len(self.time_axis_sec) > 0 else 0.0
-        base_name = os.path.basename(os.path.splitext(self.file_name)[0])
+        base_name = self.output_stem
         if output_html_path is None:
             output_html_path = os.path.join(self.output_directory, f"{base_name}_pass1.html")
 
@@ -455,7 +459,9 @@ class Plotter:
             "showTips": False,
         }
         plotly_html = self.fig.to_html(config=plot_config, full_html=False, include_plotlyjs="cdn")
-        custom_html = self._generate_custom_html(plotly_html, plot_title, base_name)
+        custom_html = self._generate_custom_html(
+            plotly_html, plot_title, base_name, output_options=output_options
+        )
         with open(output_html_path, "w", encoding="utf-8") as f:
             f.write(custom_html)
         logging.info(f"Preliminary pass plot saved to {output_html_path}")
@@ -1121,33 +1127,37 @@ class Plotter:
         base_name: str,
         *,
         pipeline_steps_html: str = "",
+        output_options: Optional[Dict] = None,
     ) -> str:
         """
         Generates custom HTML with audio player, timeline scrubber, and synchronized playhead.
         Loads assets/template.html and substitutes %%PLACEHOLDER%% tokens with computed values.
+        Uses %%HTML_INTERACTIVE_SCRIPTS%% for config + either interactive_plot.js or inlined html_inline_minimal.js.
         """
         audio_file_name = os.path.basename(self.audio_source_path)
+        _stem, _ext = os.path.splitext(audio_file_name)
+        output_audio_basename = strip_output_filename_emojis(_stem) + _ext
         duration_sec = self.audio_duration_sec or 0
 
         # --- Resolve audio source path ---
         audio_src = ""
         if os.path.exists(self.audio_source_path):
-            dest_audio_path = os.path.join(self.output_directory, audio_file_name)
+            dest_audio_path = os.path.join(self.output_directory, output_audio_basename)
             if os.path.abspath(self.audio_source_path) != os.path.abspath(dest_audio_path):
                 try:
                     shutil.copy2(self.audio_source_path, dest_audio_path)
                     logging.info(f"Copied audio file to {dest_audio_path}")
                 except Exception as e:
                     logging.error(f"Could not copy audio file: {e}")
-            audio_src = audio_file_name.replace('\\', '/')
+            audio_src = output_audio_basename.replace('\\', '/')
         else:
             logging.error(f"Audio source file does NOT exist: {self.audio_source_path}")
-            dest_audio_path = os.path.join(self.output_directory, audio_file_name)
+            dest_audio_path = os.path.join(self.output_directory, output_audio_basename)
             if os.path.exists(dest_audio_path):
-                audio_src = audio_file_name.replace('\\', '/')
+                audio_src = output_audio_basename.replace('\\', '/')
                 logging.info(f"Found audio file in output directory: {dest_audio_path}")
             else:
-                logging.error(f"Audio file not found anywhere: {audio_file_name}")
+                logging.error(f"Audio file not found anywhere: {output_audio_basename}")
 
         filtered_debug_file_name = f"{base_name}_filtered_debug.wav"
         filtered_debug_path = os.path.join(self.output_directory, filtered_debug_file_name)
@@ -1210,6 +1220,9 @@ class Plotter:
         )
 
         # --- Build JS configuration payload ---
+        _oo = output_options if output_options is not None else DEFAULT_OUTPUT_OPTIONS.copy()
+        hover_on_by_default = bool(_oo.get("html_s1_s2_hover_on_by_default", False))
+
         config_payload = {
             "totalDuration": float(duration_sec),
             "spectrogramSources": {
@@ -1229,20 +1242,51 @@ class Plotter:
                 "filtered": filtered_debug_file_name if filtered_available else audio_file_name,
             },
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
+            "htmlS1S2HoverOnByDefault": hover_on_by_default,
         }
         config_json = json.dumps(config_payload)
 
-        # --- Copy interactive_plot.js to output directory ---
-        try:
-            js_src_path = os.path.join(os.path.dirname(__file__), "assets", "interactive_plot.js")
-            js_dest_path = os.path.join(self.output_directory, "interactive_plot.js")
-            if os.path.exists(js_src_path):
-                shutil.copy2(js_src_path, js_dest_path)
-                logging.info(f"Copied interactive_plot.js to {js_dest_path}")
-            else:
-                logging.error(f"interactive_plot.js not found at {js_src_path}; HTML will reference a missing script.")
-        except Exception as e:
-            logging.error(f"Failed to copy interactive_plot.js: {e}")
+        use_inline_js = bool(_oo.get("html_inline_interactive_script", False))
+
+        # --- Full interactive script (sidecar) vs minimal script embedded in HTML ---
+        if not use_inline_js:
+            try:
+                js_src_path = os.path.join(os.path.dirname(__file__), "assets", "interactive_plot.js")
+                js_dest_path = os.path.join(self.output_directory, "interactive_plot.js")
+                if os.path.exists(js_src_path):
+                    shutil.copy2(js_src_path, js_dest_path)
+                    logging.info(f"Copied interactive_plot.js to {js_dest_path}")
+                else:
+                    logging.error(
+                        f"interactive_plot.js not found at {js_src_path}; HTML will reference a missing script."
+                    )
+            except Exception as e:
+                logging.error(f"Failed to copy interactive_plot.js: {e}")
+        else:
+            logging.info("HTML uses embedded minimal script (no interactive_plot.js copy).")
+
+        minimal_js_path = os.path.join(os.path.dirname(__file__), "assets", "html_inline_minimal.js")
+        if use_inline_js:
+            try:
+                with open(minimal_js_path, encoding="utf-8") as jf:
+                    minimal_js_body = jf.read()
+            except OSError as e:
+                logging.error(f"Could not load {minimal_js_path}: {e}")
+                raise
+            minimal_js_body = minimal_js_body.replace("</script>", "<\\/script>")
+            scripts_tail = (
+                "    <script>\n        window.BPM_ANALYZER_CONFIG = "
+                + config_json
+                + ";\n    </script>\n    <script>\n"
+                + minimal_js_body
+                + "\n    </script>\n"
+            )
+        else:
+            scripts_tail = (
+                "    <script>\n        window.BPM_ANALYZER_CONFIG = "
+                + config_json
+                + ';\n    </script>\n    <script src="interactive_plot.js"></script>\n'
+            )
 
         # --- Load template and substitute placeholders ---
         template_path = os.path.join(os.path.dirname(__file__), "assets", "template.html")
@@ -1262,6 +1306,6 @@ class Plotter:
             .replace("%%TOTAL_TIME%%", total_time_str)
             .replace("%%AUDIO_SOURCE_SELECT%%", audio_source_select_html)
             .replace("%%SPECTROGRAM_SRC%%", spectrogram_original_src)
-            .replace("/* CONFIG_JSON */ {}", config_json)
+            .replace("%%HTML_INTERACTIVE_SCRIPTS%%", scripts_tail)
             .replace("%%PLOTLY_HTML%%", plotly_html)
         )

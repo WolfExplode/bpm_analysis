@@ -1,5 +1,6 @@
 # config.py
 # Default parameters and output toggles for the analysis pipeline.
+import os
 # Values are tuned for typical PCG recordings from consumer hardware.
 # See Documentation.md "Parameter Tuning Rationale" for reasoning behind specific values.
 
@@ -190,6 +191,10 @@ DEFAULT_PARAMS = {
 # add new options here only (GUI builds checkboxes and get_output_options from these keys).
 DEFAULT_OUTPUT_OPTIONS = {
     "html": True,
+    # When False (default), generated HTML opens with S1/S2 beat hover tooltips off; user can enable via toolbar.
+    "html_s1_s2_hover_on_by_default": False,
+    # When True, embed a small script in the HTML file instead of copying interactive_plot.js (no audio/spectrogram/label JS).
+    "html_inline_interactive_script": False,
     "png": False,
     "csv": True,
     "summary": True,
@@ -199,3 +204,14 @@ DEFAULT_OUTPUT_OPTIONS = {
     "fft_profiles": True,
     "regression_log": False,
 }
+
+
+def strip_output_filename_emojis(stem: str) -> str:
+    """Remove specific emojis from a file name stem used for generated outputs (input files are unchanged)."""
+    for ch in ("⭐", "🌟", "💦"):
+        stem = stem.replace(ch, "")
+    return stem
+
+
+def output_stem_from_path(file_path: str) -> str:
+    return strip_output_filename_emojis(os.path.basename(os.path.splitext(file_path)[0]))

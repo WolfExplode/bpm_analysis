@@ -14,6 +14,7 @@ ttk_datas = collect_data_files("ttkbootstrap")
 # Bundle local JS assets needed at runtime (e.g., interactive Plotly controls)
 extra_datas = [
     (os.path.join("assets", "interactive_plot.js"), os.path.join("assets")),
+    (os.path.join("assets", "html_inline_minimal.js"), os.path.join("assets")),
 ]
 
 a = Analysis(

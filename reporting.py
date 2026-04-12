@@ -6,6 +6,7 @@ from typing import Dict, Optional
 import numpy as np
 import pandas as pd
 
+from config import output_stem_from_path
 from peak_utils import _get_peak_type_from_debug, format_debug_entry
 from time_utils import timestamp_str
 
@@ -24,7 +25,7 @@ class ReportGenerator:
         self.file_name = file_name
         self.output_directory = output_directory
         self.file_name_no_ext = os.path.splitext(file_name)[0]
-        self.base_name = os.path.basename(self.file_name_no_ext)
+        self.base_name = output_stem_from_path(file_name)
 
     def save_analysis_summary(self, metrics: Dict):
         """Saves a comprehensive Markdown summary of the analysis results. metrics: BPM/HRV from latest pass."""

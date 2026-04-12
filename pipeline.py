@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple, Any, Callable
 from scipy.interpolate import interp1d
 
 from audio_preprocessing import preprocess_audio
-from config import DEFAULT_OUTPUT_OPTIONS
+from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
 from plotting import Plotter
 from reporting import ReportGenerator
 from validation import (
@@ -230,7 +230,7 @@ def analyze_wav_file(
             output_directory,
             source_audio_path=wav_file_path,
         )
-        base_name = os.path.basename(os.path.splitext(original_file_path)[0])
+        base_name = output_stem_from_path(original_file_path)
         pass1_html_path = os.path.join(output_directory, f"{base_name}_pass1.html")
         plotter_pass1.plot_pass1_save(
             audio_envelope,
@@ -451,7 +451,7 @@ def analyze_wav_file(
     if params.get("enable_fft_profiles", True) and output_options.get("fft_profiles", True):
         _ui("Generating FFT profiles (HTML)...")
         try:
-            base_name = os.path.basename(os.path.splitext(original_file_path)[0])
+            base_name = output_stem_from_path(original_file_path)
             fft_output_path = os.path.join(output_directory, f"{base_name}_fft_profiles.html")
             if collect_fft_for_aggregate:
                 target_sr = int(params.get("fft_aggregate_sr", 32000))

@@ -6,7 +6,8 @@
 //       spectrogramSources: { original: string, filtered: string },
 //       spectrogramAvailable: { original: boolean, filtered: boolean },
 //       audioSources: { original: string, filtered: string },
-//       audioLabels: { original: string, filtered: string }
+//       audioLabels: { original: string, filtered: string },
+//       htmlS1S2HoverOnByDefault: boolean  // optional; default false = hover off until user toggles toolbar
 //   };
 
 (function () {
@@ -18,6 +19,7 @@
   const AUDIO_SOURCES = cfg.audioSources || {};
   const AUDIO_LABELS = cfg.audioLabels || {};
   const ANALYSIS_SUMMARY = typeof cfg.analysisSummary === "string" ? cfg.analysisSummary : "";
+  const beatHoverDefaultOn = cfg.htmlS1S2HoverOnByDefault === true;
 
   // DOM Elements
   const audio = document.getElementById("audio-player");
@@ -74,7 +76,7 @@
   let isSynced = true;
   let isSpectrogramVisible = false;
   const BEAT_HOVER_TRACES = ["S1 Beats", "S2 Beats", "Noise/Rejected"];
-  let beatHoverEnabled = true;
+  let beatHoverEnabled = beatHoverDefaultOn;
   let plotlyGraphDiv = null;
   let xAxisRange = null;
   let fullXAxisRange = null; // Store the full x-axis range for spectrogram positioning
@@ -406,28 +408,32 @@
     applyAxisGridState(axisKey, nextState);
   }
 
-  function toggleBeatHover() {
+  function applyBeatHoverToPlot() {
     if (!plotlyGraphDiv) return;
-    beatHoverEnabled = !beatHoverEnabled;
-    const indices = BEAT_HOVER_TRACES
-      .map((name) => findTraceIndexByName(name))
-      .filter((i) => i !== null);
+    const indices = BEAT_HOVER_TRACES.map((name) => findTraceIndexByName(name)).filter((i) => i !== null);
     if (!indices.length) return;
+    if (!beatHoverEnabled) {
+      indices.forEach((i) => {
+        if (!plotlyGraphDiv.data[i]._origHoverTemplate) {
+          plotlyGraphDiv.data[i]._origHoverTemplate =
+            plotlyGraphDiv.data[i].hovertemplate || "%{customdata}<extra></extra>";
+        }
+      });
+    }
     const hoverinfo = beatHoverEnabled ? "all" : "skip";
     const hovertemplate = beatHoverEnabled
       ? indices.map((i) => plotlyGraphDiv.data[i]._origHoverTemplate || "%{customdata}<extra></extra>")
       : indices.map(() => null);
-    if (!beatHoverEnabled) {
-      indices.forEach((i) => {
-        if (!plotlyGraphDiv.data[i]._origHoverTemplate) {
-          plotlyGraphDiv.data[i]._origHoverTemplate = plotlyGraphDiv.data[i].hovertemplate || "%{customdata}<extra></extra>";
-        }
-      });
-    }
     Plotly.restyle(plotlyGraphDiv, { hoverinfo, hovertemplate }, indices).then(() => {
       const btn = document.getElementById("hover-toggle-btn");
       if (btn) btn.classList.toggle("active", beatHoverEnabled);
     });
+  }
+
+  function toggleBeatHover() {
+    if (!plotlyGraphDiv) return;
+    beatHoverEnabled = !beatHoverEnabled;
+    applyBeatHoverToPlot();
   }
 
   function flushPendingAxisGridUpdates() {
@@ -1426,9 +1432,11 @@
       }
       const hoverToggleBtn = document.getElementById("hover-toggle-btn");
       if (hoverToggleBtn) {
-        hoverToggleBtn.classList.add("active");
+        hoverToggleBtn.classList.toggle("active", beatHoverEnabled);
         hoverToggleBtn.addEventListener("click", toggleBeatHover);
       }
+
+      applyBeatHoverToPlot();
 
       function updateAxisRange() {
         if (plotlyGraphDiv._fullLayout && plotlyGraphDiv._fullLayout.xaxis) {

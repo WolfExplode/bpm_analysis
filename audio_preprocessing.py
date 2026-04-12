@@ -6,7 +6,7 @@ import os
 import logging
 from typing import Dict, Optional, Tuple, List
 
-from config import DEFAULT_OUTPUT_OPTIONS
+from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
 
 import numpy as np
 import pandas as pd
@@ -212,7 +212,7 @@ def split_wav_to_mono_channels(file_path: str, output_directory: str) -> List[st
         return [file_path]
 
     mono_segments = sound.split_to_mono()
-    base_name = os.path.basename(os.path.splitext(file_path)[0])
+    base_name = output_stem_from_path(file_path)
 
     channel_paths: List[str] = []
     for idx, seg in enumerate(mono_segments):
@@ -329,7 +329,7 @@ def preprocess_audio(
     audio_filtered = sosfiltfilt(sos, audio_downsampled)
 
     if save_debug_file:
-        base_name = os.path.basename(os.path.splitext(file_path)[0])
+        base_name = output_stem_from_path(file_path)
         debug_path = os.path.join(output_directory, f"{base_name}_filtered_debug.wav")
 
         # Resample to a browser-friendly sample rate for HTML5 audio playback.
