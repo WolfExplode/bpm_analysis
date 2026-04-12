@@ -50,7 +50,7 @@ class BPMApp:
     MIN_WIDTH = 420
     MIN_HEIGHT = 380
 
-    def __init__(self, root):
+    def __init__(self, root, initial_files=None):
         self.root = root
         self.root.title("Heartbeat BPM Analyzer")
         self.root.minsize(self.MIN_WIDTH, self.MIN_HEIGHT)
@@ -66,7 +66,16 @@ class BPMApp:
         self._loading_settings = False  # Re-enable saving after load
         self.root.after(100, self.process_log_queue)
         self.root.after(150, self._fit_window_to_content)
-        self._find_initial_audio_file()
+        cli_files = []
+        if initial_files:
+            for raw in initial_files:
+                p = os.path.normpath(raw)
+                if os.path.isfile(p):
+                    cli_files.append(p)
+        if cli_files:
+            self._apply_selected_files(cli_files)
+        else:
+            self._find_initial_audio_file()
 
     def create_widgets(self):
         self.main_frame = ttk.Frame(self.root, padding="20")
@@ -400,30 +409,51 @@ class BPMApp:
 
     def open_last_html(self):
         """Find and open the most recently generated HTML report file."""
-        output_dir = os.path.join(os.getcwd(), "processed_files")
-        
-        if not os.path.exists(output_dir):
-            messagebox.showwarning("No Reports", "No processed files directory found. Run an analysis first.")
+        # Default output folder plus each input file's folder (when "save next to input" was used).
+        dirs_to_scan = set()
+        processed_dir = os.path.join(os.getcwd(), "processed_files")
+        if os.path.isdir(processed_dir):
+            dirs_to_scan.add(os.path.abspath(processed_dir))
+        for fp in self.current_files:
+            parent = os.path.dirname(os.path.abspath(fp))
+            if os.path.isdir(parent):
+                dirs_to_scan.add(parent)
+
+        if not dirs_to_scan:
+            messagebox.showwarning(
+                "No Reports",
+                "No output folders found (processed_files or folders of selected inputs). Run an analysis first.",
+            )
             return
-        
-        # Find all HTML report files (BPM plot or FFT profiles); open the most recent
-        # Open the most recently modified HTML report (pass 1, pass 2, pass 3, or FFT)
+
+        # BPM plot or FFT profile HTML; pick newest mtime across all scanned dirs.
         html_suffixes = ("_pass1.html", "_pass2.html", "_pass3.html", "_fft_profiles.html")
         html_files = []
-        try:
-            for filename in os.listdir(output_dir):
-                if filename.endswith(".html") and any(filename.endswith(suffix) for suffix in html_suffixes):
-                    file_path = os.path.join(output_dir, filename)
-                    mtime = os.path.getmtime(file_path)
-                    html_files.append((mtime, file_path, filename))
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not read processed files directory: {e}")
+        read_errors = []
+        for output_dir in dirs_to_scan:
+            try:
+                for filename in os.listdir(output_dir):
+                    if filename.endswith(".html") and any(
+                        filename.endswith(suffix) for suffix in html_suffixes
+                    ):
+                        file_path = os.path.join(output_dir, filename)
+                        mtime = os.path.getmtime(file_path)
+                        html_files.append((mtime, file_path, filename))
+            except Exception as e:
+                read_errors.append((output_dir, e))
+
+        if read_errors and not html_files:
+            messagebox.showerror(
+                "Error",
+                "Could not read output folder(s): "
+                + "; ".join(f"{d}: {err}" for d, err in read_errors),
+            )
             return
-        
+
         if not html_files:
             messagebox.showwarning(
                 "No Reports",
-                "No HTML reports found (BPM plot or FFT profiles). Run an analysis first.",
+                "No HTML reports found (BPM plot or FFT profiles) in processed_files or next to your selected inputs. Run an analysis first.",
             )
             return
         
@@ -616,6 +646,12 @@ class BPMApp:
                     # one per channel if requested.
                     wav_files_to_analyze = [wav_path]
                     if process_all_channels:
+                        self.log_queue.put(
+                            UIMessage(
+                                UIMessageType.STATUS,
+                                f"({i + 1}/{total_files}) {os.path.basename(file_path)}: Splitting stereo into mono channels...",
+                            )
+                        )
                         wav_files_to_analyze = split_wav_to_mono_channels(wav_path, output_dir)
 
                     # Pass the file-specific start_bpm_hint and output options to the analysis function.
@@ -643,12 +679,17 @@ class BPMApp:
                         else:
                             status_suffix = ""
 
-                        self.log_queue.put(
-                            UIMessage(
-                                UIMessageType.STATUS,
-                                f"({i + 1}/{total_files}) Analyzing heartbeat{status_suffix}...",
-                            )
-                        )
+                        status_prefix = f"({i + 1}/{total_files}) {os.path.basename(file_path)}{status_suffix}"
+
+                        def _make_progress_cb(prefix):
+                            def _cb(detail: str):
+                                self.log_queue.put(
+                                    UIMessage(UIMessageType.STATUS, f"{prefix}: {detail}")
+                                )
+
+                            return _cb
+
+                        progress_cb = _make_progress_cb(status_prefix)
 
                         _figure, fft_data = analyze_wav_file(
                             wav_for_analysis,
@@ -658,6 +699,7 @@ class BPMApp:
                             output_directory=output_dir,
                             output_options=output_options,
                             collect_fft_for_aggregate=collect_fft_for_aggregate,
+                            progress_callback=progress_cb,
                         )
                         if fft_data is not None:
                             fft_results_for_aggregate.append(fft_data)

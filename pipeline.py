@@ -177,8 +177,24 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
     return metrics
 
 
-def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[float], original_file_path: str, output_directory: str, output_options: Optional[Dict] = None, collect_fft_for_aggregate: bool = False):
+def analyze_wav_file(
+    wav_file_path: str,
+    params: Dict,
+    start_bpm_hint: Optional[float],
+    original_file_path: str,
+    output_directory: str,
+    output_options: Optional[Dict] = None,
+    collect_fft_for_aggregate: bool = False,
+    progress_callback: Optional[Callable[[str], None]] = None,
+):
     """Main analysis pipeline that orchestrates the refactored classes."""
+    def _ui(label: str) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(label)
+            except Exception:
+                pass
+
     # Honor optional verbose logging flag from params to control how noisy the console is.
     # When disabled, we keep stage-level INFO logs but suppress very chatty algorithm-detail INFO logs.
     verbose_logging = bool(params.get("verbose_console_logging", True))
@@ -195,8 +211,10 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     logging.info(f"--- Processing file: {os.path.basename(original_file_path)} ---")
 
     # STAGE 1: Initialization
+    _ui("Preprocessing audio...")
     audio_envelope, sample_rate, noise_floor, troughs = preprocess_audio(wav_file_path, params, output_directory, output_options)
 
+    _ui("Pass 1: detecting anchor beats...")
     start_bpm, peak_time, recovery_time, anchor_beats, pass1_bpm, pass1_analysis_data = _run_pass1(
         audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
     )
@@ -204,6 +222,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
     _opts = output_options if output_options is not None else DEFAULT_OUTPUT_OPTIONS.copy()
     if _opts.get("html", True) and _opts.get("output_all_passes", True):
+        _ui("Generating pass 1 HTML report...")
         plotter_pass1 = Plotter(
             original_file_path,
             params,
@@ -224,6 +243,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
 
     # STAGE 3: Pass 2 — main analysis with time-varying BPM prior from pass 1 curve
     logging.info("--- STAGE 3: Pass 2 — main analysis ---")
+    _ui("Pass 2: classifying peaks...")
     pass1_bpm_prior = (
         _build_pass1_bpm_prior(pass1_bpm["curve_times"], pd.Series(pass1_bpm["curve_bpm"]))
         if pass1_bpm is not None
@@ -256,6 +276,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     # Compute pass 2 metrics when we might need them (pass 2 plot and/or pass 3 prior curve)
     output_all_passes = output_options.get("output_all_passes", True)
     if needs_plot_outputs and len(s1_peaks) >= 2:
+        _ui("Pass 2: computing heart rate metrics...")
         metrics_pass2 = _calculate_metrics_from_peaks(s1_peaks, sample_rate, params)
         # Pass 2: BPM curve and all derived stats from MAD-filtered instantaneous BPM (same logic as algorithm input)
         bt = metrics_pass2.get("bpm_times")
@@ -279,6 +300,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
                     hrv_summary["max_bpm"] = float(smoothed_bpm.max())
                     metrics_pass2["hrv_summary"] = hrv_summary
         if output_all_passes:
+            _ui("Pass 2: saving HTML / PNG / CSV...")
             plotter = Plotter(
                 original_file_path,
                 params,
@@ -299,6 +321,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
 
     # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
     peaks_after_pass2 = s1_peaks
+    _ui("Pass 3: refining peaks...")
     peaks_after_pass3, analysis_data = _refine_and_correct_peaks(
         peaks_after_pass2, all_raw_peaks, analysis_data, audio_envelope, sample_rate, params
     )
@@ -306,9 +329,11 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     # STAGE 6: Metrics from latest pass (pass 3). Use same MAD-based BPM as pass 2 so curves match when no correction.
     if len(peaks_after_pass3) < 2:
         logging.warning("Not enough S1 peaks detected to generate full report.")
-        return None
+        _ui("Stopped: not enough detected heartbeat peaks.")
+        return None, None
 
     logging.info("--- STAGE 6: Calculating Metrics and Generating Outputs ---")
+    _ui("Pass 3: computing heart rate metrics...")
     metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass3, sample_rate, params)
     # Apply MAD-based BPM (same as pass 2) so BPM (Pass 3) is consistent and matches pass 2 when peaks unchanged
     bt = metrics_after_pass3.get("bpm_times")
@@ -338,6 +363,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     try:
         manual_labels = _load_manual_labels_csv(original_file_path)
         if manual_labels:
+            _ui("Validating against manual peak labels...")
             predicted_labels = _build_predicted_labels_for_validation(
                 analysis_data, sample_rate
             )
@@ -363,6 +389,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
 
     # Pass 3 plot: after refinement (uses metrics_after_pass3; prior curve = BPM from pass 2)
     if needs_plot_outputs and len(peaks_after_pass3) >= 2:
+        _ui("Pass 3: saving HTML / PNG / CSV...")
         if plotter is None:
             plotter = Plotter(
                 original_file_path,
@@ -406,11 +433,13 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
         reporter = ReportGenerator(original_file_path, output_directory)
 
         if output_options.get('summary', True):
+            _ui("Writing summary report (Markdown)...")
             reporter.save_analysis_summary(metrics_after_pass3)
         else:
             logging.info("Skipping summary generation as requested.")
 
         if output_options.get('debug', True):
+            _ui("Writing debug log (Markdown)...")
             reporter.create_chronological_log(audio_envelope, sample_rate, all_raw_peaks, analysis_data, metrics_after_pass3)
         else:
             logging.info("Skipping debug log generation as requested.")
@@ -420,6 +449,7 @@ def analyze_wav_file(wav_file_path: str, params: Dict, start_bpm_hint: Optional[
     # FFT profiles: aggregate S1/S2 frequency spectra from raw audio (separate minimal HTML)
     fft_aggregate_data = None
     if params.get("enable_fft_profiles", True) and output_options.get("fft_profiles", True):
+        _ui("Generating FFT profiles (HTML)...")
         try:
             base_name = os.path.basename(os.path.splitext(original_file_path)[0])
             fft_output_path = os.path.join(output_directory, f"{base_name}_fft_profiles.html")
