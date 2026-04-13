@@ -7,6 +7,7 @@ you do not pass the corresponding CLI flag; any flag you pass overrides that fie
 Usage (from repo root):
   python batch_cli.py --jobs 2 path/to/a.wav path/to/b.mp3
   python batch_cli.py --output-dir out --png --no-html *.wav
+  python batch_cli.py --rename-input-with-bpm *.wav   # or enable in ui_settings.json
 
 See python batch_cli.py --help
 """
@@ -19,6 +20,7 @@ import sys
 from typing import Any, Dict, List
 
 from batch_runner import run_batch_parallel
+from bpm_input_rename import try_rename_input_with_bpm_annotation
 from config import DEFAULT_PARAMS
 from console_logging import configure_analysis_console_logging
 from ui_settings_loader import batch_cli_defaults_from_ui_settings, load_ui_settings_json
@@ -148,6 +150,22 @@ def main(argv: List[str] | None = None) -> int:
         "--quiet",
         action="store_true",
         help="Root log level WARNING (ignores ui_settings.json general_console_logging).",
+    )
+    parser.add_argument(
+        "--rename-input-with-bpm",
+        dest="rename_input_with_bpm",
+        action="store_const",
+        const=True,
+        default=_SUP,
+        help="After success, rename each input with BPM tag (default: ui_settings.json rename_input_with_bpm).",
+    )
+    parser.add_argument(
+        "--no-rename-input-with-bpm",
+        dest="rename_input_with_bpm",
+        action="store_const",
+        const=False,
+        default=_SUP,
+        help="Do not rename input files after analysis.",
     )
 
     og = parser.add_argument_group(
@@ -323,6 +341,10 @@ def main(argv: List[str] | None = None) -> int:
     if hasattr(ns, "algorithm_verbose"):
         algorithm_verbose = bool(ns.algorithm_verbose)
 
+    rename_input_with_bpm = bool(merged["rename_input_with_bpm"])
+    if hasattr(ns, "rename_input_with_bpm"):
+        rename_input_with_bpm = bool(ns.rename_input_with_bpm)
+
     opts = dict(merged["output_options"])
     overrides = [
         ("html", "html_ex"),
@@ -387,6 +409,21 @@ def main(argv: List[str] | None = None) -> int:
         bpm_from_filename=bpm_from_filename,
         process_all_channels=process_all_channels,
     )
+
+    if rename_input_with_bpm:
+        for fp, res in zip(summary.deduped_input_paths, summary.results):
+            if not res.success:
+                continue
+            info = res.bpm_rename_info
+            if info is None:
+                continue
+            if res.analyze_had_multiple_channels:
+                logging.warning(
+                    "BPM rename skipped for '%s': multi-channel analysis.",
+                    os.path.basename(fp),
+                )
+                continue
+            try_rename_input_with_bpm_annotation(fp, info)
 
     if not summary.all_ok:
         logging.error("Batch finished with errors: %s", ", ".join(summary.error_basenames))

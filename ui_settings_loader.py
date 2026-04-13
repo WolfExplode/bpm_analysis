@@ -67,6 +67,7 @@ def batch_cli_defaults_from_ui_settings(settings: Optional[Dict[str, Any]]) -> D
     Optional / shared JSON keys:
     - cli_batch_jobs: int (default 1; GUI "Parallel batch jobs" uses the same key as batch_cli --jobs)
     - cli_output_dir: str (default 'processed_files')
+    - rename_input_with_bpm: bool (same as GUI checkbox; headless batch renames after success)
     """
     s = settings or {}
     opts = DEFAULT_OUTPUT_OPTIONS.copy()
@@ -104,4 +105,5 @@ def batch_cli_defaults_from_ui_settings(settings: Optional[Dict[str, Any]]) -> D
         "optimize_long_plots": bool(s.get("optimize_long_plots", False)),
         "algorithm_console_logging": bool(s.get("algorithm_console_logging", True)),
         "general_console_logging": bool(s.get("general_console_logging", False)),
+        "rename_input_with_bpm": bool(s.get("rename_input_with_bpm", False)),
     }

@@ -191,7 +191,7 @@ def analyze_wav_file(
 
     Returns (plotly_figure, fft_aggregate_data, bpm_rename_summary). On early exit or failure,
     returns (None, None, None). bpm_rename_summary is a dict with start_bpm, min_bpm, max_bpm
-    from pass-1 start and pass-3 smoothed BPM extrema, or None if unavailable.
+    all from the final pass smoothed BPM series (first point in time, then min/max), or None if unavailable.
     """
     def _ui(label: str) -> None:
         if progress_callback is not None:
@@ -535,12 +535,15 @@ def analyze_wav_file(
             pass
 
     bpm_rename_summary = None
-    hrv_done = metrics_after_pass3.get("hrv_summary") or {}
-    if hrv_done.get("min_bpm") is not None and hrv_done.get("max_bpm") is not None:
-        bpm_rename_summary = {
-            "start_bpm": float(start_bpm),
-            "min_bpm": float(hrv_done["min_bpm"]),
-            "max_bpm": float(hrv_done["max_bpm"]),
-        }
+    sb = metrics_after_pass3.get("smoothed_bpm")
+    if sb is not None and not sb.empty:
+        vals = sb.dropna()
+        if not vals.empty:
+            vals_time = vals.sort_index()
+            bpm_rename_summary = {
+                "start_bpm": float(vals_time.iloc[0]),
+                "min_bpm": float(vals.min()),
+                "max_bpm": float(vals.max()),
+            }
 
     return plotly_figure, fft_aggregate_data, bpm_rename_summary
