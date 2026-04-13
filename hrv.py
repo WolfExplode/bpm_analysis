@@ -48,6 +48,19 @@ def _median_mad_keep_mask_time_window(
     return keep
 
 
+def _median_mad_keep_mask_global(values: np.ndarray, mad_k: float) -> np.ndarray:
+    """Keep points within global median ± mad_k * MAD (robust z-score). If MAD ~ 0, keep all."""
+    v = np.asarray(values, dtype=np.float64)
+    n = len(v)
+    if n == 0:
+        return np.array([], dtype=bool)
+    med = float(np.median(v))
+    mad = float(np.median(np.abs(v - med)))
+    if mad <= 1e-9:
+        return np.ones(n, dtype=bool)
+    return np.abs(v - med) <= float(mad_k) * mad
+
+
 def _lombscargle_band_powers(
     times_sec: np.ndarray, rr_ms: np.ndarray, include_vlf: bool = False
 ) -> Optional[Dict[str, float]]:
@@ -254,9 +267,12 @@ def compute_pass1_bpm_curve(
     anchor_beats: np.ndarray, sample_rate: int, params: Dict
 ) -> Optional[Dict[str, np.ndarray]]:
     """
-    Canonical pass 1 BPM curve: instant BPM from anchor beats, outlier removal (median+MAD), then LOESS.
-    Used for the time-varying prior, recovery phase, and all plots so display matches algorithm input.
-    Returns dict with curve_times, curve_bpm (dense LOESS), scatter_times, scatter_bpm (filtered instant), or None if insufficient data.
+    Canonical pass 1 BPM curve: instant BPM from anchor beats, local then global outlier removal
+    (median+MAD; global pass skipped if pass1_bpm_global_outlier_mad_k <= 0), then LOESS. Used for the
+    time-varying prior, recovery phase, and all plots so display
+    matches algorithm input.
+    Returns dict with curve_times, curve_bpm (dense LOESS), scatter_times, scatter_bpm (filtered instant),
+    raw_scatter_times, raw_scatter_bpm (instant BPM before any outlier removal), or None if insufficient data.
     """
     if anchor_beats is None or len(anchor_beats) < 2:
         return None
@@ -267,6 +283,8 @@ def compute_pass1_bpm_curve(
         return None
     instant_bpm = 60.0 / rr_sec[valid]
     times_sec = peak_times[1:][valid]
+    raw_scatter_times = np.asarray(times_sec, dtype=float)
+    raw_scatter_bpm = np.asarray(instant_bpm, dtype=float)
 
     # Outlier removal: keep point if within median ± k*MAD in local window
     half_window_sec = float(params.get("pass1_bpm_outlier_window_sec", 10.0))
@@ -274,6 +292,12 @@ def compute_pass1_bpm_curve(
     keep = _median_mad_keep_mask_time_window(times_sec, instant_bpm, half_window_sec, mad_k)
     scatter_bpm = np.asarray(instant_bpm[keep], dtype=float)
     scatter_times = np.asarray(times_sec[keep], dtype=float)
+
+    global_mad_k = float(params.get("pass1_bpm_global_outlier_mad_k", 6.0))
+    if global_mad_k > 0 and len(scatter_bpm) > 0:
+        gkeep = _median_mad_keep_mask_global(scatter_bpm, global_mad_k)
+        scatter_bpm = np.asarray(scatter_bpm[gkeep], dtype=float)
+        scatter_times = np.asarray(scatter_times[gkeep], dtype=float)
 
     if len(scatter_times) < 3:
         return None
@@ -287,6 +311,8 @@ def compute_pass1_bpm_curve(
         "curve_bpm": curve_bpm,
         "scatter_times": scatter_times,
         "scatter_bpm": scatter_bpm,
+        "raw_scatter_times": raw_scatter_times,
+        "raw_scatter_bpm": raw_scatter_bpm,
     }
 
 
@@ -294,8 +320,8 @@ def compute_s1_s2_interval_curve(
     obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
 ) -> Optional[Dict[str, np.ndarray]]:
     """
-    Outlier removal (median+MAD in time window) + LOESS on measured S1-S2 intervals.
-    Reuses the same pattern as compute_pass1_bpm_curve.
+    Outlier removal: local median+MAD in time window, then global median+MAD on intervals
+    (skipped if s1_s2_global_outlier_mad_k <= 0), then LOESS on measured S1-S2 intervals.
     Returns dict with curve_times, curve_intervals (LOESS), scatter_times, scatter_intervals (filtered),
     or None if insufficient data.
     """
@@ -310,6 +336,12 @@ def compute_s1_s2_interval_curve(
     keep = _median_mad_keep_mask_time_window(obs_times, obs_intervals, half_window_sec, mad_k)
     scatter_times = obs_times[keep]
     scatter_intervals = obs_intervals[keep]
+
+    global_mad_k = float(params.get("s1_s2_global_outlier_mad_k", 5.0))
+    if global_mad_k > 0 and len(scatter_intervals) > 0:
+        gkeep = _median_mad_keep_mask_global(scatter_intervals, global_mad_k)
+        scatter_times = scatter_times[gkeep]
+        scatter_intervals = scatter_intervals[gkeep]
 
     if len(scatter_times) < 3:
         return None
@@ -330,8 +362,8 @@ def filter_instant_bpm_mad(
     bpm_times: np.ndarray, instant_bpm: np.ndarray, params: Dict
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Apply MAD-based outlier removal to instantaneous BPM (e.g. for pass 2).
-    Keeps points where |BPM - local_median| <= k * local_MAD in a time window.
+    Apply MAD-based outlier removal to instantaneous BPM (pass 2 and pass 3): local window,
+    then global median ± k*MAD (skipped if pass2_instant_bpm_global_outlier_mad_k <= 0).
     Returns (filtered_bpm_times, filtered_instant_bpm).
     """
     if bpm_times is None or instant_bpm is None or len(bpm_times) != len(instant_bpm) or len(bpm_times) < 2:
@@ -341,7 +373,14 @@ def filter_instant_bpm_mad(
     half_window_sec = float(params.get("pass2_instant_bpm_outlier_window_sec", 10.0))
     mad_k = float(params.get("pass2_instant_bpm_outlier_mad_k", 2.5))
     keep = _median_mad_keep_mask_time_window(bpm_times, instant_bpm, half_window_sec, mad_k)
-    return bpm_times[keep], instant_bpm[keep]
+    t_out = bpm_times[keep]
+    b_out = instant_bpm[keep]
+    global_mad_k = float(params.get("pass2_instant_bpm_global_outlier_mad_k", 5.0))
+    if global_mad_k > 0 and len(b_out) > 0:
+        gkeep = _median_mad_keep_mask_global(b_out, global_mad_k)
+        t_out = t_out[gkeep]
+        b_out = b_out[gkeep]
+    return t_out, b_out
 
 
 def smooth_bpm_series_from_instant(

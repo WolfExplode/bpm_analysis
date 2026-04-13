@@ -434,7 +434,7 @@ class Plotter:
     ):
         """
         Builds and saves the pass 1 plot: envelope, anchor beats, BPM scatter + curve (canonical, same as algorithm), and BPM Trend (Belief).
-        pass1_bpm_data: dict with curve_times, curve_bpm, scatter_times, scatter_bpm from compute_pass1_bpm_curve (display = algorithm input).
+        pass1_bpm_data: dict from compute_pass1_bpm_curve: raw_scatter_* (instant BPM), scatter_* (outlier-filtered), curve_* (LOESS on filtered).
         """
         self.time_axis_sec = np.arange(len(audio_envelope), dtype=float) / self.sample_rate
         self.audio_duration_sec = float(self.time_axis_sec[-1]) if len(self.time_axis_sec) > 0 else 0.0
@@ -482,7 +482,24 @@ class Plotter:
                     secondary_y=False,
                 )
 
-        # Canonical pass 1 BPM (same as algorithm): scatter + curve from pass1_bpm_data
+        # Pass 1 instant BPM: raw 60/RR, then local median±MAD in time window, then global median±MAD (pass1_bpm_global_outlier_mad_k; <=0 skips)
+        if pass1_bpm_data and "raw_scatter_times" in pass1_bpm_data and "raw_scatter_bpm" in pass1_bpm_data:
+            rt = pass1_bpm_data["raw_scatter_times"]
+            rb = pass1_bpm_data["raw_scatter_bpm"]
+            if len(rt) > 0 and len(rt) == len(rb):
+                raw_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(rt, dtype=np.float64))
+                fig.add_trace(
+                    go.Scatter(
+                        x=raw_dt,
+                        y=rb,
+                        name="Instant BPM (Pass 1)",
+                        mode="markers",
+                        marker=dict(size=6, color="#e74c3c", symbol="circle"),
+                        visible="legendonly",
+                    ),
+                    secondary_y=True,
+                )
+                self.bpm_axis_center = float(np.median(rb))
         if pass1_bpm_data and "scatter_times" in pass1_bpm_data and "scatter_bpm" in pass1_bpm_data:
             st = pass1_bpm_data["scatter_times"]
             sb = pass1_bpm_data["scatter_bpm"]
@@ -492,9 +509,9 @@ class Plotter:
                     go.Scatter(
                         x=scatter_dt,
                         y=sb,
-                        name="Instant BPM (pass 1)",
+                        name="Instant BPM (Pass 1) outliers removed",
                         mode="markers",
-                        marker=dict(size=6, color="#e74c3c", symbol="circle"),
+                        marker=dict(size=6, color="#9b59b6", symbol="circle-open"),
                     ),
                     secondary_y=True,
                 )
@@ -514,7 +531,11 @@ class Plotter:
                     ),
                     secondary_y=True,
                 )
-        if not (pass1_bpm_data and "scatter_bpm" in pass1_bpm_data and len(pass1_bpm_data["scatter_bpm"]) > 0):
+        has_pass1_bpm_markers = pass1_bpm_data and (
+            ("raw_scatter_bpm" in pass1_bpm_data and len(pass1_bpm_data["raw_scatter_bpm"]) > 0)
+            or ("scatter_bpm" in pass1_bpm_data and len(pass1_bpm_data["scatter_bpm"]) > 0)
+        )
+        if not has_pass1_bpm_markers:
             self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
 
         # BPM Trend (Belief) from pass 1 (EMA from accepted beats during that run)

@@ -161,11 +161,14 @@ DEFAULT_PARAMS = {
     "plot_downsample_factor": 4,             # Downsample only large traces: Audio Envelope and Dynamic Noise Floor (keep 1 of every N points). Does NOT apply to Average S1/S2 contractility, BPM, HRV, or markers.
     "pass1_bpm_outlier_window_sec": 10.0,   # Half-window (seconds) for pass 1 BPM outlier removal: keep point if within median ± k*MAD in [t-window, t+window].
     "pass1_bpm_outlier_mad_k": 2.5,         # Number of MADs. Lower = more aggressive outlier removal.
-    "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2 instantaneous BPM display: MAD outlier removal.
-    "pass2_instant_bpm_outlier_mad_k": 8,       # Number of MADs for pass 2 instantaneous BPM display. lower = more aggressive outlier removal.
+    "pass1_bpm_global_outlier_mad_k": 5.0,    # After local pass: global median ± k*MAD. Higher = less sensitive. Set <= 0 to disable this pass.
+    "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2/3 instantaneous BPM: local MAD outlier removal.
+    "pass2_instant_bpm_outlier_mad_k": 8,       # Local MADs for pass 2/3 instant BPM. Lower = more aggressive.
+    "pass2_instant_bpm_global_outlier_mad_k": 5.0,  # After local pass: global median ± k*MAD on BPM. Higher = less sensitive. <=0 disables.
     "pass1_bpm_loess_frac": 0.02,           # LOESS fraction for pass 1 BPM curve (lower = tighter fit).
     "s1_s2_outlier_window_sec": 8.0,         # Half-window (seconds) for S1-S2 interval outlier removal: MAD in local time window.
-    "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for S1-S2 interval outlier removal.
+    "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for S1-S2 interval local outlier removal.
+    "s1_s2_global_outlier_mad_k": 5.0,     # After local pass: global median ± k*MAD on interval (s). Higher = less sensitive. <=0 disables.
     "s1_s2_loess_frac": 0.05,               # LOESS fraction for S1-S2 interval best-fit curve.
     "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
