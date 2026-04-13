@@ -2,7 +2,6 @@
 
 import os
 import queue
-import tempfile
 import threading
 import tkinter as tk
 import json
@@ -20,6 +19,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, Optional
 from time_utils import timestamp_str
+from ui_settings_loader import migrate_ui_settings_keys
+from console_logging import configure_analysis_console_logging
 
 class UIMessageType(Enum):
     STATUS = auto()
@@ -64,25 +65,6 @@ def format_bpm_filename_annotation(start_bpm: float, min_bpm: float, max_bpm: fl
     lo = int(round(min_bpm))
     hi = int(round(max_bpm))
     return f"{a},{lo}-{hi}bpm"
-
-
-class _SuppressKaleidoChoreographerRootNoiseFilter(logging.Filter):
-    """
-    choreographer uses logistro.getLogger() (root) in utils/_which.py; Chrome stderr uses logger
-    name browser_proc. Named loggers are raised to WARNING separately; this catches root + any
-    site-packages choreographer/kaleido call site still on root.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.name != "root":
-            return True
-        path = (getattr(record, "pathname", None) or "").replace("\\", "/").lower()
-        if path.endswith("choreographer/utils/_which.py"):
-            return record.levelno >= logging.WARNING
-        if "/site-packages/" in path or "/dist-packages/" in path:
-            if "/choreographer/" in path or "/kaleido/" in path:
-                return record.levelno >= logging.WARNING
-        return True
 
 
 class BPMApp:
@@ -527,53 +509,9 @@ class BPMApp:
         Uses the last (rightmost) match in the base name for each pattern type, in order:
         '120,60-150bpm' → 120; '90to132bpm' → 90; '150bpm' → 150 (case-insensitive).
         """
-        base = os.path.basename(file_path)
-        comma_matches = list(
-            re.finditer(r"(\d+)\s*,\s*(\d+)\s*-\s*(\d+)\s*bpm", base, flags=re.IGNORECASE)
-        )
-        if comma_matches:
-            m = comma_matches[-1]
-            try:
-                start_bpm = float(m.group(1))
-                logging.info(
-                    "Using starting BPM %.1f from file name tag %s,%s-%sbpm in '%s'.",
-                    start_bpm,
-                    m.group(1),
-                    m.group(2),
-                    m.group(3),
-                    base,
-                )
-                return start_bpm
-            except (TypeError, ValueError):
-                pass
+        from batch_runner import extract_start_bpm_from_filename
 
-        to_matches = list(re.finditer(r"(\d+)\s*to\s*(\d+)\s*bpm", base, flags=re.IGNORECASE))
-        if to_matches:
-            m = to_matches[-1]
-            try:
-                start_bpm = float(m.group(1))
-                end_bpm = float(m.group(2))
-                logging.info(
-                    "Using starting BPM %.1f from file name range (%.1f–%.1f) in '%s'.",
-                    start_bpm,
-                    start_bpm,
-                    end_bpm,
-                    base,
-                )
-                return start_bpm
-            except (TypeError, ValueError):
-                pass
-
-        simple_matches = list(re.finditer(r"(\d+)\s*bpm", base, flags=re.IGNORECASE))
-        if not simple_matches:
-            return None
-        m = simple_matches[-1]
-        try:
-            bpm_val = float(m.group(1))
-            logging.info(f"Using BPM {bpm_val} from file name for '{base}'.")
-            return bpm_val
-        except (TypeError, ValueError):
-            return None
+        return extract_start_bpm_from_filename(file_path)
 
     _SETTINGS_VAR_KEYS = (
         ('process_all_channels', 'algorithm_console_logging', 'general_console_logging', 'bpm_from_filename', 'rename_input_with_bpm')
@@ -595,47 +533,12 @@ class BPMApp:
 
         With root at DEBUG, some dependencies (Numba JIT, pydub/ffmpeg, asyncio, Kaleido's
         choreographer/CDP layer) would flood the console; those loggers stay at WARNING while
-        this mode is on.
+        this mode is on (see console_logging.configure_analysis_console_logging).
         """
-        level = logging.DEBUG if enabled else logging.INFO
-        root = logging.getLogger()
-        for h, filt in self._general_console_log_filters:
-            try:
-                h.removeFilter(filt)
-            except Exception:
-                pass
-        self._general_console_log_filters.clear()
-
-        root.setLevel(level)
-        for h in root.handlers:
-            try:
-                h.setLevel(level)
-            except Exception:
-                pass
-
-        # Keep third-party chatter out of "general console" mode (still see our DEBUG lines).
-        _noisy = (
-            "numba",
-            "llvmlite",
-            "asyncio",
-            "pydub",
-            "pydub.utils",
-            # Kaleido 1.x uses choreographer (verbose CDP / browser I/O at DEBUG).
-            "choreographer",
-            "chrome_wrapper",  # choreographer Unix pipe wrapper (named logger, not under choreographer.*)
-            "kaleido",
-            # Chrome stderr from choreographer is piped here (logistro.getPipeLogger).
-            "browser_proc",
+        configure_analysis_console_logging(
+            general_debug=bool(enabled),
+            tracked_filters=self._general_console_log_filters,
         )
-        for name in _noisy:
-            lg = logging.getLogger(name)
-            lg.setLevel(logging.WARNING if enabled else logging.NOTSET)
-
-        if enabled:
-            nf = _SuppressKaleidoChoreographerRootNoiseFilter()
-            for h in root.handlers:
-                h.addFilter(nf)
-                self._general_console_log_filters.append((h, nf))
 
     def save_ui_settings(self):
         """Save current UI settings to a JSON file."""
@@ -657,11 +560,7 @@ class BPMApp:
         try:
             with open(self.settings_file, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
-            # Migrate renamed UI keys (older ui_settings.json)
-            if "algorithm_console_logging" not in settings and "verbose_console_logging" in settings:
-                settings["algorithm_console_logging"] = settings["verbose_console_logging"]
-            if "general_console_logging" not in settings and "general_debug_logging" in settings:
-                settings["general_console_logging"] = settings["general_debug_logging"]
+            migrate_ui_settings_keys(settings)
             if settings.get('starting_bpm'):
                 self.bpm_entry.delete(0, tk.END)
                 self.bpm_entry.insert(0, settings['starting_bpm'])
@@ -802,10 +701,8 @@ class BPMApp:
 
     def _run_analysis_in_background(self):
         try:
-            from pipeline import analyze_wav_file
-            from audio_preprocessing import convert_to_wav, split_wav_to_mono_channels
+            from batch_runner import dedupe_input_files, run_single_input_file
             from fft_profiles import aggregate_fft_profiles, save_aggregate_fft_profiles_html
-            import shutil
 
             # Check for a global BPM value to override all individual settings.
             bpm_override_input = self.bpm_entry.get().strip()
@@ -840,34 +737,7 @@ class BPMApp:
             # Enable/disable DEBUG-level logging (timing and other debug strings).
             self._apply_general_console_logging(bool(general_console_logging))
 
-            # Deduplicate inputs by base filename so we don't process both 'name.wav' and 'name.mp4'.
-            deduped_files = {}
-            # Prefer WAV when both a compressed file and a WAV with the same base name exist.
-            ext_preference = {
-                '.wav': 2,
-                '.flac': 1,
-                '.mp3': 1,
-                '.m4a': 1,
-                '.ogg': 1,
-                '.mp4': 1,
-                '.mkv': 1,
-                '.mov': 1,
-            }
-            for path in self.current_files:
-                base_name_only = os.path.splitext(os.path.basename(path))[0]
-                key = base_name_only.lower()
-                ext = os.path.splitext(path)[1].lower()
-                score = ext_preference.get(ext, 0)
-
-                if key not in deduped_files:
-                    deduped_files[key] = (score, path)
-                else:
-                    existing_score, _ = deduped_files[key]
-                    # Replace only if the new file type is preferred (e.g., WAV over others).
-                    if score > existing_score:
-                        deduped_files[key] = (score, path)
-
-            input_files = [entry[1] for entry in deduped_files.values()]
+            input_files = dedupe_input_files(self.current_files)
 
             total_files = len(input_files)
             files_processed = 0
@@ -875,146 +745,64 @@ class BPMApp:
             fft_results_for_aggregate = []
             collect_fft_for_aggregate = total_files >= 2
 
+            if optimize_long_plots:
+                self.params["optimize_long_plots"] = True
+            self.params["algorithm_console_logging"] = bool(algorithm_console_logging)
+
             # --- BATCH PROCESSING LOOP ---
             for i, file_path in enumerate(input_files):
-                working_tmp = None
                 try:
-                    file_start_time = time.time()
+                    self.log_queue.put(
+                        UIMessage(
+                            UIMessageType.STATUS,
+                            f"({i + 1}/{total_files}) Processing: {os.path.basename(file_path)}",
+                        )
+                    )
 
-                    self.log_queue.put(UIMessage(UIMessageType.STATUS,
-                                                 f"({i + 1}/{total_files}) Processing: {os.path.basename(file_path)}"))
-
-                    # Decide where outputs for this file should go
                     if self.output_to_input_dir.get():
                         output_dir = os.path.dirname(file_path) or base_output_dir
                     else:
                         output_dir = base_output_dir
 
-                    os.makedirs(output_dir, exist_ok=True)
-
                     output_options = self.get_output_options()
                     if regression_log_path:
                         output_options["regression_log_path"] = regression_log_path
 
-                    if output_options.get("working_wav_in_output", True):
-                        wav_io_dir = output_dir
-                    else:
-                        working_tmp = tempfile.mkdtemp(prefix="bpm_working_")
-                        wav_io_dir = working_tmp
-
-                    base_name, ext = os.path.splitext(file_path)
-                    ext_lower = ext.lower()
-
-                    if ext_lower != '.wav':
-                        source_stem = os.path.basename(base_name)
-                        source_dir = os.path.dirname(file_path)
-                        same_dir_wav = os.path.join(source_dir, source_stem + ".wav")
-                        output_stem = strip_output_filename_emojis(source_stem)
-                        candidate_wav = os.path.join(wav_io_dir, output_stem + ".wav")
-
-                        if os.path.exists(same_dir_wav):
-                            # Reuse an existing WAV next to the input file when it already lives in the
-                            # output folder, or when we are not keeping working WAVs in output (read in place).
-                            if os.path.abspath(os.path.dirname(same_dir_wav)) == os.path.abspath(output_dir):
-                                wav_path = same_dir_wav
-                            elif not output_options.get("working_wav_in_output", True):
-                                wav_path = same_dir_wav
-                            else:
-                                wav_path = candidate_wav
-                                shutil.copy(same_dir_wav, wav_path)
-                            logging.info(
-                                "Reusing existing WAV '%s' for '%s' instead of converting.",
-                                os.path.basename(same_dir_wav),
-                                os.path.basename(file_path),
-                            )
-                        elif os.path.exists(candidate_wav):
-                            # Reuse an existing WAV already in wav_io_dir (output or temp).
-                            wav_path = candidate_wav
-                            logging.info(
-                                "Reusing existing WAV '%s' in working directory for '%s' instead of converting.",
-                                os.path.basename(candidate_wav),
-                                os.path.basename(file_path),
-                            )
-                        else:
-                            wav_path = candidate_wav
-                            self.log_queue.put(UIMessage(UIMessageType.STATUS,
-                                                         f"({i + 1}/{total_files}) Converting {os.path.basename(file_path)}..."))
-                            if not convert_to_wav(file_path, wav_path):
-                                raise Exception("File conversion failed.")
-                    else:
-                        # If the output directory is the same as the input directory, reuse the original WAV
-                        input_dir = os.path.dirname(file_path)
-                        if os.path.abspath(output_dir) == os.path.abspath(input_dir):
-                            wav_path = file_path
-                        else:
-                            orig_base = os.path.basename(file_path)
-                            o_stem, o_ext = os.path.splitext(orig_base)
-                            out_wav_name = strip_output_filename_emojis(o_stem) + o_ext
-                            wav_path = os.path.join(wav_io_dir, out_wav_name)
-                            shutil.copy(file_path, wav_path)
-
-                    # Decide which WAV(s) to analyze: either the single mixed file, or
-                    # one per channel if requested.
-                    wav_files_to_analyze = [wav_path]
-                    if process_all_channels:
+                    def _conversion_status(msg: str) -> None:
                         self.log_queue.put(
-                            UIMessage(
-                                UIMessageType.STATUS,
-                                f"({i + 1}/{total_files}) {os.path.basename(file_path)}: Splitting stereo into mono channels...",
-                            )
+                            UIMessage(UIMessageType.STATUS, f"({i + 1}/{total_files}) {msg}")
                         )
-                        wav_files_to_analyze = split_wav_to_mono_channels(wav_path, wav_io_dir)
 
-                    # Determine starting BPM hint for this original input file.
-                    if global_start_bpm_hint is not None:
-                        file_start_bpm_hint = global_start_bpm_hint
-                    elif bpm_from_filename:
-                        file_start_bpm_hint = self._extract_bpm_from_filename(file_path)
-                    else:
-                        file_start_bpm_hint = None
+                    def _progress(detail: str) -> None:
+                        self.log_queue.put(UIMessage(UIMessageType.STATUS, detail))
 
-                    # Ensure plotting logic sees the long-plot optimization preference
-                    if optimize_long_plots:
-                        self.params["optimize_long_plots"] = True
-                    # Algorithm-detail console verbosity for the analysis pipeline
-                    self.params["algorithm_console_logging"] = bool(algorithm_console_logging)
+                    result = run_single_input_file(
+                        file_path,
+                        output_dir,
+                        output_options,
+                        self.params,
+                        global_bpm_hint=global_start_bpm_hint,
+                        bpm_from_filename=bpm_from_filename,
+                        process_all_channels=process_all_channels,
+                        collect_fft_for_aggregate=collect_fft_for_aggregate,
+                        progress_callback=_progress,
+                        conversion_status_callback=_conversion_status,
+                        batch_status_prefix=f"({i + 1}/{total_files}) {os.path.basename(file_path)}",
+                    )
 
-                    bpm_rename_info_for_file = None
-                    for ch_idx, wav_for_analysis in enumerate(wav_files_to_analyze, start=1):
-                        if len(wav_files_to_analyze) > 1:
-                            status_suffix = f" (CH{ch_idx})"
-                        else:
-                            status_suffix = ""
+                    if not result.success:
+                        error_info = f"Error processing '{result.basename}':\n{result.error or 'Unknown error'}"
+                        self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
+                        errors.append(result.basename)
+                        continue
 
-                        status_prefix = f"({i + 1}/{total_files}) {os.path.basename(file_path)}{status_suffix}"
+                    for fd in result.fft_data_list:
+                        fft_results_for_aggregate.append(fd)
 
-                        def _make_progress_cb(prefix):
-                            def _cb(detail: str):
-                                self.log_queue.put(
-                                    UIMessage(UIMessageType.STATUS, f"{prefix}: {detail}")
-                                )
-
-                            return _cb
-
-                        progress_cb = _make_progress_cb(status_prefix)
-
-                        _figure, fft_data, bpm_rename_info = analyze_wav_file(
-                            wav_for_analysis,
-                            self.params,
-                            file_start_bpm_hint,
-                            original_file_path=file_path,
-                            output_directory=output_dir,
-                            output_options=output_options,
-                            collect_fft_for_aggregate=collect_fft_for_aggregate,
-                            progress_callback=progress_cb,
-                        )
-                        if fft_data is not None:
-                            fft_results_for_aggregate.append(fft_data)
-                        if bpm_rename_info_for_file is None and bpm_rename_info is not None:
-                            bpm_rename_info_for_file = bpm_rename_info
+                    bpm_rename_info_for_file = result.bpm_rename_info
 
                     if rename_input_with_bpm and bpm_rename_info_for_file is not None:
-                        if len(wav_files_to_analyze) > 1:
+                        if result.analyze_had_multiple_channels:
                             self._schedule_rename_warning(
                                 "Multi-channel analysis: renaming the input file is skipped.",
                                 os.path.basename(file_path),
@@ -1030,22 +818,10 @@ class BPMApp:
                                 )
                     files_processed += 1
 
-                    # Log total wall-clock time for this original input file (including conversion, splitting, and analysis).
-                    duration = time.time() - file_start_time
-                    logging.info(
-                        "=== Total processing time for '%s': %.2f seconds (including conversion & analysis). ===",
-                        os.path.basename(file_path),
-                        duration,
-                    )
-
                 except Exception as e:
-                    # Inner try-except block to handle errors for a single file
                     error_info = f"Error processing '{os.path.basename(file_path)}':\n{str(e)}"
                     self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
                     errors.append(os.path.basename(file_path))
-                finally:
-                    if working_tmp:
-                        shutil.rmtree(working_tmp, ignore_errors=True)
 
             # --- AGGREGATE FFT (when 2+ files were analyzed with FFT) ---
             if len(fft_results_for_aggregate) >= 2:
