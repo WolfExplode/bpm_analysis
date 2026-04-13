@@ -237,6 +237,29 @@ def split_wav_to_mono_channels(file_path: str, output_directory: str) -> List[st
     return channel_paths
 
 
+def _dense_troughs_linear_interpolate(
+    n: int, trough_indices: np.ndarray, trough_amplitudes: np.ndarray
+) -> np.ndarray:
+    """
+    Match pandas: sparse troughs on a RangeIndex, then linear interpolate (including
+    flat extension past the last trough, same as Series.reindex(...).interpolate()).
+    """
+    dense = np.full(n, np.nan, dtype=np.float64)
+    dense[np.asarray(trough_indices, dtype=np.intp)] = np.asarray(
+        trough_amplitudes, dtype=np.float64
+    )
+    return pd.Series(dense).interpolate(method="linear").to_numpy()
+
+
+def _rolling_quantile_center_bfill_ffill(
+    y: np.ndarray, window: int, quantile_val: float, min_periods: int = 3
+) -> np.ndarray:
+    """Same as Series.rolling(center=True).quantile().bfill().ffill() on contiguous data."""
+    s = pd.Series(y, copy=False)
+    rolled = s.rolling(window=window, min_periods=min_periods, center=True).quantile(quantile_val)
+    return rolled.bfill().ffill().to_numpy()
+
+
 def _calculate_dynamic_noise_floor(
     audio_envelope: np.ndarray, sample_rate: int, params: Dict
 ) -> Tuple[pd.Series, np.ndarray]:
@@ -254,42 +277,47 @@ def _calculate_dynamic_noise_floor(
         dynamic_noise_floor = pd.Series(fallback_value, index=np.arange(len(audio_envelope)))
         return dynamic_noise_floor, all_trough_indices
 
-    # --- STEP 2: Create a preliminary 'draft' noise floor from ALL troughs ---
-    # This draft version is used only to evaluate the troughs themselves.
-    trough_series_draft = pd.Series(index=all_trough_indices, data=audio_envelope[all_trough_indices])
-    dense_troughs_draft = trough_series_draft.reindex(np.arange(len(audio_envelope))).interpolate()
+    n = len(audio_envelope)
     noise_window_samples = int(params['noise_window_sec'] * sample_rate)
     quantile_val = params['noise_floor_quantile']
-    draft_noise_floor = dense_troughs_draft.rolling(window=noise_window_samples, min_periods=3, center=True).quantile(quantile_val)
-    draft_noise_floor = draft_noise_floor.bfill().ffill()
 
-    # --- STEP 3: Sanitize the trough list ---
-    # Remove any troughs too far above the noise floor.
-    sanitized_trough_indices = []
+    # --- STEP 2: Draft noise floor from ALL troughs (dense interpolate + rolling quantile) ---
+    dense_troughs_draft = _dense_troughs_linear_interpolate(
+        n, all_trough_indices, audio_envelope[all_trough_indices]
+    )
+    draft_floor_arr = _rolling_quantile_center_bfill_ffill(
+        dense_troughs_draft, noise_window_samples, quantile_val, min_periods=3
+    )
+
+    # --- STEP 3: Sanitize troughs (vectorized; same rule as per-index loop + pd.isna check) ---
     rejection_multiplier = params.get('trough_rejection_multiplier', 4.0)
-    for trough_idx in all_trough_indices:
-        trough_amp = audio_envelope[trough_idx]
-        floor_at_trough = draft_noise_floor.iloc[trough_idx]
-        if not pd.isna(floor_at_trough) and trough_amp <= (rejection_multiplier * floor_at_trough):
-            sanitized_trough_indices.append(trough_idx)
+    floor_at = draft_floor_arr[all_trough_indices]
+    trough_amps = audio_envelope[all_trough_indices]
+    keep = np.isfinite(floor_at) & (trough_amps <= rejection_multiplier * floor_at)
+    sanitized_trough_indices = all_trough_indices[keep]
 
-    logging.info(f"Trough Sanitization: Kept {len(sanitized_trough_indices)} of {len(all_trough_indices)} initial troughs.")
+    logging.info(
+        f"Trough Sanitization: Kept {len(sanitized_trough_indices)} of {len(all_trough_indices)} initial troughs."
+    )
 
-    # --- STEP 4: Calculate more accurate noise floor using only sanitized troughs ---
+    # --- STEP 4: Final noise floor from sanitized troughs ---
     if len(sanitized_trough_indices) > 2:
-        trough_series_final = pd.Series(index=sanitized_trough_indices, data=audio_envelope[sanitized_trough_indices])
-        dense_troughs_final = trough_series_final.reindex(np.arange(len(audio_envelope))).interpolate()
-        dynamic_noise_floor = dense_troughs_final.rolling(window=noise_window_samples, min_periods=3, center=True).quantile(quantile_val)
-        dynamic_noise_floor = dynamic_noise_floor.bfill().ffill()
+        dense_troughs_final = _dense_troughs_linear_interpolate(
+            n, sanitized_trough_indices, audio_envelope[sanitized_trough_indices]
+        )
+        final_floor_arr = _rolling_quantile_center_bfill_ffill(
+            dense_troughs_final, noise_window_samples, quantile_val, min_periods=3
+        )
+        dynamic_noise_floor = pd.Series(final_floor_arr, index=np.arange(n))
     else:
         logging.warning("Not enough sanitized troughs remaining. Using non-sanitized floor as fallback.")
-        dynamic_noise_floor = draft_noise_floor
+        dynamic_noise_floor = pd.Series(draft_floor_arr, index=np.arange(n))
 
     if dynamic_noise_floor.isnull().all():
         fallback_val = np.quantile(audio_envelope, 0.1)
         dynamic_noise_floor = pd.Series(fallback_val, index=np.arange(len(audio_envelope)))
 
-    return dynamic_noise_floor, np.array(sanitized_trough_indices)
+    return dynamic_noise_floor, np.asarray(sanitized_trough_indices, dtype=np.intp)
 
 
 def preprocess_audio(
