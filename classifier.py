@@ -22,6 +22,7 @@ from peak_utils import (
     _is_s1_paired_debug,
     _is_lone_s1_debug,
     _is_noise_debug,
+    build_peak_prominence_detail_cache,
     calculate_peak_prominence,
 )
 
@@ -82,8 +83,16 @@ class PeakClassifier:
 
         long_term_bpm = float(start_bpm_hint) if start_bpm_hint else 80.0
 
+        noise_floor_values = np.ascontiguousarray(
+            dynamic_noise_floor.to_numpy(dtype=np.float64, copy=False), dtype=np.float64
+        )
+        prom_cache = build_peak_prominence_detail_cache(
+            all_peaks, self.audio_envelope, trough_indices, self.sample_rate
+        )
+
         return AnalysisState(
             dynamic_noise_floor=dynamic_noise_floor,
+            noise_floor_values=noise_floor_values,
             trough_indices=trough_indices,
             all_peaks=all_peaks,
             smoothed_dev_series=smoothed_dev_series,
@@ -91,6 +100,7 @@ class PeakClassifier:
             analysis_data=analysis_data,
             sorted_troughs=sorted(trough_indices),
             pass1_bpm_prior=pass1_bpm_prior,
+            peak_prominence_detail_cache=prom_cache,
         )
 
     def classify_peaks(self) -> Tuple[np.ndarray, np.ndarray, Dict]:
@@ -400,17 +410,25 @@ class PeakClassifier:
             return True, ["Outcome: First beat (no prior rhythm to compare) → Validated Lone S1 → --"]
 
         confidence, detail_lines = calculate_lone_s1_confidence(
-            current_peak_idx, self.state.candidate_beats[-1], self.state.long_term_bpm,
-            self.audio_envelope, self.state.dynamic_noise_floor, self.sample_rate, self.params,
-            all_peaks=self.state.all_peaks
+            current_peak_idx,
+            self.state.candidate_beats[-1],
+            self.state.long_term_bpm,
+            self.audio_envelope,
+            self.state.noise_floor_values,
+            self.sample_rate,
+            self.params,
+            all_peaks=self.state.all_peaks,
         )
 
         # --- 2. Absolute prominence guardrail ---
         # Track only high-quality S1s (avoid contaminating reference with noise)
         recent_s1_types = [self.state.peak_classifications.get(idx, {}).get("peak_type")
                         for idx in self.state.candidate_beats[-20:]]  # Last 20 beats
+        dc = self.state.peak_prominence_detail_cache
         recent_prominences = [
-            calculate_peak_prominence(idx, self.audio_envelope, self.state.trough_indices)
+            float(dc[idx]["prominence"])
+            if dc is not None and idx in dc
+            else calculate_peak_prominence(idx, self.audio_envelope, self.state.trough_indices)
             for idx, typ in zip(self.state.candidate_beats[-20:], recent_s1_types)
             if typ in (PeakType.S1_PAIRED.value, PeakType.LONE_S1_VALIDATED.value)
         ]
@@ -419,7 +437,10 @@ class PeakClassifier:
             # Top 20% quartile as reference (robust to outliers)
             reference_prominence = np.percentile(recent_prominences, 80)
             current_prominence = calculate_peak_prominence(
-                current_peak_idx, self.audio_envelope, self.state.trough_indices
+                current_peak_idx,
+                self.audio_envelope,
+                self.state.trough_indices,
+                detail_cache=dc,
             )
 
             # Penalty if <40% of reference S1 prominence (adaptive threshold)

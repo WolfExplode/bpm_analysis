@@ -192,17 +192,114 @@ def _simple_label_from_debug(entry: Any) -> str:
     return "Unknown"
 
 
+def build_peak_prominence_detail_cache(
+    peak_indices: np.ndarray,
+    audio_envelope: np.ndarray,
+    trough_indices: np.ndarray,
+    sample_rate: Optional[float] = None,
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Vectorized prominence details for many peak indices (one searchsorted batch).
+    Matches get_peak_prominence_details per peak; used to avoid repeated neighbor lookups.
+    """
+    peak_indices = np.asarray(peak_indices, dtype=np.intp)
+    trough_indices = np.asarray(trough_indices, dtype=np.intp)
+    env = np.asarray(audio_envelope, dtype=np.float64)
+    out: Dict[int, Dict[str, Any]] = {}
+    if peak_indices.size == 0:
+        return out
+
+    sr_f = float(sample_rate) if sample_rate is not None else None
+
+    if len(trough_indices) == 0:
+        for p in peak_indices:
+            p = int(p)
+            pa = float(env[p])
+            d: Dict[str, Any] = {
+                "peak_idx": p,
+                "peak_amp": pa,
+                "left_trough_idx": None,
+                "left_trough_amp": None,
+                "right_trough_idx": None,
+                "right_trough_amp": None,
+                "key_col_amp": 0.0,
+                "prominence": pa,
+            }
+            if sr_f is not None:
+                d["peak_time"] = p / sr_f
+                d["left_trough_time"] = None
+                d["right_trough_time"] = None
+            out[p] = d
+        return out
+
+    ins = np.searchsorted(trough_indices, peak_indices)
+    n_t = len(trough_indices)
+    peak_amp = env[peak_indices].astype(float)
+
+    has_left = ins > 0
+    has_right = ins < n_t
+    # Masked writes only: np.where(cond, trough_indices[ins], x) still evaluates
+    # trough_indices[ins] for all rows, so ins == n_t (peak after last trough) OOBs.
+    left_trough_idx_arr = np.full(len(peak_indices), -1, dtype=np.intp)
+    right_trough_idx_arr = np.full(len(peak_indices), -1, dtype=np.intp)
+    left_trough_idx_arr[has_left] = trough_indices[(ins[has_left] - 1).astype(np.intp)]
+    right_trough_idx_arr[has_right] = trough_indices[ins[has_right].astype(np.intp)]
+
+    left_amp = np.full(len(peak_indices), np.nan, dtype=np.float64)
+    left_amp[has_left] = env[left_trough_idx_arr[has_left]]
+    right_amp = np.full(len(peak_indices), np.nan, dtype=np.float64)
+    right_amp[has_right] = env[right_trough_idx_arr[has_right]]
+
+    key_col = np.zeros(len(peak_indices), dtype=float)
+    both = has_left & has_right
+    only_left = has_left & ~has_right
+    only_right = ~has_left & has_right
+    key_col[both] = np.maximum(left_amp[both], right_amp[both])
+    key_col[only_left] = left_amp[only_left]
+    key_col[only_right] = right_amp[only_right]
+
+    prominence = np.maximum(0.0, peak_amp - key_col)
+
+    for i in range(len(peak_indices)):
+        p = int(peak_indices[i])
+        lt = int(left_trough_idx_arr[i]) if has_left[i] else None
+        rt = int(right_trough_idx_arr[i]) if has_right[i] else None
+        la = float(left_amp[i]) if has_left[i] else None
+        ra = float(right_amp[i]) if has_right[i] else None
+        d = {
+            "peak_idx": p,
+            "peak_amp": float(peak_amp[i]),
+            "left_trough_idx": lt,
+            "left_trough_amp": la,
+            "right_trough_idx": rt,
+            "right_trough_amp": ra,
+            "key_col_amp": float(key_col[i]),
+            "prominence": float(prominence[i]),
+        }
+        if sr_f is not None:
+            d["peak_time"] = p / sr_f
+            d["left_trough_time"] = (lt / sr_f) if lt is not None else None
+            d["right_trough_time"] = (rt / sr_f) if rt is not None else None
+        out[p] = d
+    return out
+
+
 def get_peak_prominence_details(
     peak_idx: int,
     audio_envelope: np.ndarray,
     trough_indices: np.ndarray,
     sample_rate: Optional[int] = None,
+    *,
+    detail_cache: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Returns the details used when computing a peak's prominence.
     The returned dictionary includes the adjacent trough amplitudes, the key col,
     and optional timestamps (if `sample_rate` is provided).
     """
+    if detail_cache is not None and int(peak_idx) in detail_cache:
+        return dict(detail_cache[int(peak_idx)])
+
     if len(trough_indices) == 0:
         return {
             "peak_idx": peak_idx,
@@ -258,9 +355,17 @@ def get_peak_prominence_details(
     return details
 
 
-def calculate_peak_prominence(peak_idx: int, audio_envelope: np.ndarray, trough_indices: np.ndarray) -> float:
+def calculate_peak_prominence(
+    peak_idx: int,
+    audio_envelope: np.ndarray,
+    trough_indices: np.ndarray,
+    *,
+    detail_cache: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> float:
     """
     Calculate the true prominence of a peak by finding adjacent troughs.
     """
+    if detail_cache is not None and int(peak_idx) in detail_cache:
+        return float(detail_cache[int(peak_idx)]["prominence"])
     details = get_peak_prominence_details(peak_idx, audio_envelope, trough_indices)
     return details["prominence"]

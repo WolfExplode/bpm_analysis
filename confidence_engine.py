@@ -55,9 +55,13 @@ class AnalysisState:
             contractility expectation once enough paired beats have been observed.
         recent_s1_outcomes: (time_sec, was_paired) for each S1 we decided on; used to
             compute pair rate in the last N seconds for blending history vs BPM expected.
+        noise_floor_values: Same noise floor as dynamic_noise_floor, as a contiguous float64
+            array indexed by sample (avoids pandas iloc in hot loops).
+        peak_prominence_detail_cache: Optional precomputed prominence details for raw peak indices.
     """
 
     dynamic_noise_floor: pd.Series
+    noise_floor_values: np.ndarray
     trough_indices: np.ndarray
     all_peaks: np.ndarray
     smoothed_dev_series: pd.Series
@@ -72,6 +76,7 @@ class AnalysisState:
     s1_s2_interval_history: List[float] = field(default_factory=list)  # Last N accepted S1-S2 intervals (sec) for expected-S1-S2
     s1_s2_contractility_history: List[float] = field(default_factory=list)  # Last N accepted S1/S2 prominence ratios for expected contractility
     recent_s1_outcomes: List[Tuple[float, bool]] = field(default_factory=list)  # (time_sec, was_paired) for pair-rate window
+    peak_prominence_detail_cache: Optional[Dict[int, Dict[str, Any]]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -286,9 +291,16 @@ def adjust_confidence_with_contractility(
     return confidence, {"step": "Contractility", "detail": detail, "result": confidence}
 
 
-def calculate_lone_s1_confidence(current_peak_idx: int, last_s1_idx: int, long_term_bpm: float, audio_envelope: np.ndarray,
-                                 dynamic_noise_floor: pd.Series, sample_rate: int, params: Dict,
-                                 all_peaks: Optional[np.ndarray] = None) -> Tuple[float, List[str]]:
+def calculate_lone_s1_confidence(
+    current_peak_idx: int,
+    last_s1_idx: int,
+    long_term_bpm: float,
+    audio_envelope: np.ndarray,
+    noise_floor_values: np.ndarray,
+    sample_rate: int,
+    params: Dict,
+    all_peaks: Optional[np.ndarray] = None,
+) -> Tuple[float, List[str]]:
     """
     Calculates a confidence score for a Lone S1 candidate based on a weighted average of
     its rhythmic timing and its amplitude consistency with the previous beat, and returns
@@ -346,8 +358,8 @@ def calculate_lone_s1_confidence(current_peak_idx: int, last_s1_idx: int, long_t
         )
 
     # --- 2. Calculate Amplitude Fit Score ---
-    last_s1_strength = max(0, audio_envelope[last_s1_idx] - dynamic_noise_floor.iloc[last_s1_idx])
-    current_peak_strength = max(0, audio_envelope[current_peak_idx] - dynamic_noise_floor.iloc[current_peak_idx])
+    last_s1_strength = max(0, audio_envelope[last_s1_idx] - noise_floor_values[last_s1_idx])
+    current_peak_strength = max(0, audio_envelope[current_peak_idx] - noise_floor_values[current_peak_idx])
     amplitude_ratio = current_peak_strength / (last_s1_strength + 1e-9)
 
     # Piecewise-linear map: current/history amplitude ratio → confidence score.
@@ -396,8 +408,14 @@ def _append_s1_s2_contractility(
     params: Dict,
 ) -> None:
     """Append an accepted pair's S1/S2 prominence ratio to history for expected contractility."""
-    s1_details = get_peak_prominence_details(s1_idx, audio_envelope, trough_indices, sample_rate)
-    s2_details = get_peak_prominence_details(s2_idx, audio_envelope, trough_indices, sample_rate)
+    s1_details = get_peak_prominence_details(
+        s1_idx, audio_envelope, trough_indices, sample_rate,
+        detail_cache=state.peak_prominence_detail_cache,
+    )
+    s2_details = get_peak_prominence_details(
+        s2_idx, audio_envelope, trough_indices, sample_rate,
+        detail_cache=state.peak_prominence_detail_cache,
+    )
     s1_prom = s1_details["prominence"]
     s2_prom = s2_details["prominence"]
     ratio = s1_prom / (s2_prom + 1e-9)
@@ -430,11 +448,16 @@ def _get_recent_s1_prominences_for_state(
         state.peak_classifications.get(idx, {}).get("peak_type")
         for idx in state.candidate_beats[-50:]
     ]
-    return [
-        calculate_peak_prominence(idx, audio_envelope, trough_indices)
-        for idx, typ in zip(state.candidate_beats[-50:], recent_s1_types)
-        if typ in (PeakType.S1_PAIRED.value, PeakType.LONE_S1_VALIDATED.value)
-    ]
+    cache = state.peak_prominence_detail_cache
+    out: List[float] = []
+    for idx, typ in zip(state.candidate_beats[-50:], recent_s1_types):
+        if typ not in (PeakType.S1_PAIRED.value, PeakType.LONE_S1_VALIDATED.value):
+            continue
+        if cache is not None and idx in cache:
+            out.append(float(cache[idx]["prominence"]))
+        else:
+            out.append(calculate_peak_prominence(idx, audio_envelope, trough_indices))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -557,12 +580,14 @@ class PairingEngine:
             self.audio_envelope,
             state.trough_indices,
             sample_rate=self.sample_rate,
+            detail_cache=state.peak_prominence_detail_cache,
         )
         s2_details = get_peak_prominence_details(
             s2_candidate_idx,
             self.audio_envelope,
             state.trough_indices,
             sample_rate=self.sample_rate,
+            detail_cache=state.peak_prominence_detail_cache,
         )
         s1_prominence = s1_details["prominence"]
         s2_prominence = s2_details["prominence"]
@@ -691,6 +716,7 @@ class PairingEngine:
                 self.audio_envelope,
                 state.trough_indices,
                 sample_rate=self.sample_rate,
+                detail_cache=state.peak_prominence_detail_cache,
             )
             next_s1_prominence = next_s1_details["prominence"]
 
@@ -800,14 +826,15 @@ class LookaheadSkipper:
         next_next_peak_idx = all_peaks[loop_idx + 2]
 
         # Heuristic: treat the middle peak as noise if its prominence is much weaker than the S1 candidate
+        dc = state.peak_prominence_detail_cache
         current_prom = calculate_peak_prominence(
-            current_peak_idx, self.audio_envelope, state.trough_indices
+            current_peak_idx, self.audio_envelope, state.trough_indices, detail_cache=dc
         )
         middle_prom = calculate_peak_prominence(
-            middle_peak_idx, self.audio_envelope, state.trough_indices
+            middle_peak_idx, self.audio_envelope, state.trough_indices, detail_cache=dc
         )
         next_next_prom = calculate_peak_prominence(
-            next_next_peak_idx, self.audio_envelope, state.trough_indices
+            next_next_peak_idx, self.audio_envelope, state.trough_indices, detail_cache=dc
         )
         noise_thresh = self.params.get('noise_prominence_threshold', 0.35)
 

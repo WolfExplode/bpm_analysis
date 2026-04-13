@@ -255,6 +255,7 @@ def _rolling_quantile_center_bfill_ffill(
     y: np.ndarray, window: int, quantile_val: float, min_periods: int = 3
 ) -> np.ndarray:
     """Same as Series.rolling(center=True).quantile().bfill().ffill() on contiguous data."""
+    y = np.ascontiguousarray(np.asarray(y, dtype=np.float64))
     s = pd.Series(y, copy=False)
     rolled = s.rolling(window=window, min_periods=min_periods, center=True).quantile(quantile_val)
     return rolled.bfill().ffill().to_numpy()

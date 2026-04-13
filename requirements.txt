@@ -7,6 +7,7 @@ pandas>=2.3.0
 plotly>=6.1.1
 pydub>=0.25.1
 scipy>=1.14
+bottleneck>=1.4.0
 ttkbootstrap>=1.19.2
 tkinterdnd2>=0.4.0
 matplotlib

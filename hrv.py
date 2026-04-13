@@ -7,6 +7,46 @@ import pandas as pd
 from scipy.signal import find_peaks, lombscargle
 from typing import List, Dict, Tuple, Optional
 
+_LOMB_FREQS: Optional[np.ndarray] = None
+_LOMB_ANGULAR: Optional[np.ndarray] = None
+
+
+def _lomb_frequency_grid() -> Tuple[np.ndarray, np.ndarray]:
+    """Cached 0.001–0.5 Hz grid (1000 points) for Lomb–Scargle band integration."""
+    global _LOMB_FREQS, _LOMB_ANGULAR
+    if _LOMB_FREQS is None:
+        _LOMB_FREQS = np.linspace(0.001, 0.5, 1000, dtype=np.float64)
+        _LOMB_ANGULAR = (2.0 * np.pi * _LOMB_FREQS).astype(np.float64)
+    return _LOMB_FREQS, _LOMB_ANGULAR
+
+
+def _median_mad_keep_mask_time_window(
+    times_sec: np.ndarray,
+    values: np.ndarray,
+    half_window_sec: float,
+    mad_k: float,
+) -> np.ndarray:
+    """
+    Outlier mask: same rule as |t - t_i| <= half_window on sorted time axis,
+    using searchsorted for the window bounds (times_sec must be non-decreasing).
+    """
+    n = len(values)
+    keep = np.ones(n, dtype=bool)
+    t = np.asarray(times_sec, dtype=np.float64)
+    v = np.asarray(values, dtype=np.float64)
+    hw = float(half_window_sec)
+    for i in range(n):
+        lo = np.searchsorted(t, t[i] - hw, side="left")
+        hi = np.searchsorted(t, t[i] + hw, side="right")
+        if hi <= lo:
+            continue
+        window_vals = v[lo:hi]
+        local_median = np.median(window_vals)
+        local_mad = np.median(np.abs(window_vals - local_median))
+        if local_mad > 1e-9:
+            keep[i] = np.abs(v[i] - local_median) <= mad_k * local_mad
+    return keep
+
 
 def _lombscargle_band_powers(
     times_sec: np.ndarray, rr_ms: np.ndarray, include_vlf: bool = False
@@ -29,10 +69,11 @@ def _lombscargle_band_powers(
             len(times_sec), len(rr_ms),
         )
         return None
-    freqs = np.linspace(0.001, 0.5, 1000)
-    angular_freqs = 2.0 * np.pi * freqs
+    freqs, angular_freqs = _lomb_frequency_grid()
+    ts = np.ascontiguousarray(np.asarray(times_sec, dtype=np.float64))
+    rr = np.ascontiguousarray(np.asarray(rr_ms, dtype=np.float64))
     try:
-        periodogram = lombscargle(times_sec, rr_ms, angular_freqs, normalize=True)
+        periodogram = lombscargle(ts, rr, angular_freqs, normalize=True)
     except Exception as e:
         logging.warning(f"Lomb-Scargle: lombscargle() failed: {e}")
         return None
@@ -230,15 +271,7 @@ def compute_pass1_bpm_curve(
     # Outlier removal: keep point if within median ± k*MAD in local window
     half_window_sec = float(params.get("pass1_bpm_outlier_window_sec", 10.0))
     mad_k = float(params.get("pass1_bpm_outlier_mad_k", 2.5))
-    keep = np.ones(len(instant_bpm), dtype=bool)
-    for i in range(len(instant_bpm)):
-        in_window = np.abs(times_sec - times_sec[i]) <= half_window_sec
-        if not np.any(in_window):
-            continue
-        local_median = np.median(instant_bpm[in_window])
-        local_mad = np.median(np.abs(instant_bpm[in_window] - local_median))
-        if local_mad > 1e-9:
-            keep[i] = np.abs(instant_bpm[i] - local_median) <= mad_k * local_mad
+    keep = _median_mad_keep_mask_time_window(times_sec, instant_bpm, half_window_sec, mad_k)
     scatter_bpm = np.asarray(instant_bpm[keep], dtype=float)
     scatter_times = np.asarray(times_sec[keep], dtype=float)
 
@@ -274,15 +307,7 @@ def compute_s1_s2_interval_curve(
     # Outlier removal: keep point if within median ± k*MAD in local time window
     half_window_sec = float(params.get("s1_s2_outlier_window_sec", 8.0))
     mad_k = float(params.get("s1_s2_outlier_mad_k", 2.5))
-    keep = np.ones(len(obs_intervals), dtype=bool)
-    for i in range(len(obs_intervals)):
-        in_window = np.abs(obs_times - obs_times[i]) <= half_window_sec
-        if not np.any(in_window):
-            continue
-        local_median = np.median(obs_intervals[in_window])
-        local_mad = np.median(np.abs(obs_intervals[in_window] - local_median))
-        if local_mad > 1e-9:
-            keep[i] = np.abs(obs_intervals[i] - local_median) <= mad_k * local_mad
+    keep = _median_mad_keep_mask_time_window(obs_times, obs_intervals, half_window_sec, mad_k)
     scatter_times = obs_times[keep]
     scatter_intervals = obs_intervals[keep]
 
@@ -315,15 +340,7 @@ def filter_instant_bpm_mad(
     instant_bpm = np.asarray(instant_bpm, dtype=float)
     half_window_sec = float(params.get("pass2_instant_bpm_outlier_window_sec", 10.0))
     mad_k = float(params.get("pass2_instant_bpm_outlier_mad_k", 2.5))
-    keep = np.ones(len(instant_bpm), dtype=bool)
-    for i in range(len(instant_bpm)):
-        in_window = np.abs(bpm_times - bpm_times[i]) <= half_window_sec
-        if not np.any(in_window):
-            continue
-        local_median = np.median(instant_bpm[in_window])
-        local_mad = np.median(np.abs(instant_bpm[in_window] - local_median))
-        if local_mad > 1e-9:
-            keep[i] = np.abs(instant_bpm[i] - local_median) <= mad_k * local_mad
+    keep = _median_mad_keep_mask_time_window(bpm_times, instant_bpm, half_window_sec, mad_k)
     return bpm_times[keep], instant_bpm[keep]
 
 
@@ -471,10 +488,10 @@ def _find_steepest_slope(series: pd.Series, window_sec: int, rising: bool) -> Op
     bpm_values = series.values
     steepest_slope, best_period = 0, None
     for i in range(len(times_sec) - 1):
-        end_idx_candidates = np.where(times_sec >= times_sec[i] + window_sec)[0]
-        if len(end_idx_candidates) == 0:
+        target_t = times_sec[i] + window_sec
+        end_idx = int(np.searchsorted(times_sec, target_t, side="left"))
+        if end_idx >= len(times_sec):
             break
-        end_idx = end_idx_candidates[0]
         duration = times_sec[end_idx] - times_sec[i]
         if duration > 0:
             slope = (bpm_values[end_idx] - bpm_values[i]) / duration
