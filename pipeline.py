@@ -9,7 +9,7 @@ from scipy.interpolate import interp1d
 
 from audio_preprocessing import preprocess_audio
 from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
-from plotting import Plotter
+from plotting import Plotter, prewarm_kaleido_png_export
 from reporting import ReportGenerator
 from validation import (
     _load_manual_labels_csv,
@@ -202,7 +202,9 @@ def analyze_wav_file(
 
     # Honor optional verbose logging flag from params to control how noisy the console is.
     # When disabled, we keep stage-level INFO logs but suppress very chatty algorithm-detail INFO logs.
-    verbose_logging = bool(params.get("verbose_console_logging", True))
+    verbose_logging = bool(
+        params.get("algorithm_console_logging", params.get("verbose_console_logging", True))
+    )
     root_logger = logging.getLogger()
     active_filters = []
 
@@ -270,6 +272,13 @@ def analyze_wav_file(
     # Set default output options if none provided (needed for pass 2/pass 3 plot decisions)
     if output_options is None:
         output_options = DEFAULT_OUTPUT_OPTIONS.copy()
+
+    # Pre-warm Kaleido so Chromium startup can overlap with analysis.
+    try:
+        if output_options.get("png", False):
+            prewarm_kaleido_png_export()
+    except Exception:
+        pass
     needs_plot_outputs = any([
         output_options.get('html', True),
         output_options.get('png', False),

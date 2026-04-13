@@ -13,7 +13,7 @@ matplotlib
 
 # Optional: only required when PNG export is enabled (Plotter.save_as_png /
 # fig.write_image). Can be omitted if you only need interactive HTML output.
-kaleido>=1.0.0
+kaleido>=1.1.0
 
 # ── Indirect dependencies (librosa back-ends) ─────────────────────────────────
 # These are pulled in automatically by librosa, but are listed here so that pip

@@ -4,6 +4,7 @@
 
 import logging
 import os
+import re
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -386,6 +387,13 @@ def _write_fft_html(fig: go.Figure, output_path: str, page_title: str, header_la
     """Write FFT figure to HTML with shared wrapper."""
     plot_config = {"scrollZoom": True, "showTips": False}
     plotly_html = fig.to_html(full_html=False, config=plot_config, include_plotlyjs="cdn")
+    # If CDN is unavailable, fall back to a local plotly.min.js beside the HTML (if present).
+    plotly_html = re.sub(
+        r'<script\s+src="(https://cdn\.plot\.ly/plotly[^"]+)"\s*></script>',
+        r'<script src="\1" onerror="this.onerror=null;this.src=\'plotly.min.js\';"></script>',
+        plotly_html,
+        count=1,
+    )
     wrapper_html = f"""<!DOCTYPE html>
 <html style="height:100%;margin:0;padding:0;">
 <head>

@@ -1,6 +1,8 @@
 import datetime
 import logging
+import warnings
 import numpy as np
+from numpy.exceptions import RankWarning
 import pandas as pd
 from scipy.signal import find_peaks, lombscargle
 from typing import List, Dict, Tuple, Optional
@@ -200,7 +202,9 @@ def _loess(
             y_out[i] = float(np.mean(y_data[idx]))
         else:
             w = (1 - (dist[idx] / d_max) ** 3) ** 3
-            p = np.polyfit(t_data[idx], y_data[idx], degree, w=w)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RankWarning)
+                p = np.polyfit(t_data[idx], y_data[idx], degree, w=w)
             y_out[i] = float(np.polyval(p, t))
     return y_out
 

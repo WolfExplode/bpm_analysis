@@ -1,10 +1,13 @@
 import os
 import logging
+import time
 import urllib.parse
+import re
 from time_utils import seconds_to_datetime
 import csv
 import shutil
 import json
+import tempfile
 from typing import Dict, Optional, List, Any, Tuple
 from peak_utils import PeakType, _get_peak_type_from_debug, format_debug_entry, get_peak_prominence_details
 import numpy as np
@@ -22,6 +25,54 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend for spectrogram generation
 import matplotlib.pyplot as plt
+
+
+def prewarm_kaleido_png_export() -> None:
+    """
+    Start Kaleido's persistent sync server (Kaleido >= 1.1) so Chromium stays
+    alive across multiple fig.write_image() calls. Plotly routes write_image to
+    kaleido.calc_fig_sync, which uses the global server when it is running.
+
+    Safe to call multiple times. No-op if Kaleido is missing or too old.
+    Kaleido registers its own atexit handler to stop the server on shutdown.
+    """
+    try:
+        logging.debug("Kaleido: prewarm_kaleido_png_export()")
+        import kaleido  # noqa: PLC0415
+
+        if not hasattr(kaleido, "start_sync_server"):
+            logging.debug("Kaleido: start_sync_server missing (install kaleido>=1.1 for persistent export)")
+            return
+        # Align with plotly.io.defaults so the server loads the same plotly.js /
+        # MathJax as Plotly would pass via kopts on one-shot exports (kopts are
+        # ignored per call while the server is running).
+        kw = {"silence_warnings": True}
+        try:
+            import plotly.io as pio  # noqa: PLC0415
+
+            d = pio.defaults
+            if getattr(d, "plotlyjs", None):
+                kw["plotlyjs"] = d.plotlyjs
+            if getattr(d, "mathjax", None):
+                kw["mathjax"] = d.mathjax
+        except Exception:
+            pass
+        try:
+            from kaleido import _sync_server as _kaleido_sync  # noqa: PLC0415
+
+            _kaleido_was_running = _kaleido_sync.GlobalKaleidoServer().is_running()
+        except Exception:
+            _kaleido_was_running = False
+        kaleido.start_sync_server(**kw)
+        if _kaleido_was_running:
+            logging.debug("Kaleido: sync server already running (batch — reuse persistent Chromium)")
+        else:
+            logging.debug("Kaleido: start_sync_server() started (persistent Chromium for PNG export)")
+    except Exception:
+        logging.debug(
+            "Kaleido: prewarm failed (one-shot export per write_image)",
+            exc_info=True,
+        )
 
 
 def _compute_systolic_interval_data(
@@ -297,6 +348,13 @@ class Plotter:
 
             # Generate the base Plotly HTML
             plotly_html = self.fig.to_html(config=plot_config, full_html=False, include_plotlyjs='cdn')
+            # If CDN is unavailable, fall back to a local plotly.min.js beside the HTML (if present).
+            plotly_html = re.sub(
+                r'<script\s+src="(https://cdn\.plot\.ly/plotly[^"]+)"\s*></script>',
+                r'<script src="\1" onerror="this.onerror=null;this.src=\'plotly.min.js\';"></script>',
+                plotly_html,
+                count=1,
+            )
 
             # Generate custom HTML with audio player and playhead
             custom_html = self._generate_custom_html(
@@ -315,17 +373,15 @@ class Plotter:
             png_scale = int(opts.get("png_scale", 2) or 2)
             png_width = int(opts.get("png_width") or 2100)
             png_height = int(opts.get("png_height") or 1200)
-
+            write_kwargs = {
+                "format": "png",
+                "scale": png_scale,
+                "width": png_width,
+                "height": png_height,
+            }
             try:
-                # Note: Kaleido must be installed for write_image() to work.
-                write_kwargs = {
-                    "format": "png",
-                    "scale": png_scale,
-                    "width": png_width,
-                    "height": png_height,
-                }
                 self.fig.write_image(output_png_path, **write_kwargs)
-                logging.info(f"Plot PNG exported to {output_png_path}")
+                logging.info(f"Plot PNG exported via Kaleido to {output_png_path}")
             except Exception as e:
                 logging.warning(f"Failed to export Plot PNG (requires kaleido): {e}")
 
@@ -471,6 +527,13 @@ class Plotter:
             "showTips": False,
         }
         plotly_html = self.fig.to_html(config=plot_config, full_html=False, include_plotlyjs="cdn")
+        # If CDN is unavailable, fall back to a local plotly.min.js beside the HTML (if present).
+        plotly_html = re.sub(
+            r'<script\s+src="(https://cdn\.plot\.ly/plotly[^"]+)"\s*></script>',
+            r'<script src="\1" onerror="this.onerror=null;this.src=\'plotly.min.js\';"></script>',
+            plotly_html,
+            count=1,
+        )
         custom_html = self._generate_custom_html(
             plotly_html, plot_title, base_name, output_options=output_options
         )

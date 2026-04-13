@@ -66,6 +66,25 @@ def format_bpm_filename_annotation(start_bpm: float, min_bpm: float, max_bpm: fl
     return f"{a},{lo}-{hi}bpm"
 
 
+class _SuppressKaleidoChoreographerRootNoiseFilter(logging.Filter):
+    """
+    choreographer uses logistro.getLogger() (root) in utils/_which.py; Chrome stderr uses logger
+    name browser_proc. Named loggers are raised to WARNING separately; this catches root + any
+    site-packages choreographer/kaleido call site still on root.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "root":
+            return True
+        path = (getattr(record, "pathname", None) or "").replace("\\", "/").lower()
+        if path.endswith("choreographer/utils/_which.py"):
+            return record.levelno >= logging.WARNING
+        if "/site-packages/" in path or "/dist-packages/" in path:
+            if "/choreographer/" in path or "/kaleido/" in path:
+                return record.levelno >= logging.WARNING
+        return True
+
+
 class BPMApp:
     # Minimum window size when auto-sized or resized by user
     MIN_WIDTH = 420
@@ -81,6 +100,7 @@ class BPMApp:
         self.log_queue = queue.Queue()
         self.settings_file = os.path.join(os.getcwd(), "ui_settings.json")
         self._loading_settings = True  # Prevent saving during initialization
+        self._general_console_log_filters: list[tuple[logging.Handler, logging.Filter]] = []
         self._dnd_available = self._init_drag_drop(root)
         self.create_widgets()
         self.load_ui_settings()
@@ -161,7 +181,8 @@ class BPMApp:
         self.optimize_long_plots = tk.BooleanVar(value=False)
         self.output_to_input_dir = tk.BooleanVar(value=False)
         self.output_all_passes = tk.BooleanVar(value=True)
-        self.verbose_console_logging = tk.BooleanVar(value=True)
+        self.algorithm_console_logging = tk.BooleanVar(value=True)
+        self.general_console_logging = tk.BooleanVar(value=False)
         self.html_s1_s2_hover_on_by_default = tk.BooleanVar(
             value=DEFAULT_OUTPUT_OPTIONS.get("html_s1_s2_hover_on_by_default", False)
         )
@@ -232,24 +253,31 @@ class BPMApp:
 
         ttk.Checkbutton(
             debug_frame,
-            text="Verbose console logging (detailed algorithm messages)",
-            variable=self.verbose_console_logging,
+            text="Algorithm console logging (debug for algorithm details)",
+            variable=self.algorithm_console_logging,
             command=self.save_ui_settings,
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=(0, 20))
+
+        ttk.Checkbutton(
+            debug_frame,
+            text="General console logging (debug for timing and other debug strings; silences noisy libraries)",
+            variable=self.general_console_logging,
+            command=self.save_ui_settings,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
         ttk.Checkbutton(
             debug_frame,
             text="Optimize long HTML plots over 10 min by hiding detailed debug traces to reduce file size",
             variable=self.optimize_long_plots,
             command=self.save_ui_settings,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
         ttk.Checkbutton(
             debug_frame,
             text="Output all passes (pass 1, pass 2, pass 3)",
             variable=self.output_all_passes,
             command=self.save_ui_settings,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
         self.auto_close_when_done = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -257,10 +285,11 @@ class BPMApp:
             text="Auto-close when batch finishes successfully (no per-file errors)",
             variable=self.auto_close_when_done,
             command=self.save_ui_settings,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
         self.auto_close_when_done.trace("w", lambda *args: self.save_ui_settings())
 
-        self.verbose_console_logging.trace("w", lambda *args: self.save_ui_settings())
+        self.algorithm_console_logging.trace("w", lambda *args: self.save_ui_settings())
+        self.general_console_logging.trace("w", lambda *args: self.save_ui_settings())
         self.optimize_long_plots.trace("w", lambda *args: self.save_ui_settings())
         self.output_all_passes.trace("w", lambda *args: self.save_ui_settings())
 
@@ -547,7 +576,7 @@ class BPMApp:
             return None
 
     _SETTINGS_VAR_KEYS = (
-        ('process_all_channels', 'verbose_console_logging', 'bpm_from_filename', 'rename_input_with_bpm')
+        ('process_all_channels', 'algorithm_console_logging', 'general_console_logging', 'bpm_from_filename', 'rename_input_with_bpm')
         + tuple('output_' + k for k, _ in OUTPUT_FILE_OPTIONS)
         + (
             'optimize_long_plots',
@@ -558,6 +587,55 @@ class BPMApp:
             'html_inline_interactive_script',
         )
     )
+
+    def _apply_general_console_logging(self, enabled: bool) -> None:
+        """
+        Control whether DEBUG-level logs are emitted to the console.
+        Algorithm-detail verbosity is controlled separately by params["algorithm_console_logging"].
+
+        With root at DEBUG, some dependencies (Numba JIT, pydub/ffmpeg, asyncio, Kaleido's
+        choreographer/CDP layer) would flood the console; those loggers stay at WARNING while
+        this mode is on.
+        """
+        level = logging.DEBUG if enabled else logging.INFO
+        root = logging.getLogger()
+        for h, filt in self._general_console_log_filters:
+            try:
+                h.removeFilter(filt)
+            except Exception:
+                pass
+        self._general_console_log_filters.clear()
+
+        root.setLevel(level)
+        for h in root.handlers:
+            try:
+                h.setLevel(level)
+            except Exception:
+                pass
+
+        # Keep third-party chatter out of "general console" mode (still see our DEBUG lines).
+        _noisy = (
+            "numba",
+            "llvmlite",
+            "asyncio",
+            "pydub",
+            "pydub.utils",
+            # Kaleido 1.x uses choreographer (verbose CDP / browser I/O at DEBUG).
+            "choreographer",
+            "chrome_wrapper",  # choreographer Unix pipe wrapper (named logger, not under choreographer.*)
+            "kaleido",
+            # Chrome stderr from choreographer is piped here (logistro.getPipeLogger).
+            "browser_proc",
+        )
+        for name in _noisy:
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.WARNING if enabled else logging.NOTSET)
+
+        if enabled:
+            nf = _SuppressKaleidoChoreographerRootNoiseFilter()
+            for h in root.handlers:
+                h.addFilter(nf)
+                self._general_console_log_filters.append((h, nf))
 
     def save_ui_settings(self):
         """Save current UI settings to a JSON file."""
@@ -579,6 +657,11 @@ class BPMApp:
         try:
             with open(self.settings_file, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
+            # Migrate renamed UI keys (older ui_settings.json)
+            if "algorithm_console_logging" not in settings and "verbose_console_logging" in settings:
+                settings["algorithm_console_logging"] = settings["verbose_console_logging"]
+            if "general_console_logging" not in settings and "general_debug_logging" in settings:
+                settings["general_console_logging"] = settings["general_debug_logging"]
             if settings.get('starting_bpm'):
                 self.bpm_entry.delete(0, tk.END)
                 self.bpm_entry.insert(0, settings['starting_bpm'])
@@ -751,7 +834,11 @@ class BPMApp:
             # Read batch-wide options once
             process_all_channels = self.process_all_channels.get()
             optimize_long_plots = self.optimize_long_plots.get()
-            verbose_console_logging = self.verbose_console_logging.get()
+            algorithm_console_logging = self.algorithm_console_logging.get()
+            general_console_logging = self.general_console_logging.get()
+
+            # Enable/disable DEBUG-level logging (timing and other debug strings).
+            self._apply_general_console_logging(bool(general_console_logging))
 
             # Deduplicate inputs by base filename so we don't process both 'name.wav' and 'name.mp4'.
             deduped_files = {}
@@ -889,8 +976,8 @@ class BPMApp:
                     # Ensure plotting logic sees the long-plot optimization preference
                     if optimize_long_plots:
                         self.params["optimize_long_plots"] = True
-                    # Ensure verbose logging preference is visible to the analysis pipeline
-                    self.params["verbose_console_logging"] = bool(verbose_console_logging)
+                    # Algorithm-detail console verbosity for the analysis pipeline
+                    self.params["algorithm_console_logging"] = bool(algorithm_console_logging)
 
                     bpm_rename_info_for_file = None
                     for ch_idx, wav_for_analysis in enumerate(wav_files_to_analyze, start=1):
