@@ -27,6 +27,19 @@ matplotlib.use("Agg")  # Use non-interactive backend for spectrogram generation
 import matplotlib.pyplot as plt
 
 
+def _elapsed_seconds_to_plot_datetimes(seconds: np.ndarray) -> pd.DatetimeIndex:
+    """
+    Vectorized equivalent of
+    pd.to_datetime([seconds_to_datetime(float(t)) for t in seconds]).
+    Same local-epoch convention as time_utils.seconds_to_datetime (for Plotly x).
+    """
+    arr = np.asarray(seconds, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return pd.DatetimeIndex([], dtype="datetime64[ns]")
+    base = pd.Timestamp(seconds_to_datetime(0.0))
+    return base + pd.to_timedelta(arr, unit="s")
+
+
 def prewarm_kaleido_png_export() -> None:
     """
     Start Kaleido's persistent sync server (Kaleido >= 1.1) so Chromium stays
@@ -270,9 +283,7 @@ class Plotter:
         # Only skip details if the recording is longer than the threshold; shorter files always show full detail.
         self.skip_detailed_debug_traces = optimize_long_plots and self.audio_duration_sec > long_threshold_sec
 
-        time_axis_dt = pd.to_datetime([seconds_to_datetime(t) for t in self.time_axis_sec])
-
-        self._add_line_traces(time_axis_dt, audio_envelope, analysis_data, all_raw_peaks)
+        self._add_line_traces(audio_envelope, analysis_data, all_raw_peaks)
         self._add_trough_markers(audio_envelope, analysis_data)
         self._add_peak_traces(
             all_raw_peaks,
@@ -438,11 +449,16 @@ class Plotter:
 
         self.spectrogram_enabled = False
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        time_axis_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in self.time_axis_sec])
 
         factor = self.params.get("plot_downsample_factor", 5)
-        plot_time = time_axis_dt[::factor] if factor > 1 and len(time_axis_dt) >= factor else time_axis_dt
-        plot_envelope = audio_envelope[::factor] if factor > 1 and len(audio_envelope) >= factor else audio_envelope
+        n = len(audio_envelope)
+        if factor > 1 and n >= factor:
+            plot_secs = np.arange(0, n, factor, dtype=np.float64) / self.sample_rate
+            plot_envelope = audio_envelope[::factor]
+        else:
+            plot_secs = np.arange(n, dtype=np.float64) / self.sample_rate
+            plot_envelope = audio_envelope
+        plot_time = _elapsed_seconds_to_plot_datetimes(plot_secs)
         fig.add_trace(
             go.Scatter(x=plot_time, y=plot_envelope, name="Audio Envelope", line=dict(color="#47a5c4")),
             secondary_y=False,
@@ -452,8 +468,8 @@ class Plotter:
             in_bounds = (anchor_beats >= 0) & (anchor_beats < len(audio_envelope))
             ab = anchor_beats[in_bounds]
             if len(ab) > 0:
-                anchor_times_sec = ab.astype(float) / self.sample_rate
-                anchor_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in anchor_times_sec])
+                anchor_times_sec = ab.astype(np.float64) / self.sample_rate
+                anchor_times_dt = _elapsed_seconds_to_plot_datetimes(anchor_times_sec)
                 y_at_beats = np.asarray(audio_envelope)[ab]
                 fig.add_trace(
                     go.Scatter(
@@ -471,7 +487,7 @@ class Plotter:
             st = pass1_bpm_data["scatter_times"]
             sb = pass1_bpm_data["scatter_bpm"]
             if len(st) > 0 and len(st) == len(sb):
-                scatter_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in st])
+                scatter_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(st, dtype=np.float64))
                 fig.add_trace(
                     go.Scatter(
                         x=scatter_dt,
@@ -487,7 +503,7 @@ class Plotter:
             ct = pass1_bpm_data["curve_times"]
             cb = pass1_bpm_data["curve_bpm"]
             if len(ct) > 0 and len(ct) == len(cb):
-                curve_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in ct])
+                curve_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(ct, dtype=np.float64))
                 fig.add_trace(
                     go.Scatter(
                         x=curve_dt,
@@ -504,7 +520,7 @@ class Plotter:
         # BPM Trend (Belief) from pass 1 (EMA from accepted beats during that run)
         if pass1_analysis_data and "long_term_bpm_series" in pass1_analysis_data and not pass1_analysis_data["long_term_bpm_series"].empty:
             lt_series = pass1_analysis_data["long_term_bpm_series"]
-            lt_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in lt_series.index])
+            lt_times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(lt_series.index, dtype=np.float64))
             fig.add_trace(
                 go.Scatter(
                     x=lt_times_dt,
@@ -571,7 +587,7 @@ class Plotter:
         tick_positions_sec = np.arange(0, duration_sec + 1e-6, tick_interval_sec, dtype=float)
         if tick_positions_sec.size > 0 and tick_positions_sec[-1] < duration_sec:
             tick_positions_sec = np.append(tick_positions_sec, duration_sec)
-        tickvals = [seconds_to_datetime(float(s)) for s in tick_positions_sec]
+        tickvals = _elapsed_seconds_to_plot_datetimes(tick_positions_sec)
         ticktext = [f"{int(s // 60):02d}:{int(s % 60):02d} ({s:.2f})" for s in tick_positions_sec]
 
         self.fig.update_xaxes(
@@ -635,7 +651,6 @@ class Plotter:
 
     def _add_line_traces(
         self,
-        time_axis_dt: pd.Series,
         audio_envelope: np.ndarray,
         analysis_data: Dict,
         all_raw_peaks: Optional[np.ndarray] = None,
@@ -646,18 +661,22 @@ class Plotter:
         if getattr(self, "skip_detailed_debug_traces", False):
             logging.info("Skipping audio envelope and noise floor traces for long file (optimization enabled).")
             return
-        plot_time_axis_dt = time_axis_dt
         plot_envelope = audio_envelope
         plot_noise_floor = analysis_data.get("dynamic_noise_floor_series")
 
         # Downsample only envelope and noise floor for performance; other traces (contractility, BPM, HRV) use full data
         factor = self.params.get("plot_downsample_factor", 5)
-        if factor > 1 and len(audio_envelope) >= factor:
+        n = len(audio_envelope)
+        if factor > 1 and n >= factor:
             logging.info(f"Downsampling envelope and noise floor by factor {factor} for plotting.")
-            plot_time_axis_dt = time_axis_dt[::factor]
+            plot_secs = np.arange(0, n, factor, dtype=np.float64) / self.sample_rate
+            plot_time_axis_dt = _elapsed_seconds_to_plot_datetimes(plot_secs)
             plot_envelope = audio_envelope[::factor]
             if plot_noise_floor is not None and not plot_noise_floor.empty:
                 plot_noise_floor = plot_noise_floor.iloc[::factor]
+        else:
+            plot_secs = np.arange(n, dtype=np.float64) / self.sample_rate
+            plot_time_axis_dt = _elapsed_seconds_to_plot_datetimes(plot_secs)
 
         self.fig.add_trace(
             go.Scatter(x=plot_time_axis_dt, y=plot_envelope, name="Audio Envelope", line=dict(color="#47a5c4")),
@@ -687,8 +706,8 @@ class Plotter:
             return
         trough_indices = analysis_data.get("trough_indices")
         if trough_indices is not None and trough_indices.size > 0:
-            trough_times_dt = pd.to_datetime(
-                [seconds_to_datetime(float(t)) for t in (trough_indices / self.sample_rate)]
+            trough_times_dt = _elapsed_seconds_to_plot_datetimes(
+                np.asarray(trough_indices, dtype=np.float64) / self.sample_rate
             )
 
             self.fig.add_trace(
@@ -707,8 +726,8 @@ class Plotter:
         self, indices, customdata, name, color, symbol, size, audio_envelope, hovertemplate
     ):
         """Add a single Scatter trace for peak markers (S1, S2, or Noise)."""
-        times_dt = pd.to_datetime(
-            [seconds_to_datetime(float(t)) for t in (np.array(indices) / self.sample_rate)]
+        times_dt = _elapsed_seconds_to_plot_datetimes(
+            np.asarray(indices, dtype=np.float64) / self.sample_rate
         )
         self.fig.add_trace(
             go.Scatter(
@@ -827,7 +846,7 @@ class Plotter:
         """Add one prominence-based contractility line trace. Use window_size=1 for pre-averaged (e.g. time-segment) data."""
         proms = np.asarray(proms, dtype=float)
         smoothed = self._smooth_peak_amplitudes(proms, window_size=window_size)
-        times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in times_sec])
+        times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(times_sec, dtype=np.float64))
         self.fig.add_trace(
             go.Scatter(
                 x=times_dt,
@@ -920,7 +939,7 @@ class Plotter:
             and len(instant_bpm) == len(bpm_times)
             and len(bpm_times) > 0
         ):
-            instant_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in bpm_times])
+            instant_times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times, dtype=np.float64))
             self.fig.add_trace(
                 go.Scatter(
                     x=instant_times_dt,
@@ -941,7 +960,7 @@ class Plotter:
             and len(pass1_bpm_times) == len(pass1_bpm_series)
         ):
             prior_curve_name = "BPM (Pass 2)" if output_suffix == "_pass3" else "BPM (pass 1)"
-            pass1_times_dt = pd.to_datetime([seconds_to_datetime(float(t)) for t in pass1_bpm_times])
+            pass1_times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(pass1_bpm_times, dtype=np.float64))
             self.fig.add_trace(
                 go.Scatter(
                     x=pass1_times_dt,
@@ -959,8 +978,8 @@ class Plotter:
             and "rmssdc" in windowed_hrv_df
             and "sdnn" in windowed_hrv_df
         ):
-            hrv_times_dt = pd.to_datetime(
-                [seconds_to_datetime(float(t)) for t in windowed_hrv_df["time"]]
+            hrv_times_dt = _elapsed_seconds_to_plot_datetimes(
+                np.asarray(windowed_hrv_df["time"], dtype=np.float64)
             )
             self.fig.add_trace(
                 go.Scatter(
@@ -1000,7 +1019,7 @@ class Plotter:
         )
         if not exp_t and not obs_t:
             return
-        to_dt = lambda seq: pd.to_datetime([seconds_to_datetime(float(x)) for x in seq])
+        to_dt = lambda seq: _elapsed_seconds_to_plot_datetimes(np.asarray(seq, dtype=np.float64))
         if exp_t:
             # Pass 3: shift expected to align with measured (exertion-only if peak exists, else all-time)
             plot_exp_iv = list(exp_iv)
