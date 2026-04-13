@@ -200,6 +200,8 @@ DEFAULT_OUTPUT_OPTIONS = {
     "summary": True,
     "debug": True,
     "filtered_wav": True,
+    # When True, converted/copied/split working WAVs are written under the output folder; when False, a temp dir is used.
+    "working_wav_in_output": True,
     "spectrogram": True,
     "fft_profiles": True,
     "regression_log": False,

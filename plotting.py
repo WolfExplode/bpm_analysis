@@ -199,12 +199,14 @@ class Plotter:
         pass_metrics: Dict,
         output_options: Optional[Dict] = None,
         output_suffix: Optional[str] = None,
+        filename_suffix: Optional[str] = None,
         pass1_bpm_series: Optional[pd.Series] = None,
         pass1_bpm_times: Optional[np.ndarray] = None,
     ):
         """Generates and saves the main analysis plot by calling helper methods.
         pass_metrics: BPM/HRV/slope metrics for the pass being plotted (pass 2, pass 3, etc.).
-        output_suffix: if provided (e.g. '_pass2', '_pass3'), used for HTML/PNG/CSV filenames instead of '_bpm_plot'.
+        output_suffix: pass id for trace labels and systolic logic ('_pass2', '_pass3').
+        filename_suffix: if set, used for HTML/PNG/CSV file names; if None, uses output_suffix or '_bpm_plot'.
         """
         self.fig = make_subplots(specs=[[{"secondary_y": True}]])
         self.time_axis_sec = np.arange(len(audio_envelope)) / self.sample_rate
@@ -257,9 +259,13 @@ class Plotter:
         self._configure_layout()
 
         base_name = self.output_stem
-        suffix = output_suffix if output_suffix is not None else "_bpm_plot"
-        output_html_path = os.path.join(self.output_directory, f"{base_name}{suffix}.html")
-        output_png_path = os.path.join(self.output_directory, f"{base_name}{suffix}.png")
+        file_suffix = (
+            filename_suffix
+            if filename_suffix is not None
+            else (output_suffix if output_suffix is not None else "_bpm_plot")
+        )
+        output_html_path = os.path.join(self.output_directory, f"{base_name}{file_suffix}.html")
+        output_png_path = os.path.join(self.output_directory, f"{base_name}{file_suffix}.png")
         plot_title = f"Heartbeat Analysis - {os.path.basename(self.file_name)}"
         plot_config = {
             "scrollZoom": True,
@@ -327,8 +333,14 @@ class Plotter:
             smoothed_bpm = pass_metrics.get("smoothed_bpm")
             bpm_times = pass_metrics.get("bpm_times")
             if smoothed_bpm is not None and not smoothed_bpm.empty and bpm_times is not None:
-                csv_path = os.path.join(self.output_directory, f"{base_name}{suffix}.csv")
-                csv_bpm_header = "BPM (Pass 2)" if suffix == "_pass2" else "BPM (Pass 3)" if suffix == "_pass3" else "Average BPM"
+                csv_path = os.path.join(self.output_directory, f"{base_name}{file_suffix}.csv")
+                csv_bpm_header = (
+                    "BPM (Pass 2)"
+                    if output_suffix == "_pass2"
+                    else "BPM (Pass 3)"
+                    if output_suffix == "_pass3"
+                    else "Average BPM"
+                )
                 try:
                     with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
                         writer = csv.writer(csvfile)

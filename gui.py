@@ -2,6 +2,7 @@
 
 import os
 import queue
+import tempfile
 import threading
 import tkinter as tk
 import json
@@ -17,7 +18,7 @@ from ttkbootstrap.constants import *
 from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS, strip_output_filename_emojis
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any
+from typing import Any, Optional
 from time_utils import timestamp_str
 
 class UIMessageType(Enum):
@@ -40,9 +41,29 @@ OUTPUT_FILE_OPTIONS = (
     ("spectrogram", "Spectrogram (.png)"), 
     ("summary", "Summary Report (.md)"),
     ("filtered_wav", "Filtered Audio (.wav)"),
+    ("working_wav_in_output", "Converted / working WAV in output folder"),
     ("debug", "Debug Report (.md)"),
     ("regression_log", "Regression testing output log (.md)"),
 )
+
+# Trailing BPM tags stripped from the stem before appending a fresh annotation (end of stem only).
+_BPM_FILENAME_TAIL_RE = re.compile(
+    r"(?:\s+(?:\d+\s*,\s*\d+\s*-\s*\d+\s*bpm|\d+\s*to\s*\d+\s*bpm|\d+\s*bpm))+$",
+    re.IGNORECASE,
+)
+_MAX_BASENAME_LEN = 255
+_MAX_FULL_PATH_LEN = 260
+
+
+def strip_trailing_bpm_filename_annotations(stem: str) -> str:
+    return _BPM_FILENAME_TAIL_RE.sub("", stem).rstrip()
+
+
+def format_bpm_filename_annotation(start_bpm: float, min_bpm: float, max_bpm: float) -> str:
+    a = int(round(start_bpm))
+    lo = int(round(min_bpm))
+    hi = int(round(max_bpm))
+    return f"{a},{lo}-{hi}bpm"
 
 
 class BPMApp:
@@ -107,6 +128,24 @@ class BPMApp:
         self.bpm_entry.bind('<KeyRelease>', lambda e: self.save_ui_settings())
         self.bpm_entry.bind('<FocusOut>', lambda e: self.save_ui_settings())
 
+        self.bpm_from_filename = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            param_frame,
+            text="Read starting BPM from file name (e.g. 120,60-150bpm \u2192 120; 90to132bpm \u2192 90; 150bpm)",
+            variable=self.bpm_from_filename,
+            command=self.save_ui_settings,
+        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        self.bpm_from_filename.trace("w", lambda *args: self.save_ui_settings())
+
+        self.rename_input_with_bpm = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            param_frame,
+            text="Rename input file with BPM tag: start,min-maxbpm (uses analysis; not for multi-channel)",
+            variable=self.rename_input_with_bpm,
+            command=self.save_ui_settings,
+        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        self.rename_input_with_bpm.trace("w", lambda *args: self.save_ui_settings())
+
         # Channel handling option
         self.process_all_channels = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -114,7 +153,7 @@ class BPMApp:
             text="Analyze each audio channel separately (stereo \u2192 CH1 & CH2 outputs)",
             variable=self.process_all_channels,
             command=self.save_ui_settings,
-        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
 
         # Output file options (defaults from config only)
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
@@ -154,7 +193,7 @@ class BPMApp:
         # Output location
         ttk.Checkbutton(
             output_frame,
-            text="Save outputs next to input files (instead of 'processed_files')",
+            text="Save outputs to same directory as input files",
             variable=self.output_to_input_dir,
             command=self.save_ui_settings,
         ).grid(row=half, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(8, 0))
@@ -212,6 +251,15 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
+        self.auto_close_when_done = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            debug_frame,
+            text="Auto-close when batch finishes successfully (no per-file errors)",
+            variable=self.auto_close_when_done,
+            command=self.save_ui_settings,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        self.auto_close_when_done.trace("w", lambda *args: self.save_ui_settings())
+
         self.verbose_console_logging.trace("w", lambda *args: self.save_ui_settings())
         self.optimize_long_plots.trace("w", lambda *args: self.save_ui_settings())
         self.output_all_passes.trace("w", lambda *args: self.save_ui_settings())
@@ -259,9 +307,15 @@ class BPMApp:
                 if msg.type == UIMessageType.STATUS:
                     self.status_var.set(msg.data)
                 elif msg.type == UIMessageType.ANALYSIS_COMPLETE:
-                    final_message = msg.data if msg.data else "Analysis complete!"
+                    batch_ok = True
+                    if isinstance(msg.data, tuple) and len(msg.data) == 2:
+                        final_message, batch_ok = msg.data[0], bool(msg.data[1])
+                    else:
+                        final_message = msg.data if msg.data else "Analysis complete!"
                     self.status_var.set(final_message)
                     self.analyze_btn.config(state=tk.NORMAL)
+                    if self.auto_close_when_done.get() and batch_ok:
+                        self.root.after(150, self.root.destroy)
                 elif msg.type == UIMessageType.ERROR:
                      self.status_var.set("An error occurred. Check logs and messagebox.")
                      messagebox.showerror("Analysis Error", msg.data)
@@ -368,32 +422,138 @@ class BPMApp:
         """Safely update the status bar from any thread."""
         self.root.after(0, lambda: self.status_var.set(message))
 
+    def _schedule_rename_warning(self, reason: str, basename: str) -> None:
+        """Show a non-blocking dialog from the worker thread (tk main thread)."""
+
+        def show():
+            messagebox.showwarning(
+                "Input file not renamed",
+                f"{reason}\n\nFile: {basename}",
+            )
+
+        self.root.after(0, show)
+
+    def _sync_file_list_after_rename(self, old_path: str, new_path: str) -> None:
+        old_abs = os.path.abspath(old_path)
+        for i, p in enumerate(self.current_files):
+            if os.path.abspath(p) == old_abs:
+                self.current_files[i] = new_path
+                break
+        self.save_ui_settings()
+
+    def _try_rename_input_with_bpm_annotation(self, file_path: str, info: dict) -> Optional[str]:
+        """Rename file_path to append/replace trailing start,min-maxbpm tag. Returns new absolute path, or None."""
+        if not info:
+            return None
+        try:
+            start_bpm = float(info["start_bpm"])
+            min_bpm = float(info["min_bpm"])
+            max_bpm = float(info["max_bpm"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+        base = os.path.basename(file_path)
+        stem, ext = os.path.splitext(base)
+        clean_stem = strip_trailing_bpm_filename_annotations(stem)
+        tag = format_bpm_filename_annotation(start_bpm, min_bpm, max_bpm)
+        new_stem = f"{clean_stem} {tag}".strip() if clean_stem else tag
+        new_basename = new_stem + ext
+        if len(new_basename) > _MAX_BASENAME_LEN:
+            self._schedule_rename_warning(
+                f"The new file name would be too long ({len(new_basename)} characters; max {_MAX_BASENAME_LEN}).",
+                base,
+            )
+            return None
+
+        parent = os.path.dirname(file_path) or "."
+        new_path = os.path.join(parent, new_basename)
+        abs_old = os.path.abspath(file_path)
+        abs_new = os.path.abspath(new_path)
+        if len(abs_new) > _MAX_FULL_PATH_LEN:
+            self._schedule_rename_warning(
+                f"The full path would be too long ({len(abs_new)} characters; max {_MAX_FULL_PATH_LEN}).",
+                base,
+            )
+            return None
+        if os.path.normcase(abs_old) == os.path.normcase(abs_new):
+            return None
+        if os.path.exists(new_path):
+            self._schedule_rename_warning(
+                f"A file already exists with the target name:\n{new_basename}",
+                base,
+            )
+            return None
+        try:
+            os.rename(file_path, new_path)
+            logging.info("Renamed input file to %s", new_basename)
+            return abs_new
+        except OSError as e:
+            self._schedule_rename_warning(str(e), base)
+            return None
+
     def _extract_bpm_from_filename(self, file_path: str):
         """
         Try to detect a starting BPM from the file name if the user did not enter one.
 
-        Looks for patterns like '120bpm' or '120 bpm' (case-insensitive) in the base file name.
-        Returns a float BPM value if found, otherwise None.
+        Uses the last (rightmost) match in the base name for each pattern type, in order:
+        '120,60-150bpm' → 120; '90to132bpm' → 90; '150bpm' → 150 (case-insensitive).
         """
         base = os.path.basename(file_path)
-        # Case-insensitive search for "<number> [optional space] bpm"
-        match = re.search(r"(\d+)\s*bpm", base, flags=re.IGNORECASE)
-        if not match:
+        comma_matches = list(
+            re.finditer(r"(\d+)\s*,\s*(\d+)\s*-\s*(\d+)\s*bpm", base, flags=re.IGNORECASE)
+        )
+        if comma_matches:
+            m = comma_matches[-1]
+            try:
+                start_bpm = float(m.group(1))
+                logging.info(
+                    "Using starting BPM %.1f from file name tag %s,%s-%sbpm in '%s'.",
+                    start_bpm,
+                    m.group(1),
+                    m.group(2),
+                    m.group(3),
+                    base,
+                )
+                return start_bpm
+            except (TypeError, ValueError):
+                pass
+
+        to_matches = list(re.finditer(r"(\d+)\s*to\s*(\d+)\s*bpm", base, flags=re.IGNORECASE))
+        if to_matches:
+            m = to_matches[-1]
+            try:
+                start_bpm = float(m.group(1))
+                end_bpm = float(m.group(2))
+                logging.info(
+                    "Using starting BPM %.1f from file name range (%.1f–%.1f) in '%s'.",
+                    start_bpm,
+                    start_bpm,
+                    end_bpm,
+                    base,
+                )
+                return start_bpm
+            except (TypeError, ValueError):
+                pass
+
+        simple_matches = list(re.finditer(r"(\d+)\s*bpm", base, flags=re.IGNORECASE))
+        if not simple_matches:
             return None
+        m = simple_matches[-1]
         try:
-            bpm_val = float(match.group(1))
+            bpm_val = float(m.group(1))
             logging.info(f"Using BPM {bpm_val} from file name for '{base}'.")
             return bpm_val
         except (TypeError, ValueError):
             return None
 
     _SETTINGS_VAR_KEYS = (
-        ('process_all_channels', 'verbose_console_logging')
+        ('process_all_channels', 'verbose_console_logging', 'bpm_from_filename', 'rename_input_with_bpm')
         + tuple('output_' + k for k, _ in OUTPUT_FILE_OPTIONS)
         + (
             'optimize_long_plots',
             'output_to_input_dir',
             'output_all_passes',
+            'auto_close_when_done',
             'html_s1_s2_hover_on_by_default',
             'html_inline_interactive_script',
         )
@@ -457,7 +617,13 @@ class BPMApp:
             return
 
         # BPM plot or FFT profile HTML; pick newest mtime across all scanned dirs.
-        html_suffixes = ("_pass1.html", "_pass2.html", "_pass3.html", "_fft_profiles.html")
+        html_suffixes = (
+            "_pass1.html",
+            "_pass2.html",
+            "_pass3.html",
+            "_bpm_plot.html",
+            "_fft_profiles.html",
+        )
         html_files = []
         read_errors = []
         for output_dir in dirs_to_scan:
@@ -531,8 +697,12 @@ class BPMApp:
 
         # Check if at least one output option is selected
         output_options = self.get_output_options()
-        _meta_html_keys = frozenset({"html_s1_s2_hover_on_by_default", "html_inline_interactive_script"})
-        required_outputs = {k: v for k, v in output_options.items() if k not in _meta_html_keys}
+        _meta_output_keys = frozenset({
+            "html_s1_s2_hover_on_by_default",
+            "html_inline_interactive_script",
+            "working_wav_in_output",
+        })
+        required_outputs = {k: v for k, v in output_options.items() if k not in _meta_output_keys}
         if not any(required_outputs.values()):
             messagebox.showerror("Error", "Please select at least one output file type to generate.")
             return
@@ -558,8 +728,10 @@ class BPMApp:
             bpm_override_input = self.bpm_entry.get().strip()
             bpm_override_hint = float(bpm_override_input) if bpm_override_input else None
             # If the user entered a value, use it for the whole batch.
-            # If left blank, we will try to infer BPM from each file name instead.
+            # If left blank and "Read starting BPM from file name" is on, infer per file from the name.
             global_start_bpm_hint = bpm_override_hint
+            bpm_from_filename = self.bpm_from_filename.get()
+            rename_input_with_bpm = self.rename_input_with_bpm.get()
 
             base_output_dir = os.path.join(os.getcwd(), "processed_files")
             os.makedirs(base_output_dir, exist_ok=True)
@@ -618,6 +790,7 @@ class BPMApp:
 
             # --- BATCH PROCESSING LOOP ---
             for i, file_path in enumerate(input_files):
+                working_tmp = None
                 try:
                     file_start_time = time.time()
 
@@ -632,6 +805,16 @@ class BPMApp:
 
                     os.makedirs(output_dir, exist_ok=True)
 
+                    output_options = self.get_output_options()
+                    if regression_log_path:
+                        output_options["regression_log_path"] = regression_log_path
+
+                    if output_options.get("working_wav_in_output", True):
+                        wav_io_dir = output_dir
+                    else:
+                        working_tmp = tempfile.mkdtemp(prefix="bpm_working_")
+                        wav_io_dir = working_tmp
+
                     base_name, ext = os.path.splitext(file_path)
                     ext_lower = ext.lower()
 
@@ -640,30 +823,33 @@ class BPMApp:
                         source_dir = os.path.dirname(file_path)
                         same_dir_wav = os.path.join(source_dir, source_stem + ".wav")
                         output_stem = strip_output_filename_emojis(source_stem)
-                        output_dir_wav = os.path.join(output_dir, output_stem + ".wav")
+                        candidate_wav = os.path.join(wav_io_dir, output_stem + ".wav")
 
                         if os.path.exists(same_dir_wav):
-                            # Reuse an existing WAV next to the input file, copying to output_dir if needed.
+                            # Reuse an existing WAV next to the input file when it already lives in the
+                            # output folder, or when we are not keeping working WAVs in output (read in place).
                             if os.path.abspath(os.path.dirname(same_dir_wav)) == os.path.abspath(output_dir):
                                 wav_path = same_dir_wav
+                            elif not output_options.get("working_wav_in_output", True):
+                                wav_path = same_dir_wav
                             else:
-                                wav_path = output_dir_wav
+                                wav_path = candidate_wav
                                 shutil.copy(same_dir_wav, wav_path)
                             logging.info(
                                 "Reusing existing WAV '%s' for '%s' instead of converting.",
                                 os.path.basename(same_dir_wav),
                                 os.path.basename(file_path),
                             )
-                        elif os.path.exists(output_dir_wav):
-                            # Reuse an existing WAV already in the output directory.
-                            wav_path = output_dir_wav
+                        elif os.path.exists(candidate_wav):
+                            # Reuse an existing WAV already in wav_io_dir (output or temp).
+                            wav_path = candidate_wav
                             logging.info(
-                                "Reusing existing WAV '%s' in output directory for '%s' instead of converting.",
-                                os.path.basename(output_dir_wav),
+                                "Reusing existing WAV '%s' in working directory for '%s' instead of converting.",
+                                os.path.basename(candidate_wav),
                                 os.path.basename(file_path),
                             )
                         else:
-                            wav_path = output_dir_wav
+                            wav_path = candidate_wav
                             self.log_queue.put(UIMessage(UIMessageType.STATUS,
                                                          f"({i + 1}/{total_files}) Converting {os.path.basename(file_path)}..."))
                             if not convert_to_wav(file_path, wav_path):
@@ -677,7 +863,7 @@ class BPMApp:
                             orig_base = os.path.basename(file_path)
                             o_stem, o_ext = os.path.splitext(orig_base)
                             out_wav_name = strip_output_filename_emojis(o_stem) + o_ext
-                            wav_path = os.path.join(output_dir, out_wav_name)
+                            wav_path = os.path.join(wav_io_dir, out_wav_name)
                             shutil.copy(file_path, wav_path)
 
                     # Decide which WAV(s) to analyze: either the single mixed file, or
@@ -690,20 +876,15 @@ class BPMApp:
                                 f"({i + 1}/{total_files}) {os.path.basename(file_path)}: Splitting stereo into mono channels...",
                             )
                         )
-                        wav_files_to_analyze = split_wav_to_mono_channels(wav_path, output_dir)
-
-                    # Pass the file-specific start_bpm_hint and output options to the analysis function.
-                    output_options = self.get_output_options()
-                    if regression_log_path:
-                        # Share the regression log path with the analysis pipeline so that
-                        # per-file validation results can be appended in one central log.
-                        output_options["regression_log_path"] = regression_log_path
+                        wav_files_to_analyze = split_wav_to_mono_channels(wav_path, wav_io_dir)
 
                     # Determine starting BPM hint for this original input file.
                     if global_start_bpm_hint is not None:
                         file_start_bpm_hint = global_start_bpm_hint
-                    else:
+                    elif bpm_from_filename:
                         file_start_bpm_hint = self._extract_bpm_from_filename(file_path)
+                    else:
+                        file_start_bpm_hint = None
 
                     # Ensure plotting logic sees the long-plot optimization preference
                     if optimize_long_plots:
@@ -711,6 +892,7 @@ class BPMApp:
                     # Ensure verbose logging preference is visible to the analysis pipeline
                     self.params["verbose_console_logging"] = bool(verbose_console_logging)
 
+                    bpm_rename_info_for_file = None
                     for ch_idx, wav_for_analysis in enumerate(wav_files_to_analyze, start=1):
                         if len(wav_files_to_analyze) > 1:
                             status_suffix = f" (CH{ch_idx})"
@@ -729,7 +911,7 @@ class BPMApp:
 
                         progress_cb = _make_progress_cb(status_prefix)
 
-                        _figure, fft_data = analyze_wav_file(
+                        _figure, fft_data, bpm_rename_info = analyze_wav_file(
                             wav_for_analysis,
                             self.params,
                             file_start_bpm_hint,
@@ -741,6 +923,24 @@ class BPMApp:
                         )
                         if fft_data is not None:
                             fft_results_for_aggregate.append(fft_data)
+                        if bpm_rename_info_for_file is None and bpm_rename_info is not None:
+                            bpm_rename_info_for_file = bpm_rename_info
+
+                    if rename_input_with_bpm and bpm_rename_info_for_file is not None:
+                        if len(wav_files_to_analyze) > 1:
+                            self._schedule_rename_warning(
+                                "Multi-channel analysis: renaming the input file is skipped.",
+                                os.path.basename(file_path),
+                            )
+                        else:
+                            new_abs = self._try_rename_input_with_bpm_annotation(
+                                file_path, bpm_rename_info_for_file
+                            )
+                            if new_abs:
+                                self.root.after(
+                                    0,
+                                    lambda old=file_path, n=new_abs: self._sync_file_list_after_rename(old, n),
+                                )
                     files_processed += 1
 
                     # Log total wall-clock time for this original input file (including conversion, splitting, and analysis).
@@ -756,6 +956,9 @@ class BPMApp:
                     error_info = f"Error processing '{os.path.basename(file_path)}':\n{str(e)}"
                     self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
                     errors.append(os.path.basename(file_path))
+                finally:
+                    if working_tmp:
+                        shutil.rmtree(working_tmp, ignore_errors=True)
 
             # --- AGGREGATE FFT (when 2+ files were analyzed with FFT) ---
             if len(fft_results_for_aggregate) >= 2:
@@ -774,7 +977,9 @@ class BPMApp:
             else:
                 completion_message = f"Batch finished. Processed {files_processed}/{total_files}. Errors in: {', '.join(errors)}"
 
-            self.log_queue.put(UIMessage(UIMessageType.ANALYSIS_COMPLETE, completion_message))
+            self.log_queue.put(
+                UIMessage(UIMessageType.ANALYSIS_COMPLETE, (completion_message, not errors))
+            )
 
         except Exception as e:
             # Outer try-except block for critical errors (e.g., imports)

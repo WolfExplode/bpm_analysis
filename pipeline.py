@@ -187,7 +187,12 @@ def analyze_wav_file(
     collect_fft_for_aggregate: bool = False,
     progress_callback: Optional[Callable[[str], None]] = None,
 ):
-    """Main analysis pipeline that orchestrates the refactored classes."""
+    """Main analysis pipeline that orchestrates the refactored classes.
+
+    Returns (plotly_figure, fft_aggregate_data, bpm_rename_summary). On early exit or failure,
+    returns (None, None, None). bpm_rename_summary is a dict with start_bpm, min_bpm, max_bpm
+    from pass-1 start and pass-3 smoothed BPM extrema, or None if unavailable.
+    """
     def _ui(label: str) -> None:
         if progress_callback is not None:
             try:
@@ -330,7 +335,7 @@ def analyze_wav_file(
     if len(peaks_after_pass3) < 2:
         logging.warning("Not enough S1 peaks detected to generate full report.")
         _ui("Stopped: not enough detected heartbeat peaks.")
-        return None, None
+        return None, None, None
 
     logging.info("--- STAGE 6: Calculating Metrics and Generating Outputs ---")
     _ui("Pass 3: computing heart rate metrics...")
@@ -417,6 +422,7 @@ def analyze_wav_file(
             metrics_after_pass3,
             output_options,
             output_suffix="_pass3",
+            filename_suffix="_pass3" if output_all_passes else "_bpm_plot",
             pass1_bpm_series=prior_bpm_series,
             pass1_bpm_times=prior_bpm_times,
         )
@@ -511,4 +517,13 @@ def analyze_wav_file(
         except Exception:
             pass
 
-    return plotly_figure, fft_aggregate_data
+    bpm_rename_summary = None
+    hrv_done = metrics_after_pass3.get("hrv_summary") or {}
+    if hrv_done.get("min_bpm") is not None and hrv_done.get("max_bpm") is not None:
+        bpm_rename_summary = {
+            "start_bpm": float(start_bpm),
+            "min_bpm": float(hrv_done["min_bpm"]),
+            "max_bpm": float(hrv_done["max_bpm"]),
+        }
+
+    return plotly_figure, fft_aggregate_data, bpm_rename_summary
