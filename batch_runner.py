@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -17,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from audio_preprocessing import convert_to_wav, split_wav_to_mono_channels
 from config import strip_output_filename_emojis
+from console_logging import configure_analysis_console_logging
 
 _EXT_PREFERENCE = {
     ".wav": 2,
@@ -183,6 +185,16 @@ class BatchJobResult:
     analyze_had_multiple_channels: bool = False
 
 
+@dataclass(frozen=True)
+class BatchParallelSummary:
+    """Outcome of ``run_batch_parallel`` (single shared code path for GUI and CLI)."""
+
+    all_ok: bool
+    error_basenames: List[str]
+    deduped_input_paths: List[str]
+    results: List[BatchJobResult]
+
+
 def run_single_input_file(
     file_path: str,
     output_dir: str,
@@ -298,8 +310,24 @@ def run_single_input_file(
             shutil.rmtree(working_tmp, ignore_errors=True)
 
 
+def _ensure_pool_process_logging(params: Dict[str, Any]) -> None:
+    """
+    ProcessPoolExecutor workers are fresh processes without the parent's logging setup;
+    without a StreamHandler, only WARNING+ reaches the console (lastResort).
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    configure_analysis_console_logging(
+        general_debug=bool(params.get("general_console_logging", False)),
+        quiet=False,
+        stream=sys.stdout,
+    )
+
+
 def _process_one_job(job: BatchJob) -> BatchJobResult:
     """Top-level worker entry for ProcessPoolExecutor (Windows spawn)."""
+    _ensure_pool_process_logging(job.params)
     result = run_single_input_file(
         job.file_path,
         job.output_dir,
@@ -327,11 +355,14 @@ def run_batch_parallel(
     global_bpm_hint: Optional[float] = None,
     bpm_from_filename: bool = False,
     process_all_channels: bool = False,
-) -> Tuple[bool, List[str]]:
+    sequential_progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
+    sequential_conversion_callback: Optional[Callable[[int, int, str, str], None]] = None,
+) -> BatchParallelSummary:
     """
     Dedupe inputs, run each file (optionally in parallel), aggregate FFT when >= 2 inputs.
 
-    Returns (all_ok, error_basenames).
+    When ``max_workers == 1``, optional ``sequential_*_callback`` receive
+    (job_index, total_jobs, file_path, message) for UI updates. Ignored when ``max_workers > 1``.
     """
     if max_workers < 1:
         max_workers = 1
@@ -382,7 +413,48 @@ def run_batch_parallel(
 
     if max_workers == 1:
         for job in jobs:
-            r = _process_one_job(job)
+            i = job.job_index
+            total = len(jobs)
+            fp = job.file_path
+            use_callbacks = (
+                sequential_progress_callback is not None
+                or sequential_conversion_callback is not None
+            )
+            if not use_callbacks:
+                r = _process_one_job(job)
+            else:
+                prefix = f"({i + 1}/{total}) {os.path.basename(fp)}"
+
+                def _make_conv(ji: int, jt: int, jfp: str) -> Callable[[str], None]:
+                    def _conv(msg: str) -> None:
+                        if sequential_conversion_callback is not None:
+                            sequential_conversion_callback(ji, jt, jfp, msg)
+
+                    return _conv
+
+                def _make_prog(ji: int, jt: int, jfp: str) -> Callable[[str], None]:
+                    def _prog(detail: str) -> None:
+                        if sequential_progress_callback is not None:
+                            sequential_progress_callback(ji, jt, jfp, detail)
+
+                    return _prog
+
+                r = run_single_input_file(
+                    job.file_path,
+                    job.output_dir,
+                    job.output_options,
+                    job.params,
+                    global_bpm_hint=job.global_bpm_hint,
+                    bpm_from_filename=job.bpm_from_filename,
+                    process_all_channels=job.process_all_channels,
+                    collect_fft_for_aggregate=job.collect_fft_for_aggregate,
+                    progress_callback=_make_prog(i, total, fp) if sequential_progress_callback else None,
+                    conversion_status_callback=_make_conv(i, total, fp)
+                    if sequential_conversion_callback
+                    else None,
+                    batch_status_prefix=prefix,
+                )
+            r.job_index = job.job_index
             results[job.job_index] = r
             if not r.success:
                 errors.append(r.basename)
@@ -426,4 +498,15 @@ def run_batch_parallel(
             logging.warning("Aggregate FFT profiles failed: %s", e)
 
     all_ok = len(errors) == 0
-    return all_ok, errors
+    ordered_results: List[BatchJobResult] = []
+    for i in range(len(jobs)):
+        r = results[i]
+        if r is None:
+            raise RuntimeError(f"Missing batch result for job index {i}")
+        ordered_results.append(r)
+    return BatchParallelSummary(
+        all_ok=all_ok,
+        error_basenames=errors,
+        deduped_input_paths=list(deduped),
+        results=ordered_results,
+    )

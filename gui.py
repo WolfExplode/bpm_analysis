@@ -17,7 +17,7 @@ from ttkbootstrap.constants import *
 from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS, strip_output_filename_emojis
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any, List, Optional, Tuple
 from time_utils import timestamp_str
 from ui_settings_loader import migrate_ui_settings_keys
 from console_logging import configure_analysis_console_logging
@@ -261,13 +261,29 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
+        self.cli_batch_jobs = tk.IntVar(value=1)
+        jobs_row = ttk.Frame(debug_frame)
+        jobs_row.grid(row=4, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        ttk.Label(jobs_row, text="Parallel batch jobs (1 = sequential):").pack(side=tk.LEFT)
+        _jobs_spin = ttk.Spinbox(
+            jobs_row,
+            from_=1,
+            to=32,
+            width=5,
+            textvariable=self.cli_batch_jobs,
+            command=self.save_ui_settings,
+        )
+        _jobs_spin.pack(side=tk.LEFT, padx=(8, 0))
+        _jobs_spin.bind("<FocusOut>", lambda e: self.save_ui_settings())
+        self.cli_batch_jobs.trace("w", lambda *args: self.save_ui_settings())
+
         self.auto_close_when_done = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             debug_frame,
             text="Auto-close when batch finishes successfully (no per-file errors)",
             variable=self.auto_close_when_done,
             command=self.save_ui_settings,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
         self.auto_close_when_done.trace("w", lambda *args: self.save_ui_settings())
 
         self.algorithm_console_logging.trace("w", lambda *args: self.save_ui_settings())
@@ -444,6 +460,26 @@ class BPMApp:
 
         self.root.after(0, show)
 
+    def _apply_batch_input_bpm_renames(self, ops: List[Tuple[str, Any]]) -> None:
+        """Apply BPM filename renames on the main thread after a batch (sequential or parallel)."""
+        if not self.rename_input_with_bpm.get():
+            return
+        for file_path, result in ops:
+            if not getattr(result, "success", False):
+                continue
+            info = getattr(result, "bpm_rename_info", None)
+            if info is None:
+                continue
+            if getattr(result, "analyze_had_multiple_channels", False):
+                self._schedule_rename_warning(
+                    "Multi-channel analysis: renaming the input file is skipped.",
+                    os.path.basename(file_path),
+                )
+                continue
+            new_abs = self._try_rename_input_with_bpm_annotation(file_path, info)
+            if new_abs:
+                self._sync_file_list_after_rename(file_path, new_abs)
+
     def _sync_file_list_after_rename(self, old_path: str, new_path: str) -> None:
         old_abs = os.path.abspath(old_path)
         for i, p in enumerate(self.current_files):
@@ -523,6 +559,7 @@ class BPMApp:
             'auto_close_when_done',
             'html_s1_s2_hover_on_by_default',
             'html_inline_interactive_script',
+            'cli_batch_jobs',
         )
     )
 
@@ -567,6 +604,11 @@ class BPMApp:
             for k in self._SETTINGS_VAR_KEYS:
                 if k in settings:
                     getattr(self, k).set(settings[k])
+            try:
+                j = int(self.cli_batch_jobs.get())
+                self.cli_batch_jobs.set(max(1, min(j, 32)))
+            except (tk.TclError, ValueError, TypeError):
+                self.cli_batch_jobs.set(1)
             if settings.get('last_files'):
                 existing = [p for p in settings['last_files'] if os.path.exists(p)]
                 if existing:
@@ -693,7 +735,17 @@ class BPMApp:
         self.save_ui_settings()
 
         self.analyze_btn.config(state=tk.DISABLED)
-        self._update_status(f"Starting batch analysis of {len(self.current_files)} files...")
+        try:
+            j = int(self.cli_batch_jobs.get())
+        except (tk.TclError, ValueError, TypeError):
+            j = 1
+        j = max(1, min(j, 32))
+        if j > 1:
+            self._update_status(
+                f"Starting batch: {len(self.current_files)} file(s), {j} parallel workers..."
+            )
+        else:
+            self._update_status(f"Starting batch analysis of {len(self.current_files)} files...")
 
         analysis_thread = threading.Thread(target=self._run_analysis_in_background)
         analysis_thread.daemon = True
@@ -701,151 +753,119 @@ class BPMApp:
 
     def _run_analysis_in_background(self):
         try:
-            from batch_runner import dedupe_input_files, run_single_input_file
-            from fft_profiles import aggregate_fft_profiles, save_aggregate_fft_profiles_html
+            from batch_runner import run_batch_parallel
 
-            # Check for a global BPM value to override all individual settings.
             bpm_override_input = self.bpm_entry.get().strip()
             bpm_override_hint = float(bpm_override_input) if bpm_override_input else None
-            # If the user entered a value, use it for the whole batch.
-            # If left blank and "Read starting BPM from file name" is on, infer per file from the name.
             global_start_bpm_hint = bpm_override_hint
             bpm_from_filename = self.bpm_from_filename.get()
-            rename_input_with_bpm = self.rename_input_with_bpm.get()
+            rename_after = self.rename_input_with_bpm.get()
 
             base_output_dir = os.path.join(os.getcwd(), "processed_files")
             os.makedirs(base_output_dir, exist_ok=True)
 
-            # Initialize regression testing output log if requested.
+            process_all_channels = self.process_all_channels.get()
+            optimize_long_plots = self.optimize_long_plots.get()
+            algorithm_console_logging = self.algorithm_console_logging.get()
+            general_console_logging = self.general_console_logging.get()
+
+            self._apply_general_console_logging(bool(general_console_logging))
+
+            try:
+                max_workers = int(self.cli_batch_jobs.get())
+            except (tk.TclError, ValueError, TypeError):
+                max_workers = 1
+            max_workers = max(1, min(max_workers, 32))
+
             regression_log_path = None
-            if self.output_regression_log.get():
+            if self.output_regression_log.get() and max_workers <= 1:
                 regression_log_path = os.path.join(base_output_dir, "regression_testing_output_log.md")
                 try:
                     with open(regression_log_path, "w", encoding="utf-8") as log_file:
                         log_file.write("# Regression Testing Output Log\n")
                         log_file.write(f"*Generated on: {timestamp_str()}*\n\n")
                 except Exception as e:
-                    logging.error(f"Failed to initialize regression testing output log: {e}")
+                    logging.error("Failed to initialize regression testing output log: %s", e)
                     regression_log_path = None
-
-            # Read batch-wide options once
-            process_all_channels = self.process_all_channels.get()
-            optimize_long_plots = self.optimize_long_plots.get()
-            algorithm_console_logging = self.algorithm_console_logging.get()
-            general_console_logging = self.general_console_logging.get()
-
-            # Enable/disable DEBUG-level logging (timing and other debug strings).
-            self._apply_general_console_logging(bool(general_console_logging))
-
-            input_files = dedupe_input_files(self.current_files)
-
-            total_files = len(input_files)
-            files_processed = 0
-            errors = []
-            fft_results_for_aggregate = []
-            collect_fft_for_aggregate = total_files >= 2
 
             if optimize_long_plots:
                 self.params["optimize_long_plots"] = True
             self.params["algorithm_console_logging"] = bool(algorithm_console_logging)
+            self.params["general_console_logging"] = bool(general_console_logging)
 
-            # --- BATCH PROCESSING LOOP ---
-            for i, file_path in enumerate(input_files):
-                try:
-                    self.log_queue.put(
-                        UIMessage(
-                            UIMessageType.STATUS,
-                            f"({i + 1}/{total_files}) Processing: {os.path.basename(file_path)}",
-                        )
+            output_options = self.get_output_options()
+            if regression_log_path and max_workers <= 1:
+                output_options["regression_log_path"] = regression_log_path
+            elif self.output_regression_log.get() and max_workers > 1:
+                self.log_queue.put(
+                    UIMessage(
+                        UIMessageType.STATUS,
+                        "Regression log disabled for parallel batch (use Parallel jobs = 1 to enable).",
                     )
+                )
 
-                    if self.output_to_input_dir.get():
-                        output_dir = os.path.dirname(file_path) or base_output_dir
-                    else:
-                        output_dir = base_output_dir
-
-                    output_options = self.get_output_options()
-                    if regression_log_path:
-                        output_options["regression_log_path"] = regression_log_path
-
-                    def _conversion_status(msg: str) -> None:
-                        self.log_queue.put(
-                            UIMessage(UIMessageType.STATUS, f"({i + 1}/{total_files}) {msg}")
-                        )
-
-                    def _progress(detail: str) -> None:
-                        self.log_queue.put(UIMessage(UIMessageType.STATUS, detail))
-
-                    result = run_single_input_file(
-                        file_path,
-                        output_dir,
-                        output_options,
-                        self.params,
-                        global_bpm_hint=global_start_bpm_hint,
-                        bpm_from_filename=bpm_from_filename,
-                        process_all_channels=process_all_channels,
-                        collect_fft_for_aggregate=collect_fft_for_aggregate,
-                        progress_callback=_progress,
-                        conversion_status_callback=_conversion_status,
-                        batch_status_prefix=f"({i + 1}/{total_files}) {os.path.basename(file_path)}",
+            if max_workers > 1:
+                self.log_queue.put(
+                    UIMessage(
+                        UIMessageType.STATUS,
+                        f"Running {len(self.current_files)} input path(s) with {max_workers} workers "
+                        "(per-file live status only when Parallel jobs = 1).",
                     )
+                )
 
-                    if not result.success:
-                        error_info = f"Error processing '{result.basename}':\n{result.error or 'Unknown error'}"
-                        self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
-                        errors.append(result.basename)
-                        continue
+            def _seq_conv(job_i: int, total: int, _file_path: str, msg: str) -> None:
+                self.log_queue.put(
+                    UIMessage(UIMessageType.STATUS, f"({job_i + 1}/{total}) {msg}")
+                )
 
-                    for fd in result.fft_data_list:
-                        fft_results_for_aggregate.append(fd)
+            def _seq_prog(job_i: int, total: int, file_path: str, detail: str) -> None:
+                bn = os.path.basename(file_path)
+                self.log_queue.put(
+                    UIMessage(UIMessageType.STATUS, f"({job_i + 1}/{total}) {bn}: {detail}")
+                )
 
-                    bpm_rename_info_for_file = result.bpm_rename_info
+            summary = run_batch_parallel(
+                self.current_files,
+                self.params,
+                output_options,
+                base_output_dir=base_output_dir,
+                output_next_to_input=bool(self.output_to_input_dir.get()),
+                max_workers=max_workers,
+                global_bpm_hint=global_start_bpm_hint,
+                bpm_from_filename=bpm_from_filename,
+                process_all_channels=process_all_channels,
+                sequential_progress_callback=_seq_prog if max_workers == 1 else None,
+                sequential_conversion_callback=_seq_conv if max_workers == 1 else None,
+            )
 
-                    if rename_input_with_bpm and bpm_rename_info_for_file is not None:
-                        if result.analyze_had_multiple_channels:
-                            self._schedule_rename_warning(
-                                "Multi-channel analysis: renaming the input file is skipped.",
-                                os.path.basename(file_path),
-                            )
-                        else:
-                            new_abs = self._try_rename_input_with_bpm_annotation(
-                                file_path, bpm_rename_info_for_file
-                            )
-                            if new_abs:
-                                self.root.after(
-                                    0,
-                                    lambda old=file_path, n=new_abs: self._sync_file_list_after_rename(old, n),
-                                )
-                    files_processed += 1
+            deduped = summary.deduped_input_paths
+            total_files = len(deduped)
+            errors = list(summary.error_basenames)
+            files_processed = sum(1 for r in summary.results if r.success)
 
-                except Exception as e:
-                    error_info = f"Error processing '{os.path.basename(file_path)}':\n{str(e)}"
-                    self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
-                    errors.append(os.path.basename(file_path))
+            for _fp, result in zip(deduped, summary.results):
+                if result.success:
+                    continue
+                error_info = f"Error processing '{result.basename}':\n{result.error or 'Unknown error'}"
+                self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
 
-            # --- AGGREGATE FFT (when 2+ files were analyzed with FFT) ---
-            if len(fft_results_for_aggregate) >= 2:
-                try:
-                    freqs, agg_r1, agg_r2, agg_b1, agg_b2 = aggregate_fft_profiles(fft_results_for_aggregate, self.params)
-                    aggregate_path = os.path.join(base_output_dir, "fft_profiles_aggregate.html")
-                    save_aggregate_fft_profiles_html(
-                        freqs, agg_r1, agg_r2, agg_b1, agg_b2, aggregate_path, self.params
-                    )
-                except Exception as e:
-                    logging.warning("Aggregate FFT profiles failed: %s", e)
+            if rename_after:
+                rename_ops = list(zip(deduped, summary.results))
+                self.root.after(0, lambda ops=rename_ops: self._apply_batch_input_bpm_renames(ops))
 
-            # --- POST-LOOP COMPLETION MESSAGE ---
             if not errors:
-                completion_message = f"Successfully processed all {total_files} files."
+                completion_message = f"Successfully processed all {total_files} file(s)."
             else:
-                completion_message = f"Batch finished. Processed {files_processed}/{total_files}. Errors in: {', '.join(errors)}"
+                completion_message = (
+                    f"Batch finished. Completed {files_processed}/{total_files}. "
+                    f"Errors in: {', '.join(errors)}"
+                )
 
             self.log_queue.put(
                 UIMessage(UIMessageType.ANALYSIS_COMPLETE, (completion_message, not errors))
             )
 
         except Exception as e:
-            # Outer try-except block for critical errors (e.g., imports)
             error_info = f"A critical error occurred during batch setup:\n{str(e)}"
             self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
             self.root.after(0, lambda: self.analyze_btn.config(state=tk.NORMAL))

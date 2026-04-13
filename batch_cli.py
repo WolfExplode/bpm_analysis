@@ -361,6 +361,7 @@ def main(argv: List[str] | None = None) -> int:
     if optimize_long:
         params["optimize_long_plots"] = True
     params["algorithm_console_logging"] = algorithm_verbose
+    params["general_console_logging"] = bool(merged["general_console_logging"])
 
     if opts.get("regression_log") and jobs <= 1:
         from time_utils import timestamp_str
@@ -375,7 +376,7 @@ def main(argv: List[str] | None = None) -> int:
         else:
             opts["regression_log_path"] = reg_path
 
-    all_ok, errors = run_batch_parallel(
+    summary = run_batch_parallel(
         inputs,
         params,
         opts,
@@ -387,10 +388,10 @@ def main(argv: List[str] | None = None) -> int:
         process_all_channels=process_all_channels,
     )
 
-    if not all_ok:
-        logging.error("Batch finished with errors: %s", ", ".join(errors))
+    if not summary.all_ok:
+        logging.error("Batch finished with errors: %s", ", ".join(summary.error_basenames))
         return 1
-    logging.info("Batch finished successfully (%d file(s)).", len(inputs))
+    logging.info("Batch finished successfully (%d file(s)).", len(summary.deduped_input_paths))
     return 0
 
 

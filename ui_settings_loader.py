@@ -64,8 +64,8 @@ def batch_cli_defaults_from_ui_settings(settings: Optional[Dict[str, Any]]) -> D
     """
     Defaults for batch_cli when CLI flags are omitted (mirrors GUI batch behavior).
 
-    Optional JSON keys not written by the GUI today (can be hand-edited):
-    - cli_batch_jobs: int (default 1)
+    Optional / shared JSON keys:
+    - cli_batch_jobs: int (default 1; GUI "Parallel batch jobs" uses the same key as batch_cli --jobs)
     - cli_output_dir: str (default 'processed_files')
     """
     s = settings or {}
