@@ -348,28 +348,36 @@ def analyze_wav_file(
 
     logging.info("--- STAGE 6: Calculating Metrics and Generating Outputs ---")
     _ui("Pass 3: computing heart rate metrics...")
-    metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass3, sample_rate, params)
-    # Apply MAD-based BPM (same as pass 2) so BPM (Pass 3) is consistent and matches pass 2 when peaks unchanged
-    bt = metrics_after_pass3.get("bpm_times")
-    ib = metrics_after_pass3.get("instant_bpm")
-    if bt is not None and ib is not None and len(bt) == len(ib) and len(bt) >= 2:
-        t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
-        if len(t_filt) > 0:
-            smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
-            metrics_after_pass3["smoothed_bpm"] = smoothed_bpm
-            metrics_after_pass3["bpm_times"] = bpm_times
-            metrics_after_pass3["instant_bpm"] = instant_bpm
-            metrics_after_pass3["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
-            metrics_after_pass3["major_declines"] = find_major_hr_declines(smoothed_bpm)
-            metrics_after_pass3["hrr_stats"] = calculate_hrr(smoothed_bpm)
-            metrics_after_pass3["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
-            metrics_after_pass3["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-            if not smoothed_bpm.empty:
-                hrv_summary = metrics_after_pass3.get("hrv_summary") or {}
-                hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
-                hrv_summary["min_bpm"] = float(smoothed_bpm.min())
-                hrv_summary["max_bpm"] = float(smoothed_bpm.max())
-                metrics_after_pass3["hrv_summary"] = hrv_summary
+    reuse_pass2_metrics = (
+        metrics_pass2 is not None
+        and len(peaks_after_pass3) == len(s1_peaks)
+        and np.array_equal(np.asarray(peaks_after_pass3), np.asarray(s1_peaks))
+    )
+    if reuse_pass2_metrics:
+        metrics_after_pass3 = metrics_pass2
+    else:
+        metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass3, sample_rate, params)
+        # Apply MAD-based BPM (same as pass 2) so BPM (Pass 3) is consistent and matches pass 2 when peaks unchanged
+        bt = metrics_after_pass3.get("bpm_times")
+        ib = metrics_after_pass3.get("instant_bpm")
+        if bt is not None and ib is not None and len(bt) == len(ib) and len(bt) >= 2:
+            t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
+            if len(t_filt) > 0:
+                smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
+                metrics_after_pass3["smoothed_bpm"] = smoothed_bpm
+                metrics_after_pass3["bpm_times"] = bpm_times
+                metrics_after_pass3["instant_bpm"] = instant_bpm
+                metrics_after_pass3["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
+                metrics_after_pass3["major_declines"] = find_major_hr_declines(smoothed_bpm)
+                metrics_after_pass3["hrr_stats"] = calculate_hrr(smoothed_bpm)
+                metrics_after_pass3["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
+                metrics_after_pass3["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
+                if not smoothed_bpm.empty:
+                    hrv_summary = metrics_after_pass3.get("hrv_summary") or {}
+                    hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
+                    hrv_summary["min_bpm"] = float(smoothed_bpm.min())
+                    hrv_summary["max_bpm"] = float(smoothed_bpm.max())
+                    metrics_after_pass3["hrv_summary"] = hrv_summary
 
     # OPTIONAL: Validation against manually labeled peaks (if a CSV exists next to the WAV).
     # This lets you batch-run a dataset and get an objective error count per file
