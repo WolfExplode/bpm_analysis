@@ -169,6 +169,12 @@ DEFAULT_PARAMS = {
     "pass3_rr_too_long_frac": 1.7,             # Lower → insert beats more readily (aggressive). Higher → only insert on very obvious missed beats (conservative).
     "pass3_gap_fill_max_duration_sec": 5.0,    # Lower → avoid corrections in dropouts (conservative). Higher → attempt to correct longer gaps (aggressive; can create artifacts in true signal loss).
     "pass3_insert_s1_search_window_ms": 180.0, # Larger → easier to find an insert candidate (aggressive; more false insert risk). Smaller → only insert when a peak is very near expected time (conservative).
+    # When no raw peak exists in that window, slide FFT windows on bandpass audio and match the S1 template (paired high-confidence S1s):
+    "pass3_insert_use_spectrum": True,         # False → only insert on raw peaks (legacy). True → allow spectral placement for faint missed beats.
+    "pass3_insert_spectrum_stride_ms": 8.0,    # Smaller → finer search (slower). Larger → faster/coarser.
+    "pass3_insert_spectrum_min_margin": 0.15,  # Best vs second-best score gap; larger → fewer ambiguous inserts (conservative).
+    "pass3_insert_spectrum_envelope_margin": 1.05,  # Require envelope ≥ this × noise floor at insert index; ≤0 disables (accept any spectrum winner).
+    "pass3_insert_spectrum_target_sr": None,   # None → native WAV sample rate for template + search. Set e.g. 32000 to match fft_aggregate_sr.
 
     # =================================================================================
     # 7. Output, HRV & Reporting

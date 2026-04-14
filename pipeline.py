@@ -32,7 +32,13 @@ from hrv import (
     calculate_windowed_hrv,
     calculate_global_hrv_frequency,
 )
-from fft_profiles import compute_fft_profiles, compute_frequency_separation, save_fft_profiles_html
+from fft_profiles import (
+    compute_fft_profiles,
+    compute_frequency_separation,
+    prepare_pass3_s1_insert_context,
+    save_fft_profiles_html,
+    spectrum_s1_search_envelope_index,
+)
 
 
 class _NoisyAlgorithmLogFilter(logging.Filter):
@@ -124,7 +130,8 @@ def _build_pass1_bpm_prior(
 
 def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                               analysis_data: Dict, audio_envelope: np.ndarray,
-                              sample_rate: int, params: Dict) -> Tuple[np.ndarray, Dict]:
+                              sample_rate: int, params: Dict,
+                              wav_file_path: Optional[str] = None) -> Tuple[np.ndarray, Dict]:
     """
     Phase 3 template.
     Replace with new Stage 4/5 correction logic.
@@ -255,12 +262,52 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         # Caller provides min_sep_samples based on min_peak_distance_sec.
         return int(best)
 
+    def _insert_spectrum_envelope_ok(env_idx: int) -> bool:
+        margin = float(params.get("pass3_insert_spectrum_envelope_margin", 0.0))
+        if margin <= 0:
+            return True
+        nfs = analysis_data.get("dynamic_noise_floor_series")
+        if nfs is None or getattr(nfs, "empty", True):
+            return True
+        try:
+            ei = int(max(0, min(env_idx, len(audio_envelope) - 1)))
+            e = float(audio_envelope[ei])
+            nf = float(nfs.reindex([ei], method="nearest").iloc[0])
+            return e >= margin * nf
+        except Exception:
+            return True
+
     # ---------------------------------------------------------------------
     # 1) Build initial S1/S2 events from the current S1 list + BPM prior
     # ---------------------------------------------------------------------
     min_sep_samples = int(float(params.get("min_peak_distance_sec", 0.10)) * sample_rate)
     s1_list = [int(x) for x in peaks_out.tolist()]
     s1_list = sorted(list(dict.fromkeys([x for x in s1_list if 0 <= x < n_samples])))
+
+    # Spectral template + bandpass audio for missed-beat insertion when no raw peak exists.
+    insert_spectrum_ctx: Optional[Dict[str, Any]] = None
+    if (
+        bool(params.get("pass3_insert_use_spectrum", True))
+        and wav_file_path
+        and os.path.isfile(wav_file_path)
+    ):
+        try:
+            insert_spectrum_ctx = prepare_pass3_s1_insert_context(
+                wav_file_path,
+                pc,
+                sample_rate,
+                audio_envelope,
+                params,
+            )
+            if insert_spectrum_ctx is not None:
+                logging.info(
+                    "Pass 3: spectral S1 insert context ready (n_s1_template=%s, sr=%s).",
+                    insert_spectrum_ctx.get("n_s1_template"),
+                    insert_spectrum_ctx.get("full_sr"),
+                )
+        except Exception as e:
+            logging.warning("Pass 3: could not build spectral insert context: %s", e)
+            insert_spectrum_ctx = None
 
     s2_events: List[int] = []
     for i in range(len(s1_list) - 1):
@@ -399,8 +446,9 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                     changed = True
 
         # --- Pass B: insert missing S1 when RR is implausibly long vs BPM prior ---
-        if enable_insert and len(s1_list) >= 2 and len(all_raw_peaks) > 0:
+        if enable_insert and len(s1_list) >= 2:
             inserted_any = False
+            can_use_peaks = len(all_raw_peaks) > 0
             for i in range(len(s1_list) - 1):
                 s1 = int(s1_list[i])
                 s1_next = int(s1_list[i + 1])
@@ -424,7 +472,31 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                 # Insert at most 1 per iteration to keep behavior stable.
                 k = 0
                 t_expected = (s1 / float(sample_rate)) + (k + 1) * (rr / (n_missing + 1))
-                cand = _choose_s1_near(t_expected, s1_search_half, min_sep_samples)
+                cand: Optional[int] = None
+                insert_method = "raw_peak"
+                spectrum_score: Optional[float] = None
+                if can_use_peaks:
+                    cand = _choose_s1_near(t_expected, s1_search_half, min_sep_samples)
+                if cand is None and insert_spectrum_ctx is not None:
+                    half_sec = float(s1_search_window_ms) / 2000.0
+                    sp = spectrum_s1_search_envelope_index(
+                        insert_spectrum_ctx["bandpass_audio"],
+                        int(insert_spectrum_ctx["full_sr"]),
+                        t_expected,
+                        half_sec,
+                        insert_spectrum_ctx["mu_s1_db"],
+                        insert_spectrum_ctx["freqs"],
+                        int(insert_spectrum_ctx["n_fft"]),
+                        int(insert_spectrum_ctx["half_samples"]),
+                        sample_rate,
+                        n_samples,
+                        params,
+                    )
+                    if sp is not None:
+                        cand_ix, spectrum_score = sp
+                        if _insert_spectrum_envelope_ok(cand_ix):
+                            cand = int(cand_ix)
+                            insert_method = "spectrum_s1"
                 if cand is None:
                     continue
                 # Reject if too close to adjacent existing S1
@@ -432,18 +504,20 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                     continue
                 s1_list.append(int(cand))
                 s1_list = sorted(list(dict.fromkeys(s1_list)))
-                corrections.append(
-                    {
-                        "type": "insert_s1",
-                        "between_cycle": int(i),
-                        "s1_prev": int(s1),
-                        "s1_next": int(s1_next),
-                        "inserted_s1": int(cand),
-                        "t_expected_sec": float(t_expected),
-                        "expected_rr_sec": float(expected_rr),
-                        "rr_sec": float(rr),
-                    }
-                )
+                corr: Dict[str, Any] = {
+                    "type": "insert_s1",
+                    "between_cycle": int(i),
+                    "s1_prev": int(s1),
+                    "s1_next": int(s1_next),
+                    "inserted_s1": int(cand),
+                    "t_expected_sec": float(t_expected),
+                    "expected_rr_sec": float(expected_rr),
+                    "rr_sec": float(rr),
+                    "method": insert_method,
+                }
+                if spectrum_score is not None:
+                    corr["spectrum_score"] = float(spectrum_score)
+                corrections.append(corr)
                 inserted_any = True
                 changed = True
                 break
@@ -761,7 +835,13 @@ def analyze_wav_file(
     peaks_after_pass2 = s1_peaks
     _ui("Pass 3: refining peaks...")
     peaks_after_pass3, analysis_data = _refine_and_correct_peaks(
-        peaks_after_pass2, all_raw_peaks, analysis_data, audio_envelope, sample_rate, params
+        peaks_after_pass2,
+        all_raw_peaks,
+        analysis_data,
+        audio_envelope,
+        sample_rate,
+        params,
+        wav_file_path=wav_file_path,
     )
 
     # STAGE 6: Metrics from latest pass (pass 3). Use same MAD-based BPM as pass 2 so curves match when no correction.

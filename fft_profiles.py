@@ -5,7 +5,7 @@
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
@@ -237,6 +237,165 @@ def compute_fft_profiles(
         f"{full_sr} Hz, {window_ms} ms window"
     )
     return freqs, raw_s1_db, raw_s2_db, preproc_s1_db, preproc_s2_db, n_s1_raw, n_s2_raw
+
+
+def prepare_pass3_s1_insert_context(
+    audio_path: str,
+    peak_classifications: Dict,
+    envelope_sample_rate: int,
+    audio_envelope: np.ndarray,
+    params: Optional[Dict] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Build bandpass audio + mean S1 shape spectrum (same construction as compute_fft_profiles)
+    for Pass 3 missed-beat insertion when no raw peak exists in the search window.
+
+    Returns None if audio is empty or there are no paired S1 peaks to form a template.
+    Caller should hold bandpass_audio only for the duration of Pass 3 (can be large).
+    """
+    params = params or {}
+    window_ms = float(params.get("fft_window_ms", 100.0))
+    max_peaks_per_type = int(params.get("fft_max_peaks_per_type", 100))
+    target_sr = params.get("pass3_insert_spectrum_target_sr")
+    if target_sr is not None:
+        target_sr = int(target_sr)
+
+    if target_sr is not None:
+        audio_raw, full_sr = librosa.load(audio_path, sr=target_sr, mono=True)
+    else:
+        audio_raw, full_sr = librosa.load(audio_path, sr=None, mono=True)
+    if audio_raw.size == 0:
+        logging.warning("Pass 3 spectrum insert: empty audio file.")
+        return None
+
+    s1_indices, s2_indices = _collect_s1_s2_indices(peak_classifications, paired_s1_only=True)
+    s1_selected, s2_selected = _select_top_peaks_by_confidence(
+        peak_classifications, s1_indices, s2_indices, max_per_type=max_peaks_per_type
+    )
+    s1_full = _peak_indices_to_full_rate(s1_selected, envelope_sample_rate, full_sr)
+    s2_full = _peak_indices_to_full_rate(s2_selected, envelope_sample_rate, full_sr)
+
+    env = np.asarray(audio_envelope)
+    s1_amps = np.array(
+        [env[min(int(idx), len(env) - 1)] for idx in s1_selected], dtype=np.float64
+    )
+    s2_amps = np.array(
+        [env[min(int(idx), len(env) - 1)] for idx in s2_selected], dtype=np.float64
+    )
+
+    window_samples = int(round(window_ms * 0.001 * full_sr))
+    half_samples = window_samples // 2
+    n_fft = 1 << (window_samples - 1).bit_length()
+    if n_fft < window_samples:
+        n_fft *= 2
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / full_sr)
+
+    audio_preproc = apply_bandpass_only(audio_raw, full_sr, params)
+    preproc_s1_db, preproc_s2_db, n_s1_pre, n_s2_pre = _compute_profiles_from_audio(
+        audio_preproc, full_sr, s1_full, s2_full, s1_amps, s2_amps, n_fft, half_samples
+    )
+
+    neutral_low = float(params.get("fft_neutral_band_low_hz", 3000.0))
+    neutral_high = float(params.get("fft_neutral_band_high_hz", 5000.0))
+    preproc_s1_db, preproc_s2_db = _align_s2_to_s1_in_band(
+        freqs, preproc_s1_db, preproc_s2_db, neutral_low, neutral_high
+    )
+
+    if n_s1_pre < 1:
+        logging.info(
+            "Pass 3 spectrum insert: no paired S1 template (n_s1_pre=%s); skipping spectral insertion.",
+            n_s1_pre,
+        )
+        return None
+
+    return {
+        "bandpass_audio": audio_preproc,
+        "full_sr": int(full_sr),
+        "freqs": freqs,
+        "mu_s1_db": preproc_s1_db,
+        "n_fft": int(n_fft),
+        "half_samples": int(half_samples),
+        "window_ms": window_ms,
+        "n_s1_template": int(n_s1_pre),
+        "n_s2_template": int(n_s2_pre),
+    }
+
+
+def spectrum_s1_search_envelope_index(
+    bandpass_audio: np.ndarray,
+    full_sr: int,
+    t_expected_sec: float,
+    search_half_sec: float,
+    mu_s1_db: np.ndarray,
+    freqs: np.ndarray,
+    n_fft: int,
+    half_samples: int,
+    envelope_sample_rate: int,
+    n_samples_envelope: int,
+    params: Optional[Dict] = None,
+) -> Optional[Tuple[int, float]]:
+    """
+    Slide short-time spectra over bandpass audio near t_expected; pick center that best matches
+    mu_s1_db in fft_separation band (negative mean squared error in dB shape space).
+
+    Returns (envelope_sample_index, best_score) or None if no confident winner.
+    """
+    params = params or {}
+    low_hz = float(params.get("fft_separation_low_hz", 10.0))
+    high_hz = float(params.get("fft_separation_high_hz", 15000.0))
+    mask = (freqs >= low_hz) & (freqs <= high_hz)
+    if not np.any(mask) or len(mu_s1_db) != len(freqs):
+        return None
+
+    stride_samples = max(
+        1, int(round(float(params.get("pass3_insert_spectrum_stride_ms", 8.0)) * full_sr / 1000.0))
+    )
+    margin_req = float(params.get("pass3_insert_spectrum_min_margin", 0.15))
+    eps = 1e-10
+
+    center_full = int(round(float(t_expected_sec) * full_sr))
+    span = int(round(float(search_half_sec) * full_sr))
+    lo = max(half_samples, center_full - span)
+    hi = min(len(bandpass_audio) - half_samples, center_full + span)
+    if hi <= lo:
+        return None
+
+    scores: List[float] = []
+    centers: List[int] = []
+    for c in range(lo, hi + 1, stride_samples):
+        w = _extract_window(bandpass_audio, c, half_samples)
+        if w is None:
+            continue
+        windowed = w * np.hanning(len(w))
+        rms = np.sqrt(np.mean(windowed ** 2) + eps)
+        ref_db = 20.0 * np.log10(max(rms, 1e-10))
+        padded = np.zeros(n_fft, dtype=np.float64)
+        padded[: len(windowed)] = windowed
+        fft_mag = np.abs(np.fft.rfft(padded))
+        fft_db = 20.0 * np.log10(fft_mag + eps)
+        spec_shape = fft_db - ref_db
+        diff = spec_shape[mask] - mu_s1_db[mask]
+        score = -float(np.mean(diff ** 2))
+        scores.append(score)
+        centers.append(int(c))
+
+    if not scores:
+        return None
+
+    scores_arr = np.asarray(scores, dtype=np.float64)
+    order = np.argsort(scores_arr)[::-1]
+    best_i = int(order[0])
+    best_score = float(scores_arr[best_i])
+    best_center = centers[best_i]
+
+    if len(scores_arr) >= 2:
+        second_best = float(scores_arr[int(order[1])])
+        if best_score - second_best < margin_req:
+            return None
+
+    env_idx = int(round(best_center * float(envelope_sample_rate) / float(full_sr)))
+    env_idx = max(0, min(env_idx, n_samples_envelope - 1))
+    return env_idx, best_score
 
 
 def _align_s2_to_s1_in_band(
