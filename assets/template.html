@@ -203,6 +203,18 @@
             border: 1px solid #333;
         }
 
+        /* Pass 3 state strip overlay near x-axis (canvas) */
+        #state-strip-plot {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 1px;
+            height: 1px;
+            pointer-events: none;
+            opacity: 0.90;
+            z-index: 6; /* above plot but below playhead */
+        }
+
         #timeline-progress {
             position: absolute;
             top: 0;
@@ -525,6 +537,7 @@
             <div id="spectrogram-container">
                 <img id="spectrogram-image" class="hidden" src="%%SPECTROGRAM_SRC%%" alt="Spectrogram" />
             </div>
+            <canvas id="state-strip-plot"></canvas>
             <div id="chart-playhead"></div>
             <div id="plotly-chart">
                 %%PLOTLY_HTML%%

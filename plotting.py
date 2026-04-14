@@ -276,6 +276,9 @@ class Plotter:
         self.time_axis_sec = np.arange(len(audio_envelope)) / self.sample_rate
         self.audio_duration_sec = self.time_axis_sec[-1] if len(self.time_axis_sec) > 0 else 0
         self._has_systolic_traces = False
+        # Optional pass 3 dense state timeline (S1/systole/S2/diastole) for HTML overlay.
+        self._pass3_state_boundaries = analysis_data.get("pass3_state_boundaries") or []
+        self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
@@ -1400,6 +1403,27 @@ class Plotter:
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
             "htmlS1S2HoverOnByDefault": hover_on_by_default,
         }
+        # Pass 3: state timeline overlay (compact strip above chart).
+        if getattr(self, "_pass3_state_boundaries", None):
+            segs = []
+            for s0, s1, state_name, meta in (self._pass3_state_boundaries or []):
+                try:
+                    start_sec = float(s0) / float(self.sample_rate)
+                    end_sec = float(s1) / float(self.sample_rate)
+                    if not np.isfinite(start_sec) or not np.isfinite(end_sec) or end_sec <= start_sec:
+                        continue
+                    segs.append(
+                        {
+                            "start": start_sec,
+                            "end": end_sec,
+                            "state": str(state_name),
+                        }
+                    )
+                except Exception:
+                    continue
+            if segs:
+                config_payload["pass3Segments"] = segs
+                config_payload["pass3SegmentsEncoding"] = getattr(self, "_pass3_state_labels_encoding", {}) or {}
         config_json = json.dumps(config_payload)
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))

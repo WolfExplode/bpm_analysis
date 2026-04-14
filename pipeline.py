@@ -17,6 +17,7 @@ from validation import (
     _append_validation_results_row,
 )
 from classifier import PeakClassifier
+from confidence_engine import calculate_bpm_intervals
 from hrv import (
     calculate_bpm_series,
     compute_pass1_bpm_curve,
@@ -128,13 +129,161 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
     Phase 3 template.
     Replace with new Stage 4/5 correction logic.
     """
-    _ = all_raw_peaks, audio_envelope, sample_rate, params
-    logging.info("--- STAGES 4 & 5 TEMPLATE: pass 3 correction currently disabled ---")
     if "peak_classifications" not in analysis_data or analysis_data["peak_classifications"] is None:
         analysis_data["peak_classifications"] = {}
     if "s1_s2_pairs" not in analysis_data:
         analysis_data["s1_s2_pairs"] = []
-    return np.asarray(s1_peaks), analysis_data
+
+    peaks_out = np.asarray(s1_peaks)
+    if len(peaks_out) < 2:
+        return peaks_out, analysis_data
+
+    # ---------------------------------------------------------------------
+    # Pass 3 (bridge): generate a dense per-sample cardiac-state timeline
+    # ---------------------------------------------------------------------
+    n_samples = int(len(audio_envelope))
+    if n_samples <= 0:
+        return peaks_out, analysis_data
+
+    # State encoding (ints) for compact storage and easy plotting/debugging.
+    # 0: S1, 1: systole, 2: S2, 3: diastole
+    STATE_S1 = 0
+    STATE_SYSTOLE = 1
+    STATE_S2 = 2
+    STATE_DIASTOLE = 3
+
+    state_labels = np.full(n_samples, STATE_DIASTOLE, dtype=np.int8)
+    state_boundaries = []
+
+    # Event window sizes.
+    s1_window_ms = float(params.get("pass3_state_s1_window_ms", 80.0))
+    s2_window_ms = float(params.get("pass3_state_s2_window_ms", 80.0))
+    s1_half = max(1, int(round(0.5 * s1_window_ms * sample_rate / 1000.0)))
+    s2_half = max(1, int(round(0.5 * s2_window_ms * sample_rate / 1000.0)))
+
+    # Optional: snap predicted S2 to the best nearby raw peak using label_scores["S2"].
+    snap_s2 = bool(params.get("pass3_snap_s2_to_peak", True))
+    snap_window_ms = float(params.get("pass3_snap_s2_window_ms", 120.0))
+    snap_half = max(1, int(round(0.5 * snap_window_ms * sample_rate / 1000.0)))
+    max_snap_dist_sec = float(params.get("pass3_snap_s2_max_dist_sec", 0.12))
+
+    pc = analysis_data.get("peak_classifications") or {}
+    lt = analysis_data.get("long_term_bpm_series")
+
+    # Fallback BPM if long-term series is missing.
+    fallback_bpm = None
+    try:
+        rr = np.diff(peaks_out) / float(sample_rate)
+        rr = rr[np.isfinite(rr) & (rr > 0)]
+        if len(rr) > 0:
+            fallback_bpm = float(60.0 / np.median(rr))
+    except Exception:
+        fallback_bpm = None
+    if fallback_bpm is None or not np.isfinite(fallback_bpm):
+        fallback_bpm = 80.0
+
+    def _bpm_at_time(t_sec: float) -> float:
+        if lt is None or getattr(lt, "empty", True):
+            return fallback_bpm
+        try:
+            times = np.asarray(lt.index.values, dtype=np.float64)
+            values = np.asarray(lt.values, dtype=np.float64)
+            if len(times) < 2 or len(times) != len(values):
+                return fallback_bpm
+            bpm = float(np.interp(float(t_sec), times, values, left=values[0], right=values[-1]))
+            if not np.isfinite(bpm) or bpm <= 0:
+                return fallback_bpm
+            return bpm
+        except Exception:
+            return fallback_bpm
+
+    s2_events = []
+    for i in range(len(peaks_out) - 1):
+        s1 = int(peaks_out[i])
+        s1_next = int(peaks_out[i + 1])
+        if s1_next <= s1:
+            continue
+
+        t_s1 = s1 / float(sample_rate)
+        bpm = _bpm_at_time(t_s1)
+        intervals = calculate_bpm_intervals(bpm, params)
+        s1_s2_nominal = float(intervals.get("s1_s2_nominal", 0.30))
+        s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
+        s2 = s2_pred
+
+        # Constrain S2 into the current cycle.
+        s2 = max(s1 + 1, min(s2, s1_next - 1))
+
+        if snap_s2 and len(all_raw_peaks) > 0:
+            lo = max(s1 + 1, s2_pred - snap_half)
+            hi = min(s1_next - 1, s2_pred + snap_half)
+            if hi > lo:
+                # Candidates: raw peaks in [lo, hi]
+                cand = [int(p) for p in all_raw_peaks if lo <= int(p) <= hi]
+                if cand:
+                    best = None
+                    best_score = None
+                    for p in cand:
+                        entry = pc.get(int(p)) or {}
+                        ls = entry.get("label_scores") if isinstance(entry, dict) else None
+                        s2_score = float(ls.get("S2", 0.0)) if isinstance(ls, dict) else 0.0
+                        noise_score = float(ls.get("noise", 0.0)) if isinstance(ls, dict) else 0.0
+                        dist_sec = abs(p - s2_pred) / float(sample_rate)
+                        if dist_sec > max_snap_dist_sec:
+                            continue
+                        # Simple ranking: strong S2, low noise, close to expected.
+                        score = (2.0 * s2_score) - (1.0 * noise_score) - (0.75 * dist_sec)
+                        if best is None or score > best_score:
+                            best, best_score = p, score
+                    if best is not None:
+                        s2 = int(best)
+
+        s2_events.append(int(s2))
+
+        # Define event windows and paint states.
+        s1_start = max(0, s1 - s1_half)
+        s1_end = min(n_samples, s1 + s1_half + 1)
+        s2_start = max(0, s2 - s2_half)
+        s2_end = min(n_samples, s2 + s2_half + 1)
+
+        # Ensure ordering (no negative-length spans).
+        if s2_start < s1_end:
+            mid = (s1_end + s2_start) // 2
+            s1_end = max(s1_start + 1, min(s1_end, mid))
+            s2_start = max(s2_start, s1_end)
+        if s2_end >= s1_next:
+            s2_end = min(s2_end, s1_next)
+
+        if s1_end > s1_start:
+            state_labels[s1_start:s1_end] = STATE_S1
+            state_boundaries.append((s1_start, s1_end, "S1", {"s1": s1}))
+        if s2_start > s1_end:
+            state_labels[s1_end:s2_start] = STATE_SYSTOLE
+            state_boundaries.append((s1_end, s2_start, "systole", {"s1": s1, "s2": s2}))
+        if s2_end > s2_start:
+            state_labels[s2_start:s2_end] = STATE_S2
+            state_boundaries.append((s2_start, s2_end, "S2", {"s2": s2}))
+        if s1_next > s2_end:
+            state_labels[s2_end:s1_next] = STATE_DIASTOLE
+            state_boundaries.append((s2_end, s1_next, "diastole", {"s2": s2, "s1_next": s1_next}))
+
+    analysis_data["pass3_state_labels"] = state_labels
+    analysis_data["pass3_state_labels_encoding"] = {
+        "S1": int(STATE_S1),
+        "systole": int(STATE_SYSTOLE),
+        "S2": int(STATE_S2),
+        "diastole": int(STATE_DIASTOLE),
+    }
+    analysis_data["pass3_state_boundaries"] = state_boundaries
+    analysis_data["pass3_s2_events"] = np.asarray(s2_events, dtype=np.int64)
+
+    logging.info(
+        "Pass 3: generated state timeline (n=%d samples; %d cycles).",
+        n_samples,
+        max(0, len(peaks_out) - 1),
+    )
+
+    return peaks_out, analysis_data
 
 
 def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: Dict) -> Dict:

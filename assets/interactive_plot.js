@@ -20,6 +20,7 @@
   const AUDIO_LABELS = cfg.audioLabels || {};
   const ANALYSIS_SUMMARY = typeof cfg.analysisSummary === "string" ? cfg.analysisSummary : "";
   const beatHoverDefaultOn = cfg.htmlS1S2HoverOnByDefault === true;
+  const PASS3_SEGMENTS = Array.isArray(cfg.pass3Segments) ? cfg.pass3Segments : [];
 
   // DOM Elements
   const audio = document.getElementById("audio-player");
@@ -40,6 +41,7 @@
   const chartContainer = document.getElementById("chart-container");
   const audioFileNameEl = document.getElementById("audio-file-name");
   const audioSourceSelect = document.getElementById("audio-source-select");
+  const stateStripCanvas = document.getElementById("state-strip-plot");
   const axisGridButtons = document.querySelectorAll("[data-grid-axis]");
   const labelTypeSelect = document.getElementById("label-type-select");
   const applyLabelBtn = document.getElementById("apply-label-btn");
@@ -248,6 +250,85 @@
       tick.className = "timeline-tick minor";
       tick.style.left = percent + "%";
       timelineTicks.appendChild(tick);
+    }
+  }
+
+  let pass3StripRaf = 0;
+  function scheduleDrawPass3StateStrip() {
+    if (pass3StripRaf) return;
+    pass3StripRaf = window.requestAnimationFrame(() => {
+      pass3StripRaf = 0;
+      drawPass3StateStrip();
+    });
+  }
+
+  function drawPass3StateStrip() {
+    if (!stateStripCanvas || !PASS3_SEGMENTS || PASS3_SEGMENTS.length === 0) return;
+    if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
+    const fl = plotlyGraphDiv._fullLayout;
+    const xaxis = fl.xaxis;
+    const yaxis = fl.yaxis;
+    if (!xaxis || !yaxis) return;
+    if (!xAxisRange || xAxisRange.length < 2) return;
+
+    // Determine visible x range in ms since epoch.
+    const x0ms = new Date(xAxisRange[0]).getTime();
+    const x1ms = new Date(xAxisRange[1]).getTime();
+    if (!Number.isFinite(x0ms) || !Number.isFinite(x1ms) || x1ms <= x0ms) return;
+
+    // Plot area geometry (px) relative to plotlyGraphDiv.
+    const left = Math.floor(xaxis._offset || 0);
+    const width = Math.floor(xaxis._length || 0);
+    const topPlot = Math.floor(yaxis._offset || 0);
+    const heightPlot = Math.floor(yaxis._length || 0);
+    if (width <= 1 || heightPlot <= 1) return;
+
+    // Place strip slightly above the x-axis tick labels area, inside plot area.
+    const stripHeight = 10;
+    const top = topPlot + heightPlot - stripHeight - 1;
+
+    stateStripCanvas.style.left = `${left}px`;
+    stateStripCanvas.style.top = `${top}px`;
+    stateStripCanvas.style.width = `${width}px`;
+    stateStripCanvas.style.height = `${stripHeight}px`;
+    stateStripCanvas.width = Math.max(1, width);
+    stateStripCanvas.height = Math.max(1, stripHeight);
+
+    const ctx = stateStripCanvas.getContext("2d");
+    if (!ctx) return;
+
+    const colors = {
+      S1: "#e36f6f",
+      systole: "#666666",
+      S2: "#f0a030",
+      diastole: "#999999",
+    };
+
+    ctx.clearRect(0, 0, width, stripHeight);
+    // Soft background so strip is visible even over spectrogram.
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(0, 0, width, stripHeight);
+
+    const span = x1ms - x0ms;
+    for (const seg of PASS3_SEGMENTS) {
+      if (!seg) continue;
+      const startSec = typeof seg.start === "number" ? seg.start : parseFloat(seg.start);
+      const endSec = typeof seg.end === "number" ? seg.end : parseFloat(seg.end);
+      const state = typeof seg.state === "string" ? seg.state : String(seg.state || "");
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) continue;
+
+      const s0 = secondsToDatetime(startSec).getTime();
+      const s1 = secondsToDatetime(endSec).getTime();
+      if (s1 <= x0ms || s0 >= x1ms) continue;
+      const cl0 = Math.max(x0ms, s0);
+      const cl1 = Math.min(x1ms, s1);
+      const px0 = Math.floor(((cl0 - x0ms) / span) * width);
+      const px1 = Math.ceil(((cl1 - x0ms) / span) * width);
+      const x = Math.max(0, Math.min(width, px0));
+      const xEnd = Math.max(0, Math.min(width, px1));
+      if (xEnd <= x) continue;
+      ctx.fillStyle = colors[state] || "#555555";
+      ctx.fillRect(x, 0, xEnd - x, stripHeight);
     }
   }
 
@@ -1456,6 +1537,7 @@
         }
         updateSpectrogramPosition();
         refreshAxisGridButtons();
+        scheduleDrawPass3StateStrip();
       });
 
       plotlyGraphDiv.on("plotly_afterplot", function () {
@@ -1463,6 +1545,7 @@
         updateAxisRange();
         updateSpectrogramPosition();
         refreshAxisGridButtons();
+        scheduleDrawPass3StateStrip();
       });
 
       window.addEventListener("resize", () => {
@@ -1471,6 +1554,7 @@
           updatePlayhead(audio.currentTime);
         }
         updateSpectrogramPosition();
+        scheduleDrawPass3StateStrip();
         Plotly.Plots.resize(plotlyGraphDiv);
       });
 
