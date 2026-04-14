@@ -20,7 +20,15 @@
   const AUDIO_LABELS = cfg.audioLabels || {};
   const ANALYSIS_SUMMARY = typeof cfg.analysisSummary === "string" ? cfg.analysisSummary : "";
   const beatHoverDefaultOn = cfg.htmlS1S2HoverOnByDefault === true;
-  const PASS3_SEGMENTS = Array.isArray(cfg.pass3Segments) ? cfg.pass3Segments : [];
+  const PASS3_SEGMENTS_AFTER = Array.isArray(cfg.pass3SegmentsAfter)
+    ? cfg.pass3SegmentsAfter
+    : Array.isArray(cfg.pass3Segments)
+      ? cfg.pass3Segments
+      : [];
+  const PASS3_SEGMENTS_BEFORE = Array.isArray(cfg.pass3SegmentsBefore) ? cfg.pass3SegmentsBefore : [];
+  const PASS3_SEGMENTS_DEFAULT_VIEW =
+    typeof cfg.pass3SegmentsDefaultView === "string" ? cfg.pass3SegmentsDefaultView : "after";
+  let pass3SegmentsActive = PASS3_SEGMENTS_DEFAULT_VIEW === "before" ? PASS3_SEGMENTS_BEFORE : PASS3_SEGMENTS_AFTER;
 
   // DOM Elements
   const audio = document.getElementById("audio-player");
@@ -53,6 +61,7 @@
   const analysisSummaryOverlay = document.getElementById("analysis-summary-overlay");
   const analysisSummaryText = document.getElementById("analysis-summary-text");
   const analysisSummaryClose = document.getElementById("analysis-summary-close");
+  const pass3StateViewSelect = document.getElementById("pass3-state-view-select");
 
   const DEFAULT_AUDIO_KEY = "original";
   let currentAudioKey = DEFAULT_AUDIO_KEY;
@@ -263,7 +272,7 @@
   }
 
   function drawPass3StateStrip() {
-    if (!stateStripCanvas || !PASS3_SEGMENTS || PASS3_SEGMENTS.length === 0) return;
+    if (!stateStripCanvas || !pass3SegmentsActive || pass3SegmentsActive.length === 0) return;
     if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
     const fl = plotlyGraphDiv._fullLayout;
     const xaxis = fl.xaxis;
@@ -310,7 +319,7 @@
     ctx.fillRect(0, 0, width, stripHeight);
 
     const span = x1ms - x0ms;
-    for (const seg of PASS3_SEGMENTS) {
+    for (const seg of pass3SegmentsActive) {
       if (!seg) continue;
       const startSec = typeof seg.start === "number" ? seg.start : parseFloat(seg.start);
       const endSec = typeof seg.end === "number" ? seg.end : parseFloat(seg.end);
@@ -330,6 +339,40 @@
       ctx.fillStyle = colors[state] || "#555555";
       ctx.fillRect(x, 0, xEnd - x, stripHeight);
     }
+  }
+
+  function initPass3StateViewSelector() {
+    if (!pass3StateViewSelect) return;
+    pass3StateViewSelect.innerHTML = "";
+    const opts = [];
+    if (PASS3_SEGMENTS_BEFORE && PASS3_SEGMENTS_BEFORE.length > 0) {
+      opts.push({ value: "before", label: "Before correction" });
+    }
+    if (PASS3_SEGMENTS_AFTER && PASS3_SEGMENTS_AFTER.length > 0) {
+      opts.push({ value: "after", label: "After correction" });
+    }
+    if (opts.length <= 1) {
+      pass3StateViewSelect.style.display = "none";
+      return;
+    }
+    pass3StateViewSelect.style.display = "";
+    for (const o of opts) {
+      const el = document.createElement("option");
+      el.value = o.value;
+      el.textContent = o.label;
+      pass3StateViewSelect.appendChild(el);
+    }
+    const initial =
+      PASS3_SEGMENTS_DEFAULT_VIEW === "before" && PASS3_SEGMENTS_BEFORE.length > 0
+        ? "before"
+        : "after";
+    pass3StateViewSelect.value = initial;
+    pass3SegmentsActive = initial === "before" ? PASS3_SEGMENTS_BEFORE : PASS3_SEGMENTS_AFTER;
+    pass3StateViewSelect.addEventListener("change", (ev) => {
+      const v = ev && ev.target ? ev.target.value : "after";
+      pass3SegmentsActive = v === "before" ? PASS3_SEGMENTS_BEFORE : PASS3_SEGMENTS_AFTER;
+      scheduleDrawPass3StateStrip();
+    });
   }
 
   // Update playhead positions
@@ -1493,6 +1536,28 @@
         }
         applyLabelToNearestPeak();
         break;
+      case "KeyA":
+        // A/B compare state strip: A = "before" correction
+        if (pass3StateViewSelect && pass3StateViewSelect.style.display !== "none") {
+          if (PASS3_SEGMENTS_BEFORE && PASS3_SEGMENTS_BEFORE.length > 0) {
+            e.preventDefault();
+            pass3StateViewSelect.value = "before";
+            pass3SegmentsActive = PASS3_SEGMENTS_BEFORE;
+            scheduleDrawPass3StateStrip();
+          }
+        }
+        break;
+      case "KeyD":
+        // A/B compare state strip: D = "after" correction
+        if (pass3StateViewSelect && pass3StateViewSelect.style.display !== "none") {
+          if (PASS3_SEGMENTS_AFTER && PASS3_SEGMENTS_AFTER.length > 0) {
+            e.preventDefault();
+            pass3StateViewSelect.value = "after";
+            pass3SegmentsActive = PASS3_SEGMENTS_AFTER;
+            scheduleDrawPass3StateStrip();
+          }
+        }
+        break;
     }
   });
 
@@ -1591,6 +1656,7 @@
   // Initialize
   initTimelineTicks();
   initSpectrogramControls();
+  initPass3StateViewSelector();
   setTimeout(initPlotlyIntegration, 500);
 
   // DEBUG: Check for audio file presence relative to HTML

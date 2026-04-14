@@ -278,6 +278,7 @@ class Plotter:
         self._has_systolic_traces = False
         # Optional pass 3 dense state timeline (S1/systole/S2/diastole) for HTML overlay.
         self._pass3_state_boundaries = analysis_data.get("pass3_state_boundaries") or []
+        self._pass3_state_boundaries_before = analysis_data.get("pass3_state_boundaries_before") or []
         self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
@@ -1404,15 +1405,15 @@ class Plotter:
             "htmlS1S2HoverOnByDefault": hover_on_by_default,
         }
         # Pass 3: state timeline overlay (compact strip above chart).
-        if getattr(self, "_pass3_state_boundaries", None):
-            segs = []
-            for s0, s1, state_name, meta in (self._pass3_state_boundaries or []):
+        def _segments_from_boundaries(boundaries):
+            segs_local = []
+            for s0, s1, state_name, meta in (boundaries or []):
                 try:
                     start_sec = float(s0) / float(self.sample_rate)
                     end_sec = float(s1) / float(self.sample_rate)
                     if not np.isfinite(start_sec) or not np.isfinite(end_sec) or end_sec <= start_sec:
                         continue
-                    segs.append(
+                    segs_local.append(
                         {
                             "start": start_sec,
                             "end": end_sec,
@@ -1421,9 +1422,19 @@ class Plotter:
                     )
                 except Exception:
                     continue
-            if segs:
-                config_payload["pass3Segments"] = segs
-                config_payload["pass3SegmentsEncoding"] = getattr(self, "_pass3_state_labels_encoding", {}) or {}
+            return segs_local
+
+        segs_after = _segments_from_boundaries(getattr(self, "_pass3_state_boundaries", None))
+        segs_before = _segments_from_boundaries(getattr(self, "_pass3_state_boundaries_before", None))
+        if segs_after or segs_before:
+            if segs_after:
+                config_payload["pass3SegmentsAfter"] = segs_after
+                # Back-compat: keep old key as "after" when present.
+                config_payload["pass3Segments"] = segs_after
+            if segs_before:
+                config_payload["pass3SegmentsBefore"] = segs_before
+            config_payload["pass3SegmentsEncoding"] = getattr(self, "_pass3_state_labels_encoding", {}) or {}
+            config_payload["pass3SegmentsDefaultView"] = "after" if segs_after else "before"
         config_json = json.dumps(config_payload)
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))

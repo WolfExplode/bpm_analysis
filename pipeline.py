@@ -3,7 +3,7 @@ import logging
 import time
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple, Any, Callable
+from typing import Dict, Optional, Tuple, Any, Callable, List
 
 from scipy.interpolate import interp1d
 
@@ -139,7 +139,7 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         return peaks_out, analysis_data
 
     # ---------------------------------------------------------------------
-    # Pass 3 (bridge): generate a dense per-sample cardiac-state timeline
+    # Pass 3 (bridge): correction + dense per-sample cardiac-state timeline
     # ---------------------------------------------------------------------
     n_samples = int(len(audio_envelope))
     if n_samples <= 0:
@@ -197,48 +197,306 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         except Exception:
             return fallback_bpm
 
-    s2_events = []
+    # --- Helper: choose best S2 near predicted time ---
+    def _choose_s2_near(s1: int, s1_next: int, s2_pred: int, half_window_samples: int) -> int:
+        s2 = int(max(s1 + 1, min(s2_pred, s1_next - 1)))
+        if (not snap_s2) or (len(all_raw_peaks) == 0) or (s1_next <= s1 + 2):
+            return s2
+        lo = max(s1 + 1, s2_pred - half_window_samples)
+        hi = min(s1_next - 1, s2_pred + half_window_samples)
+        if hi <= lo:
+            return s2
+        cand = [int(p) for p in all_raw_peaks if lo <= int(p) <= hi]
+        if not cand:
+            return s2
+        best = None
+        best_score = None
+        for p in cand:
+            entry = pc.get(int(p)) or {}
+            ls = entry.get("label_scores") if isinstance(entry, dict) else None
+            s2_score = float(ls.get("S2", 0.0)) if isinstance(ls, dict) else 0.0
+            noise_score = float(ls.get("noise", 0.0)) if isinstance(ls, dict) else 0.0
+            dist_sec = abs(p - s2_pred) / float(sample_rate)
+            if dist_sec > max_snap_dist_sec:
+                continue
+            score = (2.0 * s2_score) - (1.0 * noise_score) - (0.75 * dist_sec)
+            if best is None or score > best_score:
+                best, best_score = p, score
+        return int(best) if best is not None else s2
+
+    # --- Helper: choose best S1 near expected time ---
+    def _choose_s1_near(t_expected_sec: float, half_window_samples: int, min_sep_samples: int) -> Optional[int]:
+        if len(all_raw_peaks) == 0:
+            return None
+        center = int(round(t_expected_sec * sample_rate))
+        lo = max(0, center - half_window_samples)
+        hi = min(n_samples - 1, center + half_window_samples)
+        if hi <= lo:
+            return None
+        cand = [int(p) for p in all_raw_peaks if lo <= int(p) <= hi]
+        if not cand:
+            return None
+        best = None
+        best_score = None
+        for p in cand:
+            # Keep away from existing chosen S1 peaks
+            # (caller also checks, but we avoid obvious near-duplicates early).
+            entry = pc.get(int(p)) or {}
+            ls = entry.get("label_scores") if isinstance(entry, dict) else None
+            s1_score = float(ls.get("S1", 0.0)) if isinstance(ls, dict) else 0.0
+            noise_score = float(ls.get("noise", 0.0)) if isinstance(ls, dict) else 0.0
+            dist_sec = abs(p - center) / float(sample_rate)
+            score = (2.0 * s1_score) - (1.0 * noise_score) - (0.75 * dist_sec)
+            if best is None or score > best_score:
+                best, best_score = p, score
+        if best is None:
+            return None
+        # Min separation gate (avoid snapping to something essentially on top of an existing beat)
+        # Caller provides min_sep_samples based on min_peak_distance_sec.
+        return int(best)
+
+    # ---------------------------------------------------------------------
+    # 1) Build initial S1/S2 events from the current S1 list + BPM prior
+    # ---------------------------------------------------------------------
+    min_sep_samples = int(float(params.get("min_peak_distance_sec", 0.10)) * sample_rate)
+    s1_list = [int(x) for x in peaks_out.tolist()]
+    s1_list = sorted(list(dict.fromkeys([x for x in s1_list if 0 <= x < n_samples])))
+
+    s2_events: List[int] = []
+    for i in range(len(s1_list) - 1):
+        s1 = int(s1_list[i])
+        s1_next = int(s1_list[i + 1])
+        if s1_next <= s1:
+            s2_events.append(int(s1))
+            continue
+        t_s1 = s1 / float(sample_rate)
+        bpm = _bpm_at_time(t_s1)
+        intervals = calculate_bpm_intervals(bpm, params)
+        s1_s2_nominal = float(intervals.get("s1_s2_nominal", 0.30))
+        s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
+        s2 = _choose_s2_near(s1, s1_next, s2_pred, snap_half)
+        s2_events.append(int(s2))
+
+    # Snapshot "before correction" state boundaries for HTML visualization.
+    state_boundaries_before: List[Tuple[int, int, str, Dict[str, Any]]] = []
+    for i in range(len(s1_list) - 1):
+        s1 = int(s1_list[i])
+        s1_next = int(s1_list[i + 1])
+        if s1_next <= s1:
+            continue
+        s2 = int(s2_events[i]) if i < len(s2_events) else s1
+        s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
+
+        s1_start = max(0, s1 - s1_half)
+        s1_end = min(n_samples, s1 + s1_half + 1)
+        s2_start = max(0, s2 - s2_half)
+        s2_end = min(n_samples, s2 + s2_half + 1)
+
+        if s2_start < s1_end:
+            mid = (s1_end + s2_start) // 2
+            s1_end = max(s1_start + 1, min(s1_end, mid))
+            s2_start = max(s2_start, s1_end)
+        if s2_end >= s1_next:
+            s2_end = min(s2_end, s1_next)
+
+        if s1_end > s1_start:
+            state_boundaries_before.append((s1_start, s1_end, "S1", {"s1": s1}))
+        if s2_start > s1_end:
+            state_boundaries_before.append((s1_end, s2_start, "systole", {"s1": s1, "s2": s2}))
+        if s2_end > s2_start:
+            state_boundaries_before.append((s2_start, s2_end, "S2", {"s2": s2}))
+        if s1_next > s2_end:
+            state_boundaries_before.append((s2_end, s1_next, "diastole", {"s2": s2, "s1_next": s1_next}))
+
+    # ---------------------------------------------------------------------
+    # 2) Correction loop: fix implausible systole/diastole and insert missing S1s
+    # ---------------------------------------------------------------------
+    corrections: List[Dict[str, Any]] = []
+    cycle_diagnostics: List[Dict[str, Any]] = []
+
+    max_iters = int(params.get("pass3_correction_max_iters", 6))
+    enable_insert = bool(params.get("pass3_enable_insert_missing_s1", True))
+    rr_too_long_frac = float(params.get("pass3_rr_too_long_frac", 1.7))
+    max_fill_gap_sec = float(params.get("pass3_gap_fill_max_duration_sec", 5.0))
+    s1_search_window_ms = float(params.get("pass3_insert_s1_search_window_ms", 180.0))
+    s1_search_half = max(1, int(round(0.5 * s1_search_window_ms * sample_rate / 1000.0)))
+
+    # When systole is implausible, try re-snapping with a wider window.
+    resnap_window_ms = float(params.get("pass3_resnap_s2_window_ms", 220.0))
+    resnap_half = max(1, int(round(0.5 * resnap_window_ms * sample_rate / 1000.0)))
+    systole_slack = float(params.get("pass3_systole_slack_frac", 0.15))
+
+    for _iter in range(max_iters):
+        changed = False
+        cycle_diagnostics.clear()
+
+        # Ensure s2_events length matches cycles
+        if len(s2_events) != max(0, len(s1_list) - 1):
+            s2_events = s2_events[: max(0, len(s1_list) - 1)]
+            while len(s2_events) < max(0, len(s1_list) - 1):
+                s2_events.append(int(s1_list[len(s2_events)]))
+
+        # --- Pass A: re-snap S2 for timing plausibility ---
+        for i in range(len(s1_list) - 1):
+            s1 = int(s1_list[i])
+            s1_next = int(s1_list[i + 1])
+            if s1_next <= s1:
+                continue
+            s2 = int(s2_events[i])
+            s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
+
+            t_s1 = s1 / float(sample_rate)
+            bpm = _bpm_at_time(t_s1)
+            intervals = calculate_bpm_intervals(bpm, params)
+            s1_s2_min = float(intervals.get("s1_s2_min", 0.12))
+            s1_s2_nominal = float(intervals.get("s1_s2_nominal", 0.30))
+            s1_s2_max = float(intervals.get("s1_s2_max", 0.40))
+
+            systole = (s2 - s1) / float(sample_rate)
+            rr = (s1_next - s1) / float(sample_rate)
+            diastole = rr - systole
+
+            too_short = systole < (1.0 - systole_slack) * s1_s2_min
+            too_long = systole > (1.0 + systole_slack) * s1_s2_max
+            far_from_nominal = abs(systole - s1_s2_nominal) > max(0.12, 0.5 * (s1_s2_max - s1_s2_min))
+
+            diag = {
+                "i": int(i),
+                "s1": int(s1),
+                "s2": int(s2),
+                "s1_next": int(s1_next),
+                "bpm": float(bpm),
+                "rr_sec": float(rr),
+                "systole_sec": float(systole),
+                "diastole_sec": float(diastole),
+                "s1_s2_min": float(s1_s2_min),
+                "s1_s2_nominal": float(s1_s2_nominal),
+                "s1_s2_max": float(s1_s2_max),
+                "flags": {
+                    "systole_too_short": bool(too_short),
+                    "systole_too_long": bool(too_long),
+                    "systole_far_from_nominal": bool(far_from_nominal),
+                },
+            }
+            cycle_diagnostics.append(diag)
+
+            if (too_short or too_long or far_from_nominal) and len(all_raw_peaks) > 0:
+                s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
+                new_s2 = _choose_s2_near(s1, s1_next, s2_pred, resnap_half)
+                new_s2 = int(max(s1 + 1, min(new_s2, s1_next - 1)))
+                if new_s2 != s2:
+                    corrections.append(
+                        {
+                            "type": "resnap_s2",
+                            "cycle": int(i),
+                            "s1": int(s1),
+                            "old_s2": int(s2),
+                            "new_s2": int(new_s2),
+                            "s2_pred": int(s2_pred),
+                        }
+                    )
+                    s2_events[i] = int(new_s2)
+                    changed = True
+
+        # --- Pass B: insert missing S1 when RR is implausibly long vs BPM prior ---
+        if enable_insert and len(s1_list) >= 2 and len(all_raw_peaks) > 0:
+            inserted_any = False
+            for i in range(len(s1_list) - 1):
+                s1 = int(s1_list[i])
+                s1_next = int(s1_list[i + 1])
+                rr = (s1_next - s1) / float(sample_rate)
+                if rr <= 0 or rr > max_fill_gap_sec:
+                    continue
+                t_s1 = s1 / float(sample_rate)
+                bpm = _bpm_at_time(t_s1)
+                intervals = calculate_bpm_intervals(bpm, params)
+                expected_rr = float(intervals.get("rr_interval", 60.0 / bpm if bpm > 0 else 0.75))
+                if expected_rr <= 0:
+                    continue
+                if rr <= rr_too_long_frac * expected_rr:
+                    continue
+
+                # How many beats likely missing in this span?
+                n_missing = max(0, int(round(rr / expected_rr) - 1))
+                if n_missing < 1:
+                    continue
+
+                # Insert at most 1 per iteration to keep behavior stable.
+                k = 0
+                t_expected = (s1 / float(sample_rate)) + (k + 1) * (rr / (n_missing + 1))
+                cand = _choose_s1_near(t_expected, s1_search_half, min_sep_samples)
+                if cand is None:
+                    continue
+                # Reject if too close to adjacent existing S1
+                if (cand - s1) < min_sep_samples or (s1_next - cand) < min_sep_samples:
+                    continue
+                s1_list.append(int(cand))
+                s1_list = sorted(list(dict.fromkeys(s1_list)))
+                corrections.append(
+                    {
+                        "type": "insert_s1",
+                        "between_cycle": int(i),
+                        "s1_prev": int(s1),
+                        "s1_next": int(s1_next),
+                        "inserted_s1": int(cand),
+                        "t_expected_sec": float(t_expected),
+                        "expected_rr_sec": float(expected_rr),
+                        "rr_sec": float(rr),
+                    }
+                )
+                inserted_any = True
+                changed = True
+                break
+
+            if inserted_any:
+                # Rebuild s2_events after insertion
+                s2_events = []
+                for j in range(len(s1_list) - 1):
+                    a = int(s1_list[j])
+                    b = int(s1_list[j + 1])
+                    if b <= a:
+                        s2_events.append(int(a))
+                        continue
+                    t_a = a / float(sample_rate)
+                    bpm_a = _bpm_at_time(t_a)
+                    intervals_a = calculate_bpm_intervals(bpm_a, params)
+                    s1_s2_nominal_a = float(intervals_a.get("s1_s2_nominal", 0.30))
+                    s2_pred_a = int(round(a + s1_s2_nominal_a * sample_rate))
+                    s2_a = _choose_s2_near(a, b, s2_pred_a, snap_half)
+                    s2_events.append(int(s2_a))
+
+        if not changed:
+            break
+
+    # Final peaks after pass 3 correction (still S1 list).
+    peaks_out = np.asarray(s1_list, dtype=np.int64)
+
+    # ---------------------------------------------------------------------
+    # 3) Paint the final state timeline from corrected events
+    # ---------------------------------------------------------------------
+    state_labels[:] = STATE_DIASTOLE
+    state_boundaries.clear()
+    s2_events_final: List[int] = []
+
     for i in range(len(peaks_out) - 1):
         s1 = int(peaks_out[i])
         s1_next = int(peaks_out[i + 1])
         if s1_next <= s1:
             continue
 
-        t_s1 = s1 / float(sample_rate)
-        bpm = _bpm_at_time(t_s1)
-        intervals = calculate_bpm_intervals(bpm, params)
-        s1_s2_nominal = float(intervals.get("s1_s2_nominal", 0.30))
-        s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
-        s2 = s2_pred
+        # Reuse corrected s2_events when available; otherwise predict.
+        if i < len(s2_events):
+            s2 = int(s2_events[i])
+        else:
+            t_s1 = s1 / float(sample_rate)
+            bpm = _bpm_at_time(t_s1)
+            intervals = calculate_bpm_intervals(bpm, params)
+            s1_s2_nominal = float(intervals.get("s1_s2_nominal", 0.30))
+            s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
+            s2 = _choose_s2_near(s1, s1_next, s2_pred, snap_half)
 
-        # Constrain S2 into the current cycle.
-        s2 = max(s1 + 1, min(s2, s1_next - 1))
-
-        if snap_s2 and len(all_raw_peaks) > 0:
-            lo = max(s1 + 1, s2_pred - snap_half)
-            hi = min(s1_next - 1, s2_pred + snap_half)
-            if hi > lo:
-                # Candidates: raw peaks in [lo, hi]
-                cand = [int(p) for p in all_raw_peaks if lo <= int(p) <= hi]
-                if cand:
-                    best = None
-                    best_score = None
-                    for p in cand:
-                        entry = pc.get(int(p)) or {}
-                        ls = entry.get("label_scores") if isinstance(entry, dict) else None
-                        s2_score = float(ls.get("S2", 0.0)) if isinstance(ls, dict) else 0.0
-                        noise_score = float(ls.get("noise", 0.0)) if isinstance(ls, dict) else 0.0
-                        dist_sec = abs(p - s2_pred) / float(sample_rate)
-                        if dist_sec > max_snap_dist_sec:
-                            continue
-                        # Simple ranking: strong S2, low noise, close to expected.
-                        score = (2.0 * s2_score) - (1.0 * noise_score) - (0.75 * dist_sec)
-                        if best is None or score > best_score:
-                            best, best_score = p, score
-                    if best is not None:
-                        s2 = int(best)
-
-        s2_events.append(int(s2))
+        s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
+        s2_events_final.append(int(s2))
 
         # Define event windows and paint states.
         s1_start = max(0, s1 - s1_half)
@@ -275,12 +533,17 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         "diastole": int(STATE_DIASTOLE),
     }
     analysis_data["pass3_state_boundaries"] = state_boundaries
-    analysis_data["pass3_s2_events"] = np.asarray(s2_events, dtype=np.int64)
+    analysis_data["pass3_state_boundaries_before"] = state_boundaries_before
+    analysis_data["pass3_s2_events"] = np.asarray(s2_events_final, dtype=np.int64)
+    analysis_data["pass3_corrections"] = corrections
+    analysis_data["pass3_cycle_diagnostics"] = cycle_diagnostics
 
     logging.info(
-        "Pass 3: generated state timeline (n=%d samples; %d cycles).",
+        "Pass 3: corrected peaks=%d, generated state timeline (n=%d samples; %d cycles; %d corrections).",
+        int(len(peaks_out)),
         n_samples,
         max(0, len(peaks_out) - 1),
+        int(len(corrections)),
     )
 
     return peaks_out, analysis_data

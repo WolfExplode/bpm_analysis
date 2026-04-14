@@ -150,6 +150,27 @@ DEFAULT_PARAMS = {
     "lone_s1_missed_beat_tolerance_frac": 0.22,  # |span − m×RR| / (m×RR) must be ≤ this (m = k+1).
 
     # =================================================================================
+    # 6. Pass 3 — Correction + State Timeline (Bridge to future Viterbi)
+    # =================================================================================
+    # Dense per-sample state labels:
+    #   0: S1, 1: systole, 2: S2, 3: diastole
+    "pass3_state_s1_window_ms": 80.0,          # Larger → S1 event drawn wider (more forgiving timing jitter, less precise boundaries). Smaller → tighter/cleaner S1 marks but easier to miss the visible S1 region.
+    "pass3_state_s2_window_ms": 80.0,          # Larger → S2 event drawn wider (more forgiving for weak/noisy S2). Smaller → tighter S2 marks but easier to mis-render/fragment S2 in the timeline.
+    # S2 snapping near predicted ejection time (Weissler-based nominal):
+    "pass3_snap_s2_to_peak": True,             # True → use S2 evidence in raw peaks to place S2 more accurately. False → S2 stays at predicted ejection time (more stable/physiology-driven, less responsive to real S2 morphology).
+    "pass3_snap_s2_window_ms": 120.0,          # Larger → more chances to find an S2 peak (more aggressive; higher false-snap risk). Smaller → only snap when S2 evidence is close to predicted (more conservative).
+    "pass3_snap_s2_max_dist_sec": 0.12,        # Larger → allow snapping even when predicted ET is off (aggressive). Smaller → enforce near-ET snapping (conservative; may leave S2 un-snapped).
+    # Correction loop:
+    "pass3_correction_max_iters": 32,           # Larger → more opportunities to repair multiple regions (but higher chance of over-correcting). Smaller → faster/more conservative corrections.
+    "pass3_resnap_s2_window_ms": 220.0,        # Larger → stronger attempt to salvage implausible systole by searching farther for S2 (aggressive). Smaller → only minor S2 adjustments (conservative).
+    "pass3_systole_slack_frac": 0.15,          # Larger → tolerate more systole timing variation before intervening (conservative). Smaller → trigger re-snap more often (aggressive).
+    # Missing-beat insertion (S1 only):
+    "pass3_enable_insert_missing_s1": True,    # True → add beats in long-RR spans when evidence exists (higher recall; risk of false inserted beats). False → never insert new S1s (safer, but missed-beat gaps remain).
+    "pass3_rr_too_long_frac": 1.7,             # Lower → insert beats more readily (aggressive). Higher → only insert on very obvious missed beats (conservative).
+    "pass3_gap_fill_max_duration_sec": 5.0,    # Lower → avoid corrections in dropouts (conservative). Higher → attempt to correct longer gaps (aggressive; can create artifacts in true signal loss).
+    "pass3_insert_s1_search_window_ms": 180.0, # Larger → easier to find an insert candidate (aggressive; more false insert risk). Smaller → only insert when a peak is very near expected time (conservative).
+
+    # =================================================================================
     # 7. Output, HRV & Reporting
     # Controls for final calculations, reports, and plots.
     # =================================================================================
