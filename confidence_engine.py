@@ -292,6 +292,66 @@ def adjust_confidence_with_contractility(
     return confidence, {"step": "Contractility", "detail": detail, "result": confidence}
 
 
+def _count_consecutive_noise_raw_peaks_before(
+    all_peaks: np.ndarray,
+    current_pos: int,
+    peak_classifications: Dict[int, Any],
+) -> int:
+    """How many consecutive raw peaks immediately before all_peaks[current_pos] are NOISE."""
+    n = 0
+    j = current_pos - 1
+    while j >= 0:
+        idx = int(all_peaks[j])
+        pc = peak_classifications.get(idx) or {}
+        if pc.get("peak_type") != PeakType.NOISE.value:
+            break
+        n += 1
+        j -= 1
+    return n
+
+
+def _try_lone_s1_missed_beat_rhythm(
+    actual_rr_backward_sec: float,
+    expected_rr_sec: float,
+    current_peak_idx: int,
+    all_peaks: np.ndarray,
+    peak_classifications: Dict[int, Any],
+    params: Dict,
+) -> Optional[Tuple[float, str]]:
+    """
+    If the k >= 1 raw peaks immediately before the current peak are all NOISE, treat k missed
+    beats: expect span last_S1→current ≈ (k+1)× expected RR, score (span/(k+1)) vs expected RR.
+    """
+    tol = float(params.get("lone_s1_missed_beat_tolerance_frac", 0.22))
+    if expected_rr_sec <= 1e-12:
+        return None
+
+    pos = int(np.searchsorted(all_peaks, current_peak_idx))
+    if pos <= 0 or pos >= len(all_peaks) or int(all_peaks[pos]) != int(current_peak_idx):
+        return None
+
+    n_noise = _count_consecutive_noise_raw_peaks_before(all_peaks, pos, peak_classifications)
+    if n_noise < 1:
+        return None
+
+    mult = float(n_noise + 1)
+    target_span = mult * expected_rr_sec
+    rel_err = abs(actual_rr_backward_sec - target_span) / target_span
+    if rel_err > tol:
+        return None
+
+    effective_rr = actual_rr_backward_sec / mult
+    rhythm_deviation_pct = abs(effective_rr - expected_rr_sec) / expected_rr_sec
+    score = float(np.interp(rhythm_deviation_pct, _RHYTHM_DEVIATION_XPOINTS, _RHYTHM_SCORE_YPOINTS))
+    reason = (
+        f"Rhythm Fit (missed beat): {n_noise} consecutive noise peak(s) before current → expect "
+        f"{mult:.0f}× RR; span {actual_rr_backward_sec:.3f}s ≈ {mult:.0f}× expected {expected_rr_sec:.3f}s "
+        f"(tolerance {tol:.0%}) → effective interval {effective_rr:.3f}s (deviation {rhythm_deviation_pct:.0%}) "
+        f"→ score {score:.2f}"
+    )
+    return score, reason
+
+
 def calculate_lone_s1_confidence(
     current_peak_idx: int,
     last_s1_idx: int,
@@ -301,15 +361,16 @@ def calculate_lone_s1_confidence(
     sample_rate: int,
     params: Dict,
     all_peaks: Optional[np.ndarray] = None,
+    peak_classifications: Optional[Dict[int, Any]] = None,
 ) -> Tuple[float, List[str]]:
     """
     Calculates a confidence score for a Lone S1 candidate based on a weighted average of
     its rhythmic timing and its amplitude consistency with the previous beat, and returns
     human-readable detail lines explaining the calculation.
 
-    When the backward interval (last S1 → current) gives a rhythm score of zero (too far
-    from expected RR), optionally uses the forward interval (current → next-next peak)
-    as a fallback and uses that score instead.
+    When the backward interval (last S1 → current) is poor, may use: (1) missed-beat recovery
+    if consecutive raw peaks before current are noise and span ≈ (k+1)× expected RR for k misses;
+    (2) forward interval (current → next-next peak) if the score is still zero.
     """
     # --- 1. Calculate Rhythmic Fit Score (backward: last S1 → current) ---
     expected_rr_sec = calculate_bpm_intervals(long_term_bpm, params)["rr_interval"]
@@ -318,9 +379,34 @@ def calculate_lone_s1_confidence(
 
     # Piecewise-linear map: deviation fraction → confidence score.
     # 0 % off → 1.0, 15 % off → 0.8 (minor tolerance), 40 % off → 0.4, >=60 % off → 0.0.
-    rhythm_score = np.interp(rhythm_deviation_pct, _RHYTHM_DEVIATION_XPOINTS, _RHYTHM_SCORE_YPOINTS)
+    rhythm_score_bw = float(np.interp(rhythm_deviation_pct, _RHYTHM_DEVIATION_XPOINTS, _RHYTHM_SCORE_YPOINTS))
+    rhythm_score = rhythm_score_bw
+    rhythm_reason = (
+        f"Rhythm Fit: interval {actual_rr_backward_sec:.3f}s vs expected {expected_rr_sec:.3f}s "
+        f"(deviation {rhythm_deviation_pct:.0%}; map 0/15/40/60% → 1.00/0.80/0.40/0.00) "
+        f"→ score {rhythm_score_bw:.2f} → {rhythm_score_bw:.2f}"
+    )
 
-    # If backward gives zero, try forward interval (current → next-next peak) as fallback
+    if (
+        peak_classifications is not None
+        and all_peaks is not None
+        and len(all_peaks) >= 2
+    ):
+        missed = _try_lone_s1_missed_beat_rhythm(
+            actual_rr_backward_sec,
+            expected_rr_sec,
+            current_peak_idx,
+            np.asarray(all_peaks, dtype=np.int64),
+            peak_classifications,
+            params,
+        )
+        if missed is not None:
+            score_mb, reason_mb = missed
+            if score_mb > rhythm_score:
+                rhythm_score = score_mb
+                rhythm_reason = reason_mb
+
+    # If backward/missed-beat still gives zero, try forward interval (current → next-next peak) as fallback
     if rhythm_score <= 0.0 and all_peaks is not None and len(all_peaks) >= 3:
         pos = np.searchsorted(all_peaks, current_peak_idx)
         if pos < len(all_peaks) and all_peaks[pos] == current_peak_idx and pos + 2 < len(all_peaks):
@@ -351,12 +437,6 @@ def calculate_lone_s1_confidence(
                 f"(deviation {rhythm_deviation_pct:.0%}; map 0/15/40/60% → 1.00/0.80/0.40/0.00) "
                 f"→ score {rhythm_score:.2f} → {rhythm_score:.2f}"
             )
-    else:
-        rhythm_reason = (
-            f"Rhythm Fit: interval {actual_rr_backward_sec:.3f}s vs expected {expected_rr_sec:.3f}s "
-            f"(deviation {rhythm_deviation_pct:.0%}; map 0/15/40/60% → 1.00/0.80/0.40/0.00) "
-            f"→ score {rhythm_score:.2f} → {rhythm_score:.2f}"
-        )
 
     # --- 2. Calculate Amplitude Fit Score ---
     last_s1_strength = max(0, audio_envelope[last_s1_idx] - noise_floor_values[last_s1_idx])

@@ -300,6 +300,8 @@ class Plotter:
             pass1_bpm_times=pass1_bpm_times,
             instant_bpm=pass_metrics.get("instant_bpm"),
             bpm_times=pass_metrics.get("bpm_times"),
+            instant_bpm_raw=pass_metrics.get("instant_bpm_raw"),
+            bpm_times_raw=pass_metrics.get("bpm_times_raw"),
         )
         self._add_systolic_interval_traces(
             analysis_data, pass_metrics, output_suffix,
@@ -935,6 +937,8 @@ class Plotter:
         pass1_bpm_times: Optional[np.ndarray] = None,
         instant_bpm: Optional[np.ndarray] = None,
         bpm_times: Optional[np.ndarray] = None,
+        instant_bpm_raw: Optional[np.ndarray] = None,
+        bpm_times_raw: Optional[np.ndarray] = None,
     ):
         """Adds BPM, pass 1 BPM curve (when provided), and HRV traces. BPM Trend (Belief) is only on the pass 1 plot."""
         # Label smoothed BPM by pass when known (Pass 2 / Pass 3), else generic
@@ -952,26 +956,63 @@ class Plotter:
                 secondary_y=True,
             )
 
-        # Instantaneous BPM at each beat (pass 2 only)
-        if (
-            output_suffix == "_pass2"
-            and instant_bpm is not None
-            and bpm_times is not None
-            and len(instant_bpm) == len(bpm_times)
-            and len(bpm_times) > 0
-        ):
-            instant_times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times, dtype=np.float64))
-            self.fig.add_trace(
-                go.Scatter(
-                    x=instant_times_dt,
-                    y=instant_bpm,
-                    name="Instantaneous BPM (Pass 2)",
-                    mode="markers",
-                    marker=dict(size=5, color="#4a4a4a", symbol="circle"),
-                    visible="legendonly",
-                ),
-                secondary_y=True,
-            )
+        # Instantaneous BPM: raw 60/RR vs MAD-filtered (local + global), same style as pass 1
+        if output_suffix in ("_pass2", "_pass3"):
+            pass_instant_label = "Pass 2" if output_suffix == "_pass2" else "Pass 3"
+            if (
+                instant_bpm_raw is not None
+                and bpm_times_raw is not None
+                and len(instant_bpm_raw) == len(bpm_times_raw)
+                and len(bpm_times_raw) > 0
+            ):
+                raw_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times_raw, dtype=np.float64))
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=raw_dt,
+                        y=instant_bpm_raw,
+                        name=f"Instant BPM ({pass_instant_label})",
+                        mode="markers",
+                        marker=dict(size=6, color="#e74c3c", symbol="circle"),
+                        visible="legendonly",
+                    ),
+                    secondary_y=True,
+                )
+                if (
+                    instant_bpm is not None
+                    and bpm_times is not None
+                    and len(instant_bpm) == len(bpm_times)
+                    and len(bpm_times) > 0
+                ):
+                    filt_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times, dtype=np.float64))
+                    self.fig.add_trace(
+                        go.Scatter(
+                            x=filt_dt,
+                            y=instant_bpm,
+                            name=f"Instant BPM ({pass_instant_label}) outliers removed",
+                            mode="markers",
+                            marker=dict(size=6, color="#9b59b6", symbol="circle-open"),
+                            visible="legendonly",
+                        ),
+                        secondary_y=True,
+                    )
+            elif (
+                instant_bpm is not None
+                and bpm_times is not None
+                and len(instant_bpm) == len(bpm_times)
+                and len(bpm_times) > 0
+            ):
+                instant_times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times, dtype=np.float64))
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=instant_times_dt,
+                        y=instant_bpm,
+                        name=f"Instantaneous BPM ({pass_instant_label})",
+                        mode="markers",
+                        marker=dict(size=5, color="#4a4a4a", symbol="circle"),
+                        visible="legendonly",
+                    ),
+                    secondary_y=True,
+                )
 
         # Prior BPM curve: pass 1 on pass 2 plot, pass 2 on pass 3 plot
         if (

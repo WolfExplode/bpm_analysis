@@ -146,6 +146,8 @@ DEFAULT_PARAMS = {
     "lone_s1_confidence_threshold": 0.50, # Final combined score needed to be accepted as a Lone S1.
     "lone_s1_rhythm_weight": 0.65,         # The weight given to the rhythmic timing score (0.0 to 1.0).
     "lone_s1_amplitude_weight": 0.35,      # The weight given to the amplitude consistency score.
+    # k consecutive noise raw peaks before current + span ≈ (k+1)×RR → score span/(k+1) vs RR.
+    "lone_s1_missed_beat_tolerance_frac": 0.22,  # |span − m×RR| / (m×RR) must be ≤ this (m = k+1).
 
     # =================================================================================
     # 7. Output, HRV & Reporting

@@ -442,6 +442,7 @@ class PeakClassifier:
             self.sample_rate,
             self.params,
             all_peaks=self.state.all_peaks,
+            peak_classifications=self.state.peak_classifications,
         )
 
         # --- 2. Absolute prominence guardrail ---

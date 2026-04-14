@@ -294,6 +294,16 @@ def analyze_wav_file(
     if needs_plot_outputs and len(s1_peaks) >= 2:
         _ui("Pass 2: computing heart rate metrics...")
         metrics_pass2 = _calculate_metrics_from_peaks(s1_peaks, sample_rate, params)
+        bt0 = metrics_pass2.get("bpm_times")
+        ib0 = metrics_pass2.get("instant_bpm")
+        if (
+            bt0 is not None
+            and ib0 is not None
+            and len(bt0) == len(ib0)
+            and len(bt0) > 0
+        ):
+            metrics_pass2["bpm_times_raw"] = np.asarray(bt0, dtype=np.float64).copy()
+            metrics_pass2["instant_bpm_raw"] = np.asarray(ib0, dtype=np.float64).copy()
         # Pass 2: BPM curve and all derived stats from MAD-filtered instantaneous BPM (same logic as algorithm input)
         bt = metrics_pass2.get("bpm_times")
         ib = metrics_pass2.get("instant_bpm")
@@ -359,6 +369,16 @@ def analyze_wav_file(
         metrics_after_pass3 = metrics_pass2
     else:
         metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass3, sample_rate, params)
+        bt0 = metrics_after_pass3.get("bpm_times")
+        ib0 = metrics_after_pass3.get("instant_bpm")
+        if (
+            bt0 is not None
+            and ib0 is not None
+            and len(bt0) == len(ib0)
+            and len(bt0) > 0
+        ):
+            metrics_after_pass3["bpm_times_raw"] = np.asarray(bt0, dtype=np.float64).copy()
+            metrics_after_pass3["instant_bpm_raw"] = np.asarray(ib0, dtype=np.float64).copy()
         # Apply MAD-based BPM (same as pass 2) so BPM (Pass 3) is consistent and matches pass 2 when peaks unchanged
         bt = metrics_after_pass3.get("bpm_times")
         ib = metrics_after_pass3.get("instant_bpm")
