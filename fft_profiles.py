@@ -16,9 +16,20 @@ from peak_utils import PeakType, _get_peak_type_from_debug
 
 
 def _get_pairing_confidence(entry) -> Optional[float]:
-    """Extract final pairing confidence from a debug entry (confidence_trace section, last step result)."""
+    """Prefer label_scores for the peak's role; else final score from confidence_trace."""
     if not isinstance(entry, dict):
         return None
+    ls = entry.get("label_scores")
+    if isinstance(ls, dict):
+        pt = _get_peak_type_from_debug(entry) or ""
+        if PeakType.is_s1(pt):
+            v = ls.get("S1")
+            if isinstance(v, (int, float)):
+                return float(v)
+        elif PeakType.is_s2(pt):
+            v = ls.get("S2")
+            if isinstance(v, (int, float)):
+                return float(v)
     for sec in entry.get("sections", []):
         if sec.get("type") != "confidence_trace":
             continue

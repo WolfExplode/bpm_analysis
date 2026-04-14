@@ -17,7 +17,7 @@ DEFAULT_PARAMS = {
     "preprocess_target_sample_rate": 600,   # Resample to this Hz for analysis; lower = faster, less detail.
     "preprocess_bandpass_low_hz": 30.0,     # increasing this reduces the amplitude of S1.
     "preprocess_bandpass_high_hz": 290.0,
-    "preprocess_bandpass_order": 2,   # Butterworth order; higher order not yet validated for this pipeline.
+    "preprocess_bandpass_order": 2,       # Butterworth order; higher order not yet validated for this pipeline.
 
     "enable_hum_removal": True,           # Detect and notch narrow low-frequency hums if present
     "hum_psd_window_sec": 4.0,            # PSD window length (seconds) for hum detection
@@ -63,11 +63,11 @@ DEFAULT_PARAMS = {
     # The core logic for identifying S1-S2 pairs based on timing and physiology.
     # =================================================================================
     # --- 4.1. Core Pairing Rules ---
-    "pairing_confidence_threshold": 0.50,          # Confidence score required to classify two peaks as an S1-S2 pair.
-    "pass1_confidence_threshold": 0.7,  # Confidence threshold for pass 1 (anchor-finding run) only.
-    "s1_s2_interval_cap_sec": 0.4,        # The absolute maximum time (seconds) allowed between S1 and S2.
-    "min_s1_s2_interval_sec": 0.10,           # Absolute minimum (100ms)
-    "min_s1_s2_interval_rr_fraction": 0.23,   # Or 23% of total RR interval
+    "pairing_confidence_threshold": 0.50,      # Confidence score required to classify two peaks as an S1-S2 pair.
+    "pass1_pairing_confidence_threshold": 0.7, # Pass 1 only: min S1–S2 pairing confidence for anchor beats (overrides pairing_confidence_threshold for that run).
+    "s1_s2_interval_cap_sec": 0.4,             # The absolute maximum time (seconds) allowed between S1 and S2.
+    "min_s1_s2_interval_sec": 0.10,            # Absolute minimum (100ms)
+    "min_s1_s2_interval_rr_fraction": 0.23,    # Or 23% of total RR interval
     # BPM-dependent expected S1-S2 (Weissler: https://www.desmos.com/calculator/ebqshptip0)
     "s1_s2_expected_weissler_ref_et_ms": 320, # Reference ejection time (ms) at ref_bpm.
     "s1_s2_expected_weissler_ref_bpm": 60,    # BPM at which ref_et_ms is defined.

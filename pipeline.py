@@ -68,7 +68,9 @@ def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
     """
     logging.info("--- STAGE 2: Pass 1 — high-confidence anchor beats ---")
     params_pass1 = params.copy()
-    params_pass1["pairing_confidence_threshold"] = params.get("pass1_confidence_threshold", 0.75)
+    params_pass1["pairing_confidence_threshold"] = params.get(
+        "pass1_pairing_confidence_threshold", 0.7
+    )
 
     classifier = PeakClassifier(audio_envelope, sample_rate, params_pass1, start_bpm_hint,
                                noise_floor, troughs, None, None)

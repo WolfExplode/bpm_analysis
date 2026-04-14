@@ -39,8 +39,9 @@ class AnalysisState:
         candidate_beats: Sample indices of peaks that have been accepted as S1 heartbeats
             (either paired S1 or validated Lone S1) during the main loop.
         peak_classifications: Mapping from raw peak index to a structured record
-            (peak_type, sections) for how that peak was classified (S1/S2/Lone S1/Noise).
-            Used by algorithm logic (e.g. FFT, pass 3), debug log, and plot tooltips.
+            (peak_type, sections, label_scores) for how that peak was classified (S1/S2/Lone S1/Noise).
+            label_scores: heuristic dict mapping 'S1', 'S2', 'noise' to floats in [0,1] from the greedy pass;
+            not calibrated probabilities. Used by pass 3+, FFT ranking, debug, and plot tooltips.
         long_term_bpm_history: Sequence of `(time_sec, bpm)` tuples for plotting (BPM trend).
         pass1_bpm_prior: Optional callable time_sec -> bpm from the pass 1 curve.
         sorted_troughs: Sorted list of trough indices mirroring `trough_indices`,

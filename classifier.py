@@ -25,6 +25,15 @@ from peak_utils import (
     build_peak_prominence_detail_cache,
     calculate_peak_prominence,
 )
+from peak_label_scores import (
+    extract_pairing_final_confidence_from_steps,
+    label_scores_lone_s1_last_peak,
+    label_scores_lone_s1_validated,
+    label_scores_noise_middle_structural,
+    label_scores_noise_rejected_lone,
+    label_scores_paired_s1,
+    label_scores_paired_s2,
+)
 
 
 class PeakClassifier:
@@ -132,7 +141,8 @@ class PeakClassifier:
         self.state.candidate_beats.append(peak_idx)
         self.state.peak_classifications[peak_idx] = {
             "peak_type": PeakType.LONE_S1_LAST.value,
-            "sections": []
+            "sections": [],
+            "label_scores": label_scores_lone_s1_last_peak(),
         }
         self.state.loop_idx += 1
 
@@ -167,6 +177,7 @@ class PeakClassifier:
             prominence_context = decision["prominence_context"]
             lookahead_msg = decision["lookahead_msg"]
             middle_noise_msg = decision["middle_noise_msg"]
+            pair_final_conf = extract_pairing_final_confidence_from_steps(steps)
 
             pair_sections = [
                 {"type": "lookahead", "text": lookahead_msg},
@@ -181,6 +192,7 @@ class PeakClassifier:
             self.state.peak_classifications[s1_idx] = {
                 "peak_type": PeakType.S1_PAIRED.value,
                 "sections": pair_sections,
+                "label_scores": label_scores_paired_s1(pair_final_conf),
             }
 
             original_middle_debug = self.state.peak_classifications.get(middle_idx)
@@ -190,11 +202,13 @@ class PeakClassifier:
                     {"type": "lookahead", "text": middle_noise_msg},
                     {"type": "original", "original_debug": original_middle_debug},
                 ],
+                "label_scores": label_scores_noise_middle_structural(),
             }
 
             self.state.peak_classifications[s2_idx] = {
                 "peak_type": PeakType.S2_PAIRED.value,
                 "sections": pair_sections,
+                "label_scores": label_scores_paired_s2(pair_final_conf),
             }
             record_s1_outcome(self.state, s1_idx / self.sample_rate, True, self.params)
             # Skip the S1, middle noise, and S2 peaks
@@ -217,13 +231,16 @@ class PeakClassifier:
                 {"type": "confidence_trace", "steps": steps},
                 {"type": "prominence", "details": prominence_context},
             ]
+            pair_final_conf = extract_pairing_final_confidence_from_steps(steps)
             self.state.peak_classifications[current_peak_idx] = {
                 "peak_type": PeakType.S1_PAIRED.value,
                 "sections": sections,
+                "label_scores": label_scores_paired_s1(pair_final_conf),
             }
             self.state.peak_classifications[next_peak_idx] = {
                 "peak_type": PeakType.S2_PAIRED.value,
                 "sections": sections,
+                "label_scores": label_scores_paired_s2(pair_final_conf),
             }
             record_s1_outcome(self.state, current_time_sec, True, self.params)
             self.state.loop_idx += 2
@@ -250,17 +267,21 @@ class PeakClassifier:
                     {"type": "confidence_trace", "steps": steps_skip},
                     {"type": "prominence", "details": prominence_context_skip},
                 ]
+                skip_final_conf = extract_pairing_final_confidence_from_steps(steps_skip)
                 self.state.peak_classifications[current_peak_idx] = {
                     "peak_type": PeakType.S1_PAIRED.value,
                     "sections": skip_one_sections,
+                    "label_scores": label_scores_paired_s1(skip_final_conf),
                 }
                 self.state.peak_classifications[middle_idx] = {
                     "peak_type": PeakType.NOISE.value,
                     "sections": [{"type": "skip_one", "text": "Skipped as noise (S2 was next peak)."}],
+                    "label_scores": label_scores_noise_middle_structural(),
                 }
                 self.state.peak_classifications[next_next_peak_idx] = {
                     "peak_type": PeakType.S2_PAIRED.value,
                     "sections": skip_one_sections,
+                    "label_scores": label_scores_paired_s2(skip_final_conf),
                 }
                 record_s1_outcome(self.state, current_time_sec, True, self.params)
                 self.state.loop_idx += 3
@@ -384,7 +405,8 @@ class PeakClassifier:
 
     def _classify_lone_peak(self, peak_idx: int, pairing_failure_steps: List[Dict[str, Any]]):
         """Validates if an unpaired peak is a Lone S1 or Noise."""
-        is_valid, lone_s1_lines = self._validate_lone_s1(peak_idx)
+        is_valid, lone_s1_lines, lone_conf = self._validate_lone_s1(peak_idx)
+        pair_fail_conf = extract_pairing_final_confidence_from_steps(pairing_failure_steps)
         sections: List[Dict[str, Any]] = [
             {"type": "confidence_trace", "steps": pairing_failure_steps},
             {"type": "lone_s1", "lines": lone_s1_lines, "validated": is_valid},
@@ -394,20 +416,22 @@ class PeakClassifier:
             self.state.peak_classifications[peak_idx] = {
                 "peak_type": PeakType.LONE_S1_VALIDATED.value,
                 "sections": sections,
+                "label_scores": label_scores_lone_s1_validated(lone_conf),
             }
         else:
             self.state.peak_classifications[peak_idx] = {
                 "peak_type": PeakType.NOISE.value,
                 "sections": sections,
+                "label_scores": label_scores_noise_rejected_lone(lone_conf, pair_fail_conf),
             }
 
-    def _validate_lone_s1(self, current_peak_idx: int) -> Tuple[bool, List[str]]:
-        """Performs checks to determine if a peak is a valid Lone S1."""
+    def _validate_lone_s1(self, current_peak_idx: int) -> Tuple[bool, List[str], float]:
+        """Performs checks to determine if a peak is a valid Lone S1. Returns (is_valid, detail_lines, final_score)."""
         detail_lines = []
 
         # --- 1. Basic rhythm & amplitude calculation ---
         if not self.state.candidate_beats:
-            return True, ["Outcome: First beat (no prior rhythm to compare) → Validated Lone S1 → --"]
+            return True, ["Outcome: First beat (no prior rhythm to compare) → Validated Lone S1 → --"], 1.0
 
         confidence, detail_lines = calculate_lone_s1_confidence(
             current_peak_idx,
@@ -481,8 +505,8 @@ class PeakClassifier:
             detail_lines.append(
                 f"Outcome: score {confidence:.2f} < threshold {threshold:.2f} → Rejected Lone S1 → {confidence:.2f}"
             )
-            return False, detail_lines
+            return False, detail_lines, float(confidence)
         detail_lines.append(
             f"Outcome: score {confidence:.2f} >= threshold {threshold:.2f} → Validated Lone S1 → {confidence:.2f}"
         )
-        return True, detail_lines
+        return True, detail_lines, float(confidence)
