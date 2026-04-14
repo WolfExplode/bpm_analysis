@@ -166,7 +166,6 @@ DEFAULT_PARAMS = {
     "pass1_bpm_global_outlier_mad_k": 5.0,    # After local pass: global median ± k*MAD. Higher = less sensitive. Set <= 0 to disable this pass.
     "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2/3 instantaneous BPM: local MAD outlier removal.
     "pass2_instant_bpm_outlier_mad_k": 8,       # Local MADs for pass 2/3 instant BPM. Lower = more aggressive.
-    "pass2_instant_bpm_global_outlier_mad_k": 5.0,  # After local pass: global median ± k*MAD on BPM. Higher = less sensitive. <=0 disables.
     "pass1_bpm_loess_frac": 0.02,           # LOESS fraction for pass 1 BPM curve (lower = tighter fit).
     "s1_s2_outlier_window_sec": 8.0,         # Half-window (seconds) for S1-S2 interval outlier removal: MAD in local time window.
     "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for S1-S2 interval local outlier removal.

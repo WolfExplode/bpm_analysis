@@ -362,24 +362,33 @@ def filter_instant_bpm_mad(
     bpm_times: np.ndarray, instant_bpm: np.ndarray, params: Dict
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Apply MAD-based outlier removal to instantaneous BPM (pass 2 and pass 3): local window,
-    then global median ± k*MAD (skipped if pass2_instant_bpm_global_outlier_mad_k <= 0).
+    Apply MAD-based outlier removal to instantaneous BPM (pass 2 and pass 3):
+    run the local-window MAD filter twice (second pass uses a wider window and a less
+    aggressive threshold to catch remaining non-local spikes without a global rule).
     Returns (filtered_bpm_times, filtered_instant_bpm).
     """
     if bpm_times is None or instant_bpm is None or len(bpm_times) != len(instant_bpm) or len(bpm_times) < 2:
         return np.array([]), np.array([])
     bpm_times = np.asarray(bpm_times, dtype=float)
     instant_bpm = np.asarray(instant_bpm, dtype=float)
+
+    def _apply_local_mad(
+        t_in: np.ndarray, v_in: np.ndarray, half_window_sec: float, mad_k: float
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        keep = _median_mad_keep_mask_time_window(t_in, v_in, half_window_sec, mad_k)
+        return t_in[keep], v_in[keep]
+
+    # Pass 1: standard local filter
     half_window_sec = float(params.get("pass2_instant_bpm_outlier_window_sec", 10.0))
     mad_k = float(params.get("pass2_instant_bpm_outlier_mad_k", 2.5))
-    keep = _median_mad_keep_mask_time_window(bpm_times, instant_bpm, half_window_sec, mad_k)
-    t_out = bpm_times[keep]
-    b_out = instant_bpm[keep]
-    global_mad_k = float(params.get("pass2_instant_bpm_global_outlier_mad_k", 5.0))
-    if global_mad_k > 0 and len(b_out) > 0:
-        gkeep = _median_mad_keep_mask_global(b_out, global_mad_k)
-        t_out = t_out[gkeep]
-        b_out = b_out[gkeep]
+    t_out, b_out = _apply_local_mad(bpm_times, instant_bpm, half_window_sec, mad_k)
+
+    # Pass 2: wider window, gentler threshold
+    if len(b_out) > 0:
+        half_window_sec2 = 5.0 * half_window_sec
+        mad_k2 = 2.0 * mad_k
+        t_out, b_out = _apply_local_mad(t_out, b_out, half_window_sec2, mad_k2)
+
     return t_out, b_out
 
 
