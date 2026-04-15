@@ -945,6 +945,63 @@ class Plotter:
         bpm_times_raw: Optional[np.ndarray] = None,
     ):
         """Adds BPM, pass 1 BPM curve (when provided), and HRV traces. BPM Trend (Belief) is only on the pass 1 plot."""
+        def _add_pass2_label_score_traces() -> None:
+            """
+            Pass 2 debug: plot per-peak label_scores (S1/S2/noise) as percentage traces (0–100)
+            on the same axis as BPM (secondary_y=True).
+            """
+            if output_suffix != "_pass2":
+                return
+            debug_info = (analysis_data or {}).get("peak_classifications") or {}
+            if not isinstance(debug_info, dict) or not debug_info:
+                return
+            times_sec = []
+            s1_scores = []
+            s2_scores = []
+            noise_scores = []
+            for peak_idx, entry in debug_info.items():
+                if not isinstance(peak_idx, (int, np.integer)):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                ls = entry.get("label_scores")
+                if not isinstance(ls, dict):
+                    continue
+                try:
+                    t = float(peak_idx) / float(self.sample_rate)
+                    s1 = float(ls.get("S1", 0.0)) * 100.0
+                    s2 = float(ls.get("S2", 0.0)) * 100.0
+                    nz = float(ls.get("noise", 0.0)) * 100.0
+                except Exception:
+                    continue
+                if not (np.isfinite(t) and np.isfinite(s1) and np.isfinite(s2) and np.isfinite(nz)):
+                    continue
+                times_sec.append(t)
+                s1_scores.append(s1)
+                s2_scores.append(s2)
+                noise_scores.append(nz)
+            if not times_sec:
+                return
+            order = np.argsort(np.asarray(times_sec, dtype=np.float64))
+            t_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(times_sec, dtype=np.float64)[order])
+            s1_arr = np.asarray(s1_scores, dtype=np.float64)[order]
+            s2_arr = np.asarray(s2_scores, dtype=np.float64)[order]
+            nz_arr = np.asarray(noise_scores, dtype=np.float64)[order]
+
+            common = dict(mode="lines", line=dict(width=1), opacity=0.9, visible="legendonly")
+            self.fig.add_trace(
+                go.Scatter(x=t_dt, y=s1_arr, name="S1 score", line=dict(color="#e36f6f", width=1), **{k: v for k, v in common.items() if k != "line"}),
+                secondary_y=True,
+            )
+            self.fig.add_trace(
+                go.Scatter(x=t_dt, y=s2_arr, name="S2 score", line=dict(color="orange", width=1), **{k: v for k, v in common.items() if k != "line"}),
+                secondary_y=True,
+            )
+            self.fig.add_trace(
+                go.Scatter(x=t_dt, y=nz_arr, name="Noise score", line=dict(color="grey", width=1), **{k: v for k, v in common.items() if k != "line"}),
+                secondary_y=True,
+            )
+
         # Label smoothed BPM by pass when known (Pass 2 / Pass 3), else generic
         if output_suffix == "_pass2":
             bpm_trace_name = "BPM (Pass 2)"
@@ -959,6 +1016,8 @@ class Plotter:
                 ),
                 secondary_y=True,
             )
+
+        _add_pass2_label_score_traces()
 
         # Instantaneous BPM: raw 60/RR vs MAD-filtered (local + global), same style as pass 1
         if output_suffix in ("_pass2", "_pass3"):
