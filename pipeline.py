@@ -20,6 +20,7 @@ from classifier import PeakClassifier
 from confidence_engine import calculate_bpm_intervals
 from hrv import (
     calculate_bpm_series,
+    calculate_bpm_series_from_s1_state_labels,
     compute_pass1_bpm_curve,
     filter_instant_bpm_mad,
     find_recovery_phase,
@@ -665,6 +666,56 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
     return metrics
 
 
+def _apply_pass3_state_timeline_bpm(
+    metrics: Dict[str, Any],
+    analysis_data: Dict,
+    sample_rate: int,
+    params: Dict,
+) -> None:
+    """
+    Replace instant/smoothed BPM (and derived HR stats) using S1→S1 intervals from
+    pass3_state_labels (contiguous S1 run starts). Uses the same MAD + rolling smooth
+    params as peak-based BPM (pass2_instant_bpm_*, output_smoothing_window_sec).
+    HRV-on-peaks and other metrics are unchanged.
+    """
+    sl = analysis_data.get("pass3_state_labels")
+    if sl is None:
+        return
+    enc = analysis_data.get("pass3_state_labels_encoding") or {}
+    s1_code = int(enc.get("S1", 0))
+    _, bt, ib = calculate_bpm_series_from_s1_state_labels(
+        sl, sample_rate, params, state_s1_code=s1_code
+    )
+    if bt is None or ib is None or len(bt) < 2:
+        return
+    bt = np.asarray(bt, dtype=np.float64)
+    ib = np.asarray(ib, dtype=np.float64)
+    metrics["bpm_times_raw"] = bt.copy()
+    metrics["instant_bpm_raw"] = ib.copy()
+    t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
+    if len(t_filt) == 0:
+        logging.warning(
+            "Pass 3: state-timeline BPM dropped all points after MAD; keeping peak-based BPM curve."
+        )
+        return
+    smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
+    metrics["smoothed_bpm"] = smoothed_bpm
+    metrics["bpm_times"] = bpm_times
+    metrics["instant_bpm"] = instant_bpm
+    metrics["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
+    metrics["major_declines"] = find_major_hr_declines(smoothed_bpm)
+    metrics["hrr_stats"] = calculate_hrr(smoothed_bpm)
+    metrics["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
+    metrics["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
+    if not smoothed_bpm.empty:
+        hrv_summary = dict(metrics.get("hrv_summary") or {})
+        hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
+        hrv_summary["min_bpm"] = float(smoothed_bpm.min())
+        hrv_summary["max_bpm"] = float(smoothed_bpm.max())
+        metrics["hrv_summary"] = hrv_summary
+    logging.info("Pass 3: BPM curve from state timeline (S1 run starts → same MAD/smooth as peaks).")
+
+
 def analyze_wav_file(
     wav_file_path: str,
     params: Dict,
@@ -844,7 +895,7 @@ def analyze_wav_file(
         wav_file_path=wav_file_path,
     )
 
-    # STAGE 6: Metrics from latest pass (pass 3). Use same MAD-based BPM as pass 2 so curves match when no correction.
+    # STAGE 6: Metrics from latest pass (pass 3). Peak-based metrics + optional state-timeline BPM override.
     if len(peaks_after_pass3) < 2:
         logging.warning("Not enough S1 peaks detected to generate full report.")
         _ui("Stopped: not enough detected heartbeat peaks.")
@@ -858,7 +909,8 @@ def analyze_wav_file(
         and np.array_equal(np.asarray(peaks_after_pass3), np.asarray(s1_peaks))
     )
     if reuse_pass2_metrics:
-        metrics_after_pass3 = metrics_pass2
+        # Shallow copy so Pass 3 BPM overrides do not mutate metrics_pass2 in place.
+        metrics_after_pass3 = dict(metrics_pass2)
     else:
         metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass3, sample_rate, params)
         bt0 = metrics_after_pass3.get("bpm_times")
@@ -871,7 +923,7 @@ def analyze_wav_file(
         ):
             metrics_after_pass3["bpm_times_raw"] = np.asarray(bt0, dtype=np.float64).copy()
             metrics_after_pass3["instant_bpm_raw"] = np.asarray(ib0, dtype=np.float64).copy()
-        # Apply MAD-based BPM (same as pass 2) so BPM (Pass 3) is consistent and matches pass 2 when peaks unchanged
+        # Apply MAD-based BPM (same params as pass 2) on peak-derived instant BPM
         bt = metrics_after_pass3.get("bpm_times")
         ib = metrics_after_pass3.get("instant_bpm")
         if bt is not None and ib is not None and len(bt) == len(ib) and len(bt) >= 2:
@@ -892,6 +944,8 @@ def analyze_wav_file(
                     hrv_summary["min_bpm"] = float(smoothed_bpm.min())
                     hrv_summary["max_bpm"] = float(smoothed_bpm.max())
                     metrics_after_pass3["hrv_summary"] = hrv_summary
+
+    _apply_pass3_state_timeline_bpm(metrics_after_pass3, analysis_data, sample_rate, params)
 
     # OPTIONAL: Validation against manually labeled peaks (if a CSV exists next to the WAV).
     # This lets you batch-run a dataset and get an objective error count per file

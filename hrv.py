@@ -438,6 +438,51 @@ def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> T
     return smoothed_bpm, bpm_times, instant_bpm
 
 
+def calculate_bpm_series_from_s1_state_labels(
+    state_labels: np.ndarray,
+    sample_rate: int,
+    params: Dict,
+    state_s1_code: int = 0,
+) -> Tuple[pd.Series, np.ndarray, np.ndarray]:
+    """
+    Same BPM series as calculate_bpm_series, but beat times come from the **start sample**
+    of each contiguous S1 region in the dense state timeline (Pass 3: 0 = S1).
+    RR interval = start(S1_i) → start(S1_{i+1}); instant BPM timestamps align with
+    calculate_bpm_series (second beat of each pair).
+    """
+    if state_labels is None or len(state_labels) < 2:
+        return pd.Series(dtype=np.float64), np.array([]), np.array([])
+    sl = np.asarray(state_labels)
+    is_s1 = sl == int(state_s1_code)
+    if not np.any(is_s1):
+        return pd.Series(dtype=np.float64), np.array([]), np.array([])
+    # Start index of each contiguous S1 run
+    starts = np.where(is_s1 & ~np.concatenate(([False], is_s1[:-1])))[0].astype(np.int64)
+    if len(starts) < 2:
+        return pd.Series(dtype=np.float64), np.array([]), np.array([])
+
+    peak_times = starts / float(sample_rate)
+    time_diffs = np.diff(peak_times)
+    valid_diffs = time_diffs > 1e-6
+    if not np.any(valid_diffs):
+        return pd.Series(dtype=np.float64), np.array([]), np.array([])
+
+    instant_bpm = np.asarray(60.0 / time_diffs[valid_diffs], dtype=float)
+    bpm_times = peak_times[1:][valid_diffs]
+    start_time = datetime.datetime.fromtimestamp(0)
+    valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
+    bpm_series = pd.Series(instant_bpm, index=valid_peak_times_dt)
+    avg_heart_rate = np.median(instant_bpm)
+    if avg_heart_rate > 0:
+        smoothing_window_sec = params["output_smoothing_window_sec"]
+        smoothing_window_str = f"{smoothing_window_sec}s"
+        smoothed_bpm = bpm_series.rolling(window=smoothing_window_str, min_periods=1, center=True).mean()
+    else:
+        smoothed_bpm = pd.Series(dtype=np.float64)
+
+    return smoothed_bpm, bpm_times, instant_bpm
+
+
 def _find_major_hr_trends(
     smoothed_bpm_series: pd.Series,
     min_duration_sec: int,
