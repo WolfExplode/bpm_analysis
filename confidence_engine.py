@@ -89,11 +89,20 @@ def calculate_bpm_intervals(bpm: float, params: Dict) -> Dict[str, float]:
     Given a BPM value, computes key timing intervals (in seconds) implied by that rate.
 
     Returns a dictionary with:
-      - 'rr_interval'     : full S1→S1 (R-R) interval
-      - 's1_s2_min'       : minimum plausible S1→S2 interval
-      - 's1_s2_nominal'   : expected S1→S2 (Weissler: ET = ref_et - slope*(BPM - ref_bpm))
-      - 's1_s2_max'       : maximum plausible S1→S2 interval (capped)
-      - 's2_s1_nominal'   : nominal S2→S1 interval (R-R minus S1→S2 nominal)
+      - 'rr_interval'         : full S1→S1 (R-R) interval
+      - 's1_s2_min'           : minimum plausible S1→S2 (systole) interval
+      - 's1_s2_nominal'       : expected S1→S2 (Weissler: ET = ref_et - slope*(BPM - ref_bpm))
+      - 's1_s2_max'           : maximum plausible S1→S2 interval (capped)
+      - 's2_s1_nominal'       : nominal diastole (S2→next S1 = RR minus systole nominal)
+      - 'diastole_min'        : minimum plausible diastole duration
+      - 'diastole_max'        : maximum plausible diastole duration
+      - 's1_min'              : minimum S1 acoustic event duration (BPM-independent)
+      - 's1_nominal'          : nominal S1 acoustic event duration
+      - 's1_max'              : maximum S1 acoustic event duration
+      - 's2_min'              : minimum S2 acoustic event duration (BPM-independent)
+      - 's2_nominal'          : nominal S2 acoustic event duration
+      - 's2_max'              : maximum S2 acoustic event duration
+      - 'min_feasible_cycle'  : smallest time that can hold one valid S1+systole+S2+diastole
     """
     # Guard against zero or negative BPM
     bpm = float(max(bpm, 1e-6))
@@ -115,12 +124,42 @@ def calculate_bpm_intervals(bpm: float, params: Dict) -> Dict[str, float]:
     s1_s2_max = min(cap_abs, max(s1_s2_nominal, s1_s2_min))
     s2_s1_nominal = max(0.0, rr_interval - s1_s2_nominal)
 
+    # Diastole plausibility bounds (S2→next S1).
+    # min: diastole can compress at high BPM but needs some filling time.
+    # max: only relevant for dropout/gap detection (large multiples of nominal).
+    diastole_min_frac = float(params.get("min_diastole_nominal_frac", 0.35))
+    diastole_max_frac = float(params.get("max_diastole_nominal_frac", 2.0))
+    diastole_min_abs = float(params.get("min_diastole_sec", 0.08))
+    diastole_min = max(diastole_min_abs, s2_s1_nominal * diastole_min_frac)
+    diastole_max = s2_s1_nominal * diastole_max_frac
+
+    # S1 and S2 acoustic event duration bounds — BPM-independent physiological constants.
+    # These are how long the heart sound impulse itself lasts, not the inter-sound intervals.
+    s1_min = float(params.get("s1_min_sec", 0.010))
+    s1_nominal = float(params.get("s1_nominal_sec", 0.040))
+    s1_max = float(params.get("s1_max_sec", 0.080))
+    s2_min = float(params.get("s2_min_sec", 0.010))
+    s2_nominal = float(params.get("s2_nominal_sec", 0.030))
+    s2_max = float(params.get("s2_max_sec", 0.060))
+
+    # Smallest span that can physically hold one complete cardiac cycle at minimum compression.
+    min_feasible_cycle = s1_min + s1_s2_min + s2_min + diastole_min
+
     return {
         "rr_interval": rr_interval,
         "s1_s2_min": s1_s2_min,
         "s1_s2_nominal": s1_s2_nominal,
         "s1_s2_max": s1_s2_max,
         "s2_s1_nominal": s2_s1_nominal,
+        "diastole_min": diastole_min,
+        "diastole_max": diastole_max,
+        "s1_min": s1_min,
+        "s1_nominal": s1_nominal,
+        "s1_max": s1_max,
+        "s2_min": s2_min,
+        "s2_nominal": s2_nominal,
+        "s2_max": s2_max,
+        "min_feasible_cycle": min_feasible_cycle,
     }
 
 

@@ -276,6 +276,10 @@ class Plotter:
         self.time_axis_sec = np.arange(len(audio_envelope)) / self.sample_rate
         self.audio_duration_sec = self.time_axis_sec[-1] if len(self.time_axis_sec) > 0 else 0
         self._has_systolic_traces = False
+        # Optional pass 3 dense state timeline (S1/systole/S2/diastole) for HTML overlay.
+        self._pass3_state_boundaries = analysis_data.get("pass3_state_boundaries") or []
+        self._pass3_state_boundaries_before = analysis_data.get("pass3_state_boundaries_before") or []
+        self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
@@ -941,6 +945,63 @@ class Plotter:
         bpm_times_raw: Optional[np.ndarray] = None,
     ):
         """Adds BPM, pass 1 BPM curve (when provided), and HRV traces. BPM Trend (Belief) is only on the pass 1 plot."""
+        def _add_pass2_label_score_traces() -> None:
+            """
+            Pass 2 debug: plot per-peak label_scores (S1/S2/noise) as percentage traces (0–100)
+            on the same axis as BPM (secondary_y=True).
+            """
+            if output_suffix != "_pass2":
+                return
+            debug_info = (analysis_data or {}).get("peak_classifications") or {}
+            if not isinstance(debug_info, dict) or not debug_info:
+                return
+            times_sec = []
+            s1_scores = []
+            s2_scores = []
+            noise_scores = []
+            for peak_idx, entry in debug_info.items():
+                if not isinstance(peak_idx, (int, np.integer)):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                ls = entry.get("label_scores")
+                if not isinstance(ls, dict):
+                    continue
+                try:
+                    t = float(peak_idx) / float(self.sample_rate)
+                    s1 = float(ls.get("S1", 0.0)) * 100.0
+                    s2 = float(ls.get("S2", 0.0)) * 100.0
+                    nz = float(ls.get("noise", 0.0)) * 100.0
+                except Exception:
+                    continue
+                if not (np.isfinite(t) and np.isfinite(s1) and np.isfinite(s2) and np.isfinite(nz)):
+                    continue
+                times_sec.append(t)
+                s1_scores.append(s1)
+                s2_scores.append(s2)
+                noise_scores.append(nz)
+            if not times_sec:
+                return
+            order = np.argsort(np.asarray(times_sec, dtype=np.float64))
+            t_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(times_sec, dtype=np.float64)[order])
+            s1_arr = np.asarray(s1_scores, dtype=np.float64)[order]
+            s2_arr = np.asarray(s2_scores, dtype=np.float64)[order]
+            nz_arr = np.asarray(noise_scores, dtype=np.float64)[order]
+
+            common = dict(mode="lines", line=dict(width=1), opacity=0.9, visible="legendonly")
+            self.fig.add_trace(
+                go.Scatter(x=t_dt, y=s1_arr, name="S1 score", line=dict(color="#e36f6f", width=1), **{k: v for k, v in common.items() if k != "line"}),
+                secondary_y=True,
+            )
+            self.fig.add_trace(
+                go.Scatter(x=t_dt, y=s2_arr, name="S2 score", line=dict(color="orange", width=1), **{k: v for k, v in common.items() if k != "line"}),
+                secondary_y=True,
+            )
+            self.fig.add_trace(
+                go.Scatter(x=t_dt, y=nz_arr, name="Noise score", line=dict(color="grey", width=1), **{k: v for k, v in common.items() if k != "line"}),
+                secondary_y=True,
+            )
+
         # Label smoothed BPM by pass when known (Pass 2 / Pass 3), else generic
         if output_suffix == "_pass2":
             bpm_trace_name = "BPM (Pass 2)"
@@ -955,6 +1016,8 @@ class Plotter:
                 ),
                 secondary_y=True,
             )
+
+        _add_pass2_label_score_traces()
 
         # Instantaneous BPM: raw 60/RR vs MAD-filtered (local + global), same style as pass 1
         if output_suffix in ("_pass2", "_pass3"):
@@ -1400,6 +1463,38 @@ class Plotter:
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
             "htmlS1S2HoverOnByDefault": hover_on_by_default,
         }
+        # Pass 3: state timeline overlay (compact strip above chart).
+        def _segments_from_boundaries(boundaries):
+            segs_local = []
+            for s0, s1, state_name, meta in (boundaries or []):
+                try:
+                    start_sec = float(s0) / float(self.sample_rate)
+                    end_sec = float(s1) / float(self.sample_rate)
+                    if not np.isfinite(start_sec) or not np.isfinite(end_sec) or end_sec <= start_sec:
+                        continue
+                    seg_dict: Dict = {
+                        "start": start_sec,
+                        "end": end_sec,
+                        "state": str(state_name),
+                    }
+                    if isinstance(meta, dict) and "reasoning" in meta:
+                        seg_dict["reasoning"] = meta["reasoning"]
+                    segs_local.append(seg_dict)
+                except Exception:
+                    continue
+            return segs_local
+
+        segs_after = _segments_from_boundaries(getattr(self, "_pass3_state_boundaries", None))
+        segs_before = _segments_from_boundaries(getattr(self, "_pass3_state_boundaries_before", None))
+        if segs_after or segs_before:
+            if segs_after:
+                config_payload["pass3SegmentsAfter"] = segs_after
+                # Back-compat: keep old key as "after" when present.
+                config_payload["pass3Segments"] = segs_after
+            if segs_before:
+                config_payload["pass3SegmentsBefore"] = segs_before
+            config_payload["pass3SegmentsEncoding"] = getattr(self, "_pass3_state_labels_encoding", {}) or {}
+            config_payload["pass3SegmentsDefaultView"] = "after" if segs_after else "before"
         config_json = json.dumps(config_payload)
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))

@@ -203,6 +203,39 @@
             border: 1px solid #333;
         }
 
+        /* Pass 3 state strip overlay near x-axis (canvas) */
+        #state-strip-plot {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 1px;
+            height: 1px;
+            pointer-events: auto;
+            opacity: 0.90;
+            z-index: 6; /* above plot but below playhead */
+            cursor: crosshair;
+        }
+
+        #state-strip-tooltip {
+            position: fixed;
+            background: rgba(18, 18, 32, 0.95);
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #ddd;
+            white-space: pre-wrap;
+            max-width: 340px;
+            pointer-events: none;
+            z-index: 200;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+        }
+
+        #state-strip-tooltip.hidden {
+            display: none;
+        }
+
         #timeline-progress {
             position: absolute;
             top: 0;
@@ -520,11 +553,15 @@
                     <option value="debug">Debug</option>
                     <option value="analysis">Analysis Data</option>
                 </select>
+                <label for="pass3-state-view-select" class="chart-toolbar-label">State strip:</label>
+                <select id="pass3-state-view-select" title="State timeline view (Pass 3)"></select>
                 <button id="hover-toggle-btn" class="chart-toolbar-btn" title="Toggle hover tooltips on/off">S1/S2 Hover info</button>
             </div>
             <div id="spectrogram-container">
                 <img id="spectrogram-image" class="hidden" src="%%SPECTROGRAM_SRC%%" alt="Spectrogram" />
             </div>
+            <canvas id="state-strip-plot"></canvas>
+            <div id="state-strip-tooltip" class="hidden"></div>
             <div id="chart-playhead"></div>
             <div id="plotly-chart">
                 %%PLOTLY_HTML%%

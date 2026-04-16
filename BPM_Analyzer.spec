@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
-from PyInstaller.utils.hooks import collect_data_files
+import importlib.util
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # Collect Plotly data files including validators
 plotly_datas = collect_data_files("plotly")
@@ -15,11 +16,24 @@ ttk_datas = collect_data_files("ttkbootstrap")
 extra_datas = [
     (os.path.join("assets", "interactive_plot.js"), os.path.join("assets")),
     (os.path.join("assets", "html_inline_minimal.js"), os.path.join("assets")),
+    (os.path.join("assets", "template.html"), os.path.join("assets")),
 ]
 
+def _optional_hiddenimports(mod_names):
+    """Return only modules that are importable in the build env."""
+    out = []
+    for name in mod_names:
+        if importlib.util.find_spec(name) is not None:
+            out.append(name)
+    return out
+
+# SciPy uses internal array_api_compat shims (e.g. scipy._lib.array_api_compat.numpy.fft)
+# that PyInstaller can miss, leading to runtime ModuleNotFoundError.
+scipy_array_api_hiddenimports = collect_submodules("scipy._lib.array_api_compat")
+
 a = Analysis(
-    ["main.pyw"],
-    pathex=[],
+    ["main.py"],
+    pathex=[os.path.abspath(".")],
     binaries=[],
     datas=plotly_datas + kaleido_datas + ttk_datas + extra_datas,
     hiddenimports=[
@@ -54,20 +68,46 @@ a = Analysis(
         "validation",
         "peak_utils",
         "time_utils",
-        "heartbeat_labeler",
-        "hr_reactivity",
 
-        # Optional / dynamic imports
-        "PIL",
-        "PIL._tkinter_finder",
-        "pyPCG",
-        "pyPCG.preprocessing",
-        "pywt",
-    ],
+        # Modules used by the pipeline that sometimes get missed by static analysis
+        "fft_profiles",
+        "viterbi",
+        "emissions",
+        "ui_settings_loader",
+        "console_logging",
+    ]
+    + _optional_hiddenimports(
+        [
+            # Optional / dynamic imports
+            "PIL",
+            "PIL._tkinter_finder",
+            "pyPCG",
+            "pyPCG.preprocessing",
+            "pywt",
+        ]
+    )
+    + scipy_array_api_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Prevent PyInstaller from pulling in large ML stacks that are present
+        # in the environment but not used by this project (can cause recursion/stack overflows).
+        "tensorflow",
+        "tensorflow-plugins",
+        "keras",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "transformers",
+        "jax",
+        "jaxlib",
+        "openvino",
+        "pyside6",
+        "PySide6",
+        "pyqt5",
+        "PyQt5",
+    ],
     noarchive=False,
     optimize=0,
 )
