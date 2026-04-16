@@ -6,6 +6,28 @@ function quoteWinArg(s) {
     return '"' + String(s).replace(/"/g, '""') + '"';
 }
 
+// Must match batch_runner._EXT_PREFERENCE (audio/video inputs the analyzer accepts).
+function getExtensionLower(pathStr) {
+    var s = String(pathStr);
+    var dot = s.lastIndexOf(".");
+    if (dot < 0) {
+        return "";
+    }
+    return s.substring(dot).toLowerCase();
+}
+
+function isSupportedMediaPath(pathStr) {
+    var ext = getExtensionLower(pathStr);
+    var allowed = [".wav", ".flac", ".mp3", ".m4a", ".ogg", ".mp4", ".mkv", ".mov"];
+    var i;
+    for (i = 0; i < allowed.length; i++) {
+        if (ext === allowed[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function OnClick(clickData) {
     // --- Edit REPO_ROOT if your clone lives elsewhere ---
     var REPO_ROOT = "C:\\Users\\WXP\\Documents\\GitHub\\bpm_analysis";
@@ -17,14 +39,28 @@ function OnClick(clickData) {
 
     var paths = [];
     var tab = clickData.func.sourcetab;
-    if (tab.selstats.selfiles > 0) {
+    var hadFileSelection = tab.selstats.selfiles > 0;
+    if (hadFileSelection) {
         var en = new Enumerator(tab.selected_files);
         for (; !en.atEnd(); en.moveNext()) {
             var item = en.item();
             var pathObj = item.realpath;
             pathObj.Resolve();
-            paths.push(String(pathObj));
+            var p = String(pathObj);
+            if (isSupportedMediaPath(p)) {
+                paths.push(p);
+            }
         }
+    }
+
+    if (hadFileSelection && paths.length === 0) {
+        var dlg = clickData.func.Dlg;
+        dlg.title = "BPM Analyzer";
+        dlg.message = "No supported media file selected.\n\nUse: .wav .flac .mp3 .m4a .ogg .mp4 .mkv .mov";
+        dlg.buttons = "OK";
+        dlg.icon = "warn";
+        dlg.Show();
+        return;
     }
 
     var shell = new ActiveXObject("WScript.Shell");

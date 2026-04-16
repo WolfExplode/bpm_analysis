@@ -264,13 +264,13 @@ DEFAULT_OUTPUT_OPTIONS = {
     # When True, embed a small script in the HTML file instead of copying interactive_plot.js (no audio/spectrogram/label JS).
     "html_inline_interactive_script": False,
     "png": False,
-    "csv": True,
-    "summary": True,
+    "csv": False,
+    "summary": False,
     "debug": True,
-    "filtered_wav": True,
+    "filtered_wav": False,
     # When True, converted/copied/split working WAVs are written under the output folder; when False, a temp dir is used.
-    "working_wav_in_output": True,
-    "spectrogram": True,
+    "working_wav_in_output": False,
+    "spectrogram": False,
     "fft_profiles": True,
     "regression_log": False,
 }
