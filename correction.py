@@ -1222,6 +1222,29 @@ def run_pass3_correction(
             state_boundaries.append((s2_end, s1_next, "diastole",
                                       {"s2": s2, "s1_next": s1_next, "reasoning": _reasoning["diastole"]}))
 
+    # ── Trim diastole ends so boundary list is a strict non-overlapping partition ──
+    # Each diastole was appended ending at s1_next (the next peak index), but the next
+    # cycle's S1 starts *before* that peak (edge-detection start < peak). That left a
+    # region claimed by both diastole and S1 in the boundary list, even though
+    # state_labels itself (last-write-wins) is correct. Fix: walk the list once and
+    # shorten any diastole whose end exceeds the start of the very next S1 segment.
+    _trimmed: List[Tuple] = []
+    for _bi, _seg in enumerate(state_boundaries):
+        if _seg[2] == "diastole":
+            _dia_start, _dia_end, _dia_name, _dia_meta = _seg
+            # Find the start of the immediately following S1 segment.
+            _next_s1_start = _dia_end  # default: no change
+            for _fwd in range(_bi + 1, len(state_boundaries)):
+                if state_boundaries[_fwd][2] == "S1":
+                    _next_s1_start = state_boundaries[_fwd][0]
+                    break
+            _new_end = min(_dia_end, _next_s1_start)
+            if _new_end > _dia_start:
+                _trimmed.append((_dia_start, _new_end, _dia_name, _dia_meta))
+        else:
+            _trimmed.append(_seg)
+    state_boundaries = _trimmed
+
     # ── Store results ─────────────────────────────────────────────────────────
     analysis_data["pass3_state_labels"]          = state_labels
     analysis_data["pass3_state_labels_encoding"] = dict(STATE_LABELS_ENCODING)
