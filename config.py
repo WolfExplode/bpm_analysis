@@ -75,12 +75,12 @@ DEFAULT_PARAMS = {
     # S1 and S2 acoustic event duration bounds (BPM-independent physiological constants).
     # These define how long the audible heart sound event itself lasts, not the intervals between sounds.
     # Used by Pass 3 to gate corrections that would squeeze a state into an impossibly short window.
-    "s1_min_sec": 0.010,     # Shortest plausible S1 sound duration (10ms absolute floor).
-    "s1_nominal_sec": 0.040, # Typical S1 sound duration (~40ms).
-    "s1_max_sec": 0.080,     # Longest plausible S1 sound (beyond this it blurs into systole).
-    "s2_min_sec": 0.010,     # Shortest plausible S2 sound duration (10ms absolute floor).
-    "s2_nominal_sec": 0.030, # S2 is generally shorter and softer than S1 (~30ms typical).
-    "s2_max_sec": 0.060,     # Longest plausible S2 sound.
+    "s1_min_sec": 0.030,     # Shortest plausible S1 sound duration (10ms absolute floor).
+    "s1_nominal_sec": 0.080, # Typical S1 sound duration (~40ms).
+    "s1_max_sec": 0.120,     # Longest plausible S1 sound (beyond this it blurs into systole).
+    "s2_min_sec": 0.030,     # Shortest plausible S2 sound duration (10ms absolute floor).
+    "s2_nominal_sec": 0.080, # S2 is generally shorter and softer than S1 (~30ms typical).
+    "s2_max_sec": 0.120,     # Longest plausible S2 sound.
     # BPM-dependent expected S1-S2 (Weissler: https://www.desmos.com/calculator/ebqshptip0)
     "s1_s2_expected_weissler_ref_et_ms": 320, # Reference ejection time (ms) at ref_bpm.
     "s1_s2_expected_weissler_ref_bpm": 60,    # BPM at which ref_et_ms is defined.
@@ -167,8 +167,11 @@ DEFAULT_PARAMS = {
     # =================================================================================
     # Dense per-sample state labels:
     #   0: S1, 1: systole, 2: S2, 3: diastole
-    "pass3_state_s1_window_ms": 80.0,          # Larger → S1 event drawn wider (more forgiving timing jitter, less precise boundaries). Smaller → tighter/cleaner S1 marks but easier to miss the visible S1 region.
-    "pass3_state_s2_window_ms": 80.0,          # Larger → S2 event drawn wider (more forgiving for weak/noisy S2). Smaller → tighter S2 marks but easier to mis-render/fragment S2 in the timeline.
+    "pass3_state_s1_window_ms": 120.0,          # Max search window (ms) for S1 edge detection; acts as a hard cap. Previously the fixed duration—now only a ceiling.
+    "pass3_state_s2_window_ms": 120.0,          # Max search window (ms) for S2 edge detection; acts as a hard cap. Previously the fixed duration—now only a ceiling.
+    # Envelope-based transient edge detection: replaces the fixed ±half-window with a super-Gaussian weighted half-max walk.
+    "pass3_state_edge_alpha": 0.03,             # Fraction of the weighted-peak value that marks the transient edge (0.5 = half-max). Lower → wider S1/S2 marks; higher → tighter.
+    "pass3_state_edge_n_exp": 4.0,             # Super-Gaussian exponent for transient edge weighting. 2 = Gaussian (tracks signal decay); higher = harder cap at window boundary. Keep lower than peak_refine_super_gaussian_n.
     # S2 snapping near predicted ejection time (Weissler-based nominal):
     "pass3_snap_s2_to_peak": True,             # True → use S2 evidence in raw peaks to place S2 more accurately. False → S2 stays at predicted ejection time (more stable/physiology-driven, less responsive to real S2 morphology).
     "pass3_snap_s2_window_ms": 120.0,          # Larger → more chances to find an S2 peak (more aggressive; higher false-snap risk). Smaller → only snap when S2 evidence is close to predicted (more conservative).

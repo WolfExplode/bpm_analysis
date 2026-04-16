@@ -163,11 +163,73 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
     state_labels = np.full(n_samples, STATE_DIASTOLE, dtype=np.int8)
     state_boundaries = []
 
-    # Event window sizes.
+    # Event window half-sizes — now the max-search cap for envelope-based edge detection.
     s1_window_ms = float(params.get("pass3_state_s1_window_ms", 80.0))
     s2_window_ms = float(params.get("pass3_state_s2_window_ms", 80.0))
     s1_half = max(1, int(round(0.5 * s1_window_ms * sample_rate / 1000.0)))
     s2_half = max(1, int(round(0.5 * s2_window_ms * sample_rate / 1000.0)))
+
+    # Envelope-based transient edge detection parameters.
+    _edge_alpha = float(params.get("pass3_state_edge_alpha", 0.5))
+    _edge_n_exp = float(params.get("pass3_state_edge_n_exp", 2.0))
+    _s1_min_half = max(1, int(round(float(params.get("s1_min_sec", 0.030)) * 0.5 * sample_rate)))
+    _s1_max_half = max(1, int(round(float(params.get("s1_max_sec", 0.080)) * 0.5 * sample_rate)))
+    _s2_min_half = max(1, int(round(float(params.get("s2_min_sec", 0.030)) * 0.5 * sample_rate)))
+    _s2_max_half = max(1, int(round(float(params.get("s2_max_sec", 0.080)) * 0.5 * sample_rate)))
+    _nf_arr: Optional[np.ndarray] = None
+    _nf_raw = analysis_data.get("dynamic_noise_floor_series")
+    if _nf_raw is not None:
+        try:
+            _nf_arr = np.asarray(_nf_raw.values, dtype=np.float64)
+        except Exception:
+            _nf_arr = None
+
+    def _find_transient_bounds(peak_idx: int, half_window: int, min_half: int, max_half: int) -> Tuple[int, int]:
+        """Return (start, end) as a [start, end) sample slice for the transient at peak_idx.
+
+        Walks outward from the peak through a super-Gaussian-weighted envelope until the
+        weighted value drops to alpha * peak_weighted_value (half-max by default).
+        The half_window is a hard cap; min/max_half clamp the result to physiology bounds.
+        Falls back to the fixed half_window if anything goes wrong.
+        """
+        try:
+            left  = max(0, peak_idx - half_window)
+            right = min(n_samples - 1, peak_idx + half_window)
+            n_win = right - left + 1
+            sigma = max(1.0, n_win / 4.0)
+            dist  = np.abs(np.arange(left, right + 1, dtype=np.float64) - peak_idx)
+            weights     = np.exp(-((dist / sigma) ** _edge_n_exp))
+            weighted_env = weights * audio_envelope[left : right + 1]
+            center_offset = peak_idx - left
+            peak_val = float(weighted_env[center_offset])
+            if peak_val <= 0.0:
+                raise ValueError("zero peak")
+            thresh = _edge_alpha * peak_val
+
+            # Walk left from center: first crossing below thresh marks the edge.
+            start = left
+            for k in range(center_offset - 1, -1, -1):
+                if weighted_env[k] <= thresh:
+                    start = left + k + 1  # k+1 is the last sample still inside the transient
+                    break
+
+            # Walk right from center.
+            end = right
+            for k in range(center_offset + 1, len(weighted_env)):
+                if weighted_env[k] <= thresh:
+                    end = left + k - 1  # k-1 is the last sample still inside
+                    break
+
+            # Clamp: must be within [min_half, max_half] on each side of the peak.
+            start = max(start, peak_idx - max_half)
+            end   = min(end,   peak_idx + max_half)
+            start = min(start, peak_idx - min_half)
+            end   = max(end,   peak_idx + min_half)
+            start = max(0, start)
+            end   = min(n_samples - 1, end)
+            return int(start), int(end + 1)
+        except Exception:
+            return max(0, peak_idx - half_window), min(n_samples, peak_idx + half_window + 1)
 
     # Optional: snap predicted S2 to the best nearby raw peak using label_scores["S2"].
     snap_s2 = bool(params.get("pass3_snap_s2_to_peak", True))
@@ -990,11 +1052,9 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
         s2_events_final.append(int(s2))
 
-        # Define event windows and paint states.
-        s1_start = max(0, s1 - s1_half)
-        s1_end = min(n_samples, s1 + s1_half + 1)
-        s2_start = max(0, s2 - s2_half)
-        s2_end = min(n_samples, s2 + s2_half + 1)
+        # Envelope-based transient bounds (replaces fixed ±half-window).
+        s1_start, s1_end = _find_transient_bounds(s1, s1_half, _s1_min_half, _s1_max_half)
+        s2_start, s2_end = _find_transient_bounds(s2, s2_half, _s2_min_half, _s2_max_half)
 
         # Ensure ordering (no negative-length spans).
         if s2_start < s1_end:
