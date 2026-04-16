@@ -322,12 +322,12 @@ def prepare_pass3_s1_insert_context(
     }
 
 
-def spectrum_s1_search_envelope_index(
+def spectrum_template_search_envelope_index(
     bandpass_audio: np.ndarray,
     full_sr: int,
     t_expected_sec: float,
     search_half_sec: float,
-    mu_s1_db: np.ndarray,
+    mu_template_db: np.ndarray,
     freqs: np.ndarray,
     n_fft: int,
     half_samples: int,
@@ -337,7 +337,8 @@ def spectrum_s1_search_envelope_index(
 ) -> Optional[Tuple[int, float]]:
     """
     Slide short-time spectra over bandpass audio near t_expected; pick center that best matches
-    mu_s1_db in fft_separation band (negative mean squared error in dB shape space).
+    mu_template_db in fft_separation band (negative mean squared error in dB shape space).
+    Works for any template (S1, S2, or other).
 
     Returns (envelope_sample_index, best_score) or None if no confident winner.
     """
@@ -345,7 +346,7 @@ def spectrum_s1_search_envelope_index(
     low_hz = float(params.get("fft_separation_low_hz", 10.0))
     high_hz = float(params.get("fft_separation_high_hz", 15000.0))
     mask = (freqs >= low_hz) & (freqs <= high_hz)
-    if not np.any(mask) or len(mu_s1_db) != len(freqs):
+    if not np.any(mask) or len(mu_template_db) != len(freqs):
         return None
 
     stride_samples = max(
@@ -375,7 +376,7 @@ def spectrum_s1_search_envelope_index(
         fft_mag = np.abs(np.fft.rfft(padded))
         fft_db = 20.0 * np.log10(fft_mag + eps)
         spec_shape = fft_db - ref_db
-        diff = spec_shape[mask] - mu_s1_db[mask]
+        diff = spec_shape[mask] - mu_template_db[mask]
         score = -float(np.mean(diff ** 2))
         scores.append(score)
         centers.append(int(c))

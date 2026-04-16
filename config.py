@@ -200,6 +200,12 @@ DEFAULT_PARAMS = {
     "pass3_local_peak_sensitivity_factor": 0.6,     # Height threshold multiplier for local re-detection (fraction of dynamic noise floor). Lower → more sensitive, higher false-positive risk.
     "pass3_s2_spectral_min_templates": 3,           # Minimum paired S2 peaks needed to enable spectral S2 search. Lower → use spectral search with few templates (confirmation-bias risk). Higher → require more evidence.
 
+    # Continuous emission generation (Pass 3 outputs used by Pass 4 Viterbi):
+    "pass3_generate_emissions": True,               # True → run generate_pass3_emissions after correction; generates analysis_data["pass3_emissions"] (n_samples, 3).
+    "pass3_emission_spectral_tau": 5.0,             # Softmax temperature for spectral-score → probability conversion. Higher → softer/flatter distribution; lower → sharper peaks.
+    "pass3_emission_gate_width_ms": 80.0,           # Gaussian gate half-width (ms) around S1/S2 event centers when seeding emission arrays from the state timeline.
+    "pass3_emission_noise_floor": 0.05,             # Constant P(Noise) baseline added at every sample before normalization.
+
     # =================================================================================
     # 7. Output, HRV & Reporting
     # Controls for final calculations, reports, and plots
@@ -239,6 +245,13 @@ DEFAULT_PARAMS = {
     "fft_neutral_band_high_hz": 14000.0,          # Neutral band high (Hz) for S2→S1 alignment.
     "fft_separation_low_hz": 10.0,                # Low bound (Hz) for S1 vs S2 frequency separation vector (algorithm use).
     "fft_separation_high_hz": 15000.0,            # High bound (Hz) for S1 vs S2 frequency separation vector.
+
+    # =================================================================================
+    # 8. Pass 4 — Viterbi Holistic Decoder  (requires pass3_generate_emissions=True)
+    # =================================================================================
+    "enable_pass4": False,                          # Guard: off until implementation matures. Set True to run Viterbi after Pass 3.
+    "pass4_transition_self_loop_weight": 0.85,      # Higher → decoder prefers longer state durations (more inertia). Lower → allows faster state transitions.
+    "pass4_emission_weight": 0.7,                   # Balance between spectral emissions (1.0) and BPM-prior only (0.0). Tune when emission quality is uncertain.
 
 }
 
