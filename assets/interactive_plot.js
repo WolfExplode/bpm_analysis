@@ -50,6 +50,7 @@
   const audioFileNameEl = document.getElementById("audio-file-name");
   const audioSourceSelect = document.getElementById("audio-source-select");
   const stateStripCanvas = document.getElementById("state-strip-plot");
+  const stateStripTooltip = document.getElementById("state-strip-tooltip");
   const axisGridButtons = document.querySelectorAll("[data-grid-axis]");
   const labelTypeSelect = document.getElementById("label-type-select");
   const applyLabelBtn = document.getElementById("apply-label-btn");
@@ -339,6 +340,76 @@
       ctx.fillStyle = colors[state] || "#555555";
       ctx.fillRect(x, 0, xEnd - x, stripHeight);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // State-strip hover tooltip
+  // -------------------------------------------------------------------------
+  function _segmentAtTime(tSec) {
+    if (!pass3SegmentsActive || pass3SegmentsActive.length === 0) return null;
+    // Binary search for the segment containing tSec.
+    let lo = 0, hi = pass3SegmentsActive.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const seg = pass3SegmentsActive[mid];
+      if (tSec < seg.start) { hi = mid - 1; }
+      else if (tSec >= seg.end) { lo = mid + 1; }
+      else { return seg; }
+    }
+    return null;
+  }
+
+  function _formatTooltip(seg) {
+    if (!seg) return null;
+    const r = seg.reasoning;
+    const stateName = seg.state;
+    const labelMap = { S1: "S1", systole: "Systole", S2: "S2", diastole: "Diastole" };
+    const label = labelMap[stateName] || stateName;
+    const tStart = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
+    let lines = [`${label} @ ${tStart}s`];
+    if (r) {
+      lines.push(`Expected: ${r.expected_ms}ms  •  Measured: ${r.measured_ms}ms`);
+      if (r.notes && r.notes.length > 0) {
+        for (const note of r.notes) {
+          lines.push(note);
+        }
+      }
+    }
+    return lines.join("\n");
+  }
+
+  function initStateStripHover() {
+    if (!stateStripCanvas || !stateStripTooltip) return;
+
+    stateStripCanvas.addEventListener("mousemove", (e) => {
+      if (!xAxisRange || xAxisRange.length < 2) return;
+      const rect = stateStripCanvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const w = rect.width || 1;
+      const x0ms = new Date(xAxisRange[0]).getTime();
+      const x1ms = new Date(xAxisRange[1]).getTime();
+      const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms)) / 1000;
+      const seg = _segmentAtTime(tSec);
+      const text = _formatTooltip(seg);
+      if (!text) {
+        stateStripTooltip.classList.add("hidden");
+        return;
+      }
+      stateStripTooltip.textContent = text;
+      stateStripTooltip.classList.remove("hidden");
+      // Position tooltip near cursor, keeping it on screen.
+      const ttW = 340, ttH = 90;
+      let tx = e.clientX + 14;
+      let ty = e.clientY - 10;
+      if (tx + ttW > window.innerWidth)  tx = e.clientX - ttW - 14;
+      if (ty + ttH > window.innerHeight) ty = e.clientY - ttH - 4;
+      stateStripTooltip.style.left = `${Math.max(0, tx)}px`;
+      stateStripTooltip.style.top  = `${Math.max(0, ty)}px`;
+    });
+
+    stateStripCanvas.addEventListener("mouseleave", () => {
+      stateStripTooltip.classList.add("hidden");
+    });
   }
 
   function initPass3StateViewSelector() {
@@ -1657,6 +1728,7 @@
   initTimelineTicks();
   initSpectrogramControls();
   initPass3StateViewSelector();
+  initStateStripHover();
   setTimeout(initPlotlyIntegration, 500);
 
   // DEBUG: Check for audio file presence relative to HTML

@@ -210,9 +210,30 @@
             top: 0;
             width: 1px;
             height: 1px;
-            pointer-events: none;
+            pointer-events: auto;
             opacity: 0.90;
             z-index: 6; /* above plot but below playhead */
+            cursor: crosshair;
+        }
+
+        #state-strip-tooltip {
+            position: fixed;
+            background: rgba(18, 18, 32, 0.95);
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #ddd;
+            white-space: pre-wrap;
+            max-width: 340px;
+            pointer-events: none;
+            z-index: 200;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+        }
+
+        #state-strip-tooltip.hidden {
+            display: none;
         }
 
         #timeline-progress {
@@ -540,6 +561,7 @@
                 <img id="spectrogram-image" class="hidden" src="%%SPECTROGRAM_SRC%%" alt="Spectrogram" />
             </div>
             <canvas id="state-strip-plot"></canvas>
+            <div id="state-strip-tooltip" class="hidden"></div>
             <div id="chart-playhead"></div>
             <div id="plotly-chart">
                 %%PLOTLY_HTML%%

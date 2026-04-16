@@ -1472,13 +1472,14 @@ class Plotter:
                     end_sec = float(s1) / float(self.sample_rate)
                     if not np.isfinite(start_sec) or not np.isfinite(end_sec) or end_sec <= start_sec:
                         continue
-                    segs_local.append(
-                        {
-                            "start": start_sec,
-                            "end": end_sec,
-                            "state": str(state_name),
-                        }
-                    )
+                    seg_dict: Dict = {
+                        "start": start_sec,
+                        "end": end_sec,
+                        "state": str(state_name),
+                    }
+                    if isinstance(meta, dict) and "reasoning" in meta:
+                        seg_dict["reasoning"] = meta["reasoning"]
+                    segs_local.append(seg_dict)
                 except Exception:
                     continue
             return segs_local

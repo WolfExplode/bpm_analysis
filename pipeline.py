@@ -278,6 +278,83 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         except Exception:
             return True
 
+    def _find_sensitive_peaks_near(t_expected_sec: float, window_samples: int, sensitivity_factor: float) -> Optional[int]:
+        """
+        Re-scan audio_envelope in a narrow window with a lower height threshold to find
+        faint peaks that the main detector missed. Returns the best candidate sample index
+        (highest amplitude among found peaks) or None. Does not consult label_scores —
+        this is a pure signal-level check to guard against over-reliance on spectral search.
+        """
+        from scipy.signal import find_peaks as _find_peaks
+        nfs = analysis_data.get("dynamic_noise_floor_series")
+        center = int(round(t_expected_sec * sample_rate))
+        lo = max(0, center - window_samples)
+        hi = min(n_samples - 1, center + window_samples)
+        if hi <= lo:
+            return None
+        segment = audio_envelope[lo:hi + 1]
+        if len(segment) == 0:
+            return None
+        # Build a per-sample sensitivity-adjusted height threshold for the segment.
+        if nfs is not None and not getattr(nfs, "empty", True):
+            try:
+                indices = np.arange(lo, hi + 1)
+                nf_vals = nfs.reindex(indices, method="nearest").values.astype(np.float64)
+                height_thresh = sensitivity_factor * nf_vals
+            except Exception:
+                height_thresh = sensitivity_factor * float(np.median(audio_envelope))
+        else:
+            height_thresh = sensitivity_factor * float(np.median(audio_envelope))
+        min_dist = max(1, int(float(params.get("min_peak_distance_sec", 0.10)) * sample_rate // 2))
+        try:
+            local_peaks, _ = _find_peaks(segment, height=height_thresh, distance=min_dist)
+        except Exception:
+            return None
+        if len(local_peaks) == 0:
+            return None
+        # Return the highest-amplitude peak in the window.
+        best_local = int(local_peaks[np.argmax(segment[local_peaks])])
+        return lo + best_local
+
+    def _choose_s2_spectral(t_expected_sec: float, search_half_sec: float) -> Optional[Tuple[int, float]]:
+        """
+        Search for S2 using the spectral S2 template from insert_spectrum_ctx.
+        Falls back on spectrum_s1_search_envelope_index called with mu_s2_db.
+
+        Returns (envelope_index, score) or None.
+
+        LIMITATION: the S2 template is built from Pass 2 paired S2 peaks. If Pass 2
+        made systematic labeling errors, those may bias the template, causing spectral
+        search to confirm the same mistakes (confirmation-bias risk). Only call this
+        after _find_sensitive_peaks_near has already failed.
+        """
+        if insert_spectrum_ctx is None:
+            return None
+        mu_s2 = insert_spectrum_ctx.get("mu_s2_db")
+        if mu_s2 is None or not isinstance(mu_s2, np.ndarray) or len(mu_s2) == 0:
+            return None
+        n_s2_tpl = int(insert_spectrum_ctx.get("n_s2_template", 0))
+        min_tpl = int(params.get("pass3_s2_spectral_min_templates", 3))
+        if n_s2_tpl < min_tpl:
+            return None
+        try:
+            result = spectrum_s1_search_envelope_index(
+                insert_spectrum_ctx["bandpass_audio"],
+                int(insert_spectrum_ctx["full_sr"]),
+                t_expected_sec,
+                search_half_sec,
+                mu_s2,
+                insert_spectrum_ctx["freqs"],
+                int(insert_spectrum_ctx["n_fft"]),
+                int(insert_spectrum_ctx["half_samples"]),
+                sample_rate,
+                n_samples,
+                params,
+            )
+        except Exception:
+            return None
+        return result
+
     # ---------------------------------------------------------------------
     # 1) Build initial S1/S2 events from the current S1 list + BPM prior
     # ---------------------------------------------------------------------
@@ -373,6 +450,14 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
     resnap_window_ms = float(params.get("pass3_resnap_s2_window_ms", 220.0))
     resnap_half = max(1, int(round(0.5 * resnap_window_ms * sample_rate / 1000.0)))
     systole_slack = float(params.get("pass3_systole_slack_frac", 0.15))
+    diastole_slack = float(params.get("pass3_diastole_slack_frac", 0.20))
+
+    # Pass C params.
+    enable_phase_correction = bool(params.get("pass3_enable_phase_correction", True))
+    phase_min_score_delta = float(params.get("pass3_phase_min_score_delta", 0.15))
+    local_peak_window_ms = float(params.get("pass3_local_peak_window_ms", 160.0))
+    local_peak_window_samples = max(1, int(round(0.5 * local_peak_window_ms * sample_rate / 1000.0)))
+    local_peak_sensitivity = float(params.get("pass3_local_peak_sensitivity_factor", 0.6))
 
     for _iter in range(max_iters):
         changed = False
@@ -403,10 +488,23 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
             systole = (s2 - s1) / float(sample_rate)
             rr = (s1_next - s1) / float(sample_rate)
             diastole = rr - systole
+            expected_rr = float(intervals.get("rr_interval", 60.0 / bpm if bpm > 0 else 0.75))
+            diastole_nominal = float(intervals.get("s2_s1_nominal", max(0.0, expected_rr - s1_s2_nominal)))
+            diastole_min = float(intervals.get("diastole_min", 0.08))
+            diastole_max = float(intervals.get("diastole_max", diastole_nominal * 2.0))
 
             too_short = systole < (1.0 - systole_slack) * s1_s2_min
             too_long = systole > (1.0 + systole_slack) * s1_s2_max
             far_from_nominal = abs(systole - s1_s2_nominal) > max(0.12, 0.5 * (s1_s2_max - s1_s2_min))
+            diastole_too_short = diastole < (1.0 - diastole_slack) * diastole_min
+
+            s1_min_evt = float(intervals.get("s1_min", 0.010))
+            s1_nominal_evt = float(intervals.get("s1_nominal", 0.040))
+            s1_max_evt = float(intervals.get("s1_max", 0.080))
+            s2_min_evt = float(intervals.get("s2_min", 0.010))
+            s2_nominal_evt = float(intervals.get("s2_nominal", 0.030))
+            s2_max_evt = float(intervals.get("s2_max", 0.060))
+            min_feasible_cycle = float(intervals.get("min_feasible_cycle", s1_min_evt + s1_s2_min + s2_min_evt + diastole_min))
 
             diag = {
                 "i": int(i),
@@ -417,6 +515,17 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                 "rr_sec": float(rr),
                 "systole_sec": float(systole),
                 "diastole_sec": float(diastole),
+                "expected_rr_sec": float(expected_rr),
+                "diastole_nominal_sec": float(diastole_nominal),
+                "diastole_min_sec": float(diastole_min),
+                "diastole_max_sec": float(diastole_max),
+                "s1_min_sec": float(s1_min_evt),
+                "s1_nominal_sec": float(s1_nominal_evt),
+                "s1_max_sec": float(s1_max_evt),
+                "s2_min_sec": float(s2_min_evt),
+                "s2_nominal_sec": float(s2_nominal_evt),
+                "s2_max_sec": float(s2_max_evt),
+                "min_feasible_cycle_sec": float(min_feasible_cycle),
                 "s1_s2_min": float(s1_s2_min),
                 "s1_s2_nominal": float(s1_s2_nominal),
                 "s1_s2_max": float(s1_s2_max),
@@ -424,6 +533,7 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                     "systole_too_short": bool(too_short),
                     "systole_too_long": bool(too_long),
                     "systole_far_from_nominal": bool(far_from_nominal),
+                    "diastole_too_short": bool(diastole_too_short),
                 },
             }
             cycle_diagnostics.append(diag)
@@ -540,6 +650,241 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
                     s2_a = _choose_s2_near(a, b, s2_pred_a, snap_half)
                     s2_events.append(int(s2_a))
 
+        # --- Pass C: phase-shift cascade correction ---
+        # Handles two failure modes that Pass A/B cannot fix because they never question
+        # whether a peak in s1_list is correctly labeled as S1.
+        #
+        # C.1 Remove false S1 (RR + systole both too short):
+        #   A noise peak promoted to S1 creates a very short cycle. Demote it.
+        # C.2 Demote S1_next to S2 (diastole too short):
+        #   The "next S1" arrived too soon after S2 — it's likely the real S2 of this
+        #   cycle. Re-seat it as S2 and search for the real next S1 after it.
+        # C.3 Find faint S2 (systole too long, Pass A already failed):
+        #   Real S2 was missed by peak detection. Try local sensitive re-detection then
+        #   spectral fingerprint matching.
+        #
+        # One fix per outer iteration; cascade is handled by the outer max_iters loop.
+        if enable_phase_correction and not changed and len(cycle_diagnostics) > 0:
+
+            # --- Pass C.1: Remove false S1 ---
+            for diag in cycle_diagnostics:
+                i = diag["i"]
+                if i + 1 >= len(s1_list):
+                    continue
+                s1 = diag["s1"]
+                s1_next = diag["s1_next"]
+                systole = diag["systole_sec"]
+                diastole = diag["diastole_sec"]
+                diastole_min_c = diag.get("diastole_min_sec", 0.0)
+                s1_s2_min_c = diag["s1_s2_min"]
+                # Trigger: both systole AND diastole are implausibly short (both states squeezed).
+                # This means a false S1 has been sandwiched into the cycle, compressing both.
+                if not (systole < s1_s2_min_c and diastole < diastole_min_c):
+                    continue
+                # Check: s1_next is the suspect false S1 — should look more like noise.
+                suspect = int(s1_next)
+                entry = pc.get(suspect) or {}
+                ls = entry.get("label_scores") if isinstance(entry, dict) else None
+                if not isinstance(ls, dict):
+                    continue
+                noise_score = float(ls.get("noise", 0.0))
+                s1_score = float(ls.get("S1", 0.0))
+                if noise_score - s1_score < phase_min_score_delta:
+                    continue
+                # Feasibility gate: the merged cycle (s1 → original s1_list[i+2]) must
+                # be large enough to hold a minimum valid S1+systole+S2+diastole.
+                min_feasible = diag.get("min_feasible_cycle_sec", 0.0)
+                merged_next = int(s1_list[i + 2]) if i + 2 < len(s1_list) else n_samples
+                merged_span_sec = (merged_next - int(s1)) / float(sample_rate)
+                if min_feasible > 0 and merged_span_sec < min_feasible:
+                    continue
+                # Commit: remove the false S1 from s1_list.
+                s1_list = [p for p in s1_list if p != suspect]
+                # Rebuild s2_events from scratch.
+                s2_events = []
+                for j in range(len(s1_list) - 1):
+                    a = int(s1_list[j])
+                    b = int(s1_list[j + 1])
+                    if b <= a:
+                        s2_events.append(int(a))
+                        continue
+                    t_a = a / float(sample_rate)
+                    bpm_a = _bpm_at_time(t_a)
+                    ivs_a = calculate_bpm_intervals(bpm_a, params)
+                    s2_pred_a = int(round(a + float(ivs_a.get("s1_s2_nominal", 0.30)) * sample_rate))
+                    s2_events.append(_choose_s2_near(a, b, s2_pred_a, snap_half))
+                corrections.append({
+                    "type": "remove_false_s1",
+                    "cycle": int(i),
+                    "s1": int(s1),
+                    "removed_s1": int(suspect),
+                    "systole_sec": float(systole),
+                    "diastole_sec": float(diastole),
+                    "diastole_min_sec": float(diastole_min_c),
+                    "noise_score": float(noise_score),
+                    "s1_score": float(s1_score),
+                })
+                logging.info(
+                    "Pass 3 C.1: removed false S1 at sample %d (cycle %d, systole=%.3fs, diastole=%.3fs/min=%.3fs).",
+                    suspect, i, systole, diastole, diastole_min_c,
+                )
+                changed = True
+                break
+
+            # --- Pass C.2: Demote S1_next to S2 (diastole too short) ---
+            if not changed:
+                for diag in cycle_diagnostics:
+                    i = diag["i"]
+                    if i + 1 >= len(s1_list):
+                        continue
+                    if not diag["flags"].get("diastole_too_short", False):
+                        continue
+                    s1 = diag["s1"]
+                    s1_next = diag["s1_next"]
+                    # Check: s1_next looks more like S2 than S1.
+                    entry = pc.get(int(s1_next)) or {}
+                    ls = entry.get("label_scores") if isinstance(entry, dict) else None
+                    if not isinstance(ls, dict):
+                        continue
+                    s2_score = float(ls.get("S2", 0.0))
+                    s1_score = float(ls.get("S1", 0.0))
+                    if s2_score - s1_score < phase_min_score_delta:
+                        continue
+                    # Candidate new S2 for cycle i is s1_next itself.
+                    new_s2 = int(s1_next)
+                    # Now search for a new real S1 after new_s2.
+                    # The new S1 must arrive before s1_list[i+2] (if it exists).
+                    upper_bound = int(s1_list[i + 2]) if i + 2 < len(s1_list) else n_samples
+                    bpm_here = _bpm_at_time(int(s1) / float(sample_rate))
+                    ivs_here = calculate_bpm_intervals(bpm_here, params)
+                    s2_min_here = float(ivs_here.get("s2_min", 0.010))
+                    diastole_min_here = float(ivs_here.get("diastole_min", 0.08))
+                    # New S1 must be at least s2_min past the new S2 (can't overlap the S2 event).
+                    earliest_new_s1 = new_s2 + max(1, int(s2_min_here * sample_rate))
+                    # Expected next S1 is ~diastole after new_s2.
+                    expected_diastole_here = max(diastole_min_here, float(ivs_here.get("s2_s1_nominal", 0.35)))
+                    t_new_s1 = earliest_new_s1 / float(sample_rate) + max(0.0, expected_diastole_here - s2_min_here)
+                    new_s1_cand: Optional[int] = None
+                    # Priority 1: raw peak near expected time.
+                    new_s1_cand = _choose_s1_near(t_new_s1, s1_search_half, min_sep_samples)
+                    if new_s1_cand is not None and (new_s1_cand < earliest_new_s1 or new_s1_cand >= upper_bound):
+                        new_s1_cand = None
+                    # Priority 2: local sensitive re-detection.
+                    if new_s1_cand is None:
+                        sens_cand = _find_sensitive_peaks_near(t_new_s1, local_peak_window_samples, local_peak_sensitivity)
+                        if sens_cand is not None and earliest_new_s1 <= sens_cand < upper_bound:
+                            new_s1_cand = sens_cand
+                    if new_s1_cand is None:
+                        continue
+                    if new_s1_cand < earliest_new_s1 or new_s1_cand >= upper_bound:
+                        continue
+                    # Commit: update s2_events[i] and insert new S1.
+                    s2_events[i] = new_s2
+                    # Replace old s1_next with new_s1_cand (remove old, insert new).
+                    s1_list = [p for p in s1_list if p != int(s1_next)]
+                    s1_list.append(new_s1_cand)
+                    s1_list = sorted(list(dict.fromkeys(s1_list)))
+                    # Rebuild s2_events fully to stay consistent.
+                    s2_events = []
+                    for j in range(len(s1_list) - 1):
+                        a = int(s1_list[j])
+                        b = int(s1_list[j + 1])
+                        if b <= a:
+                            s2_events.append(int(a))
+                            continue
+                        t_a = a / float(sample_rate)
+                        bpm_a = _bpm_at_time(t_a)
+                        ivs_a = calculate_bpm_intervals(bpm_a, params)
+                        s2_pred_a = int(round(a + float(ivs_a.get("s1_s2_nominal", 0.30)) * sample_rate))
+                        s2_events.append(_choose_s2_near(a, b, s2_pred_a, snap_half))
+                    corrections.append({
+                        "type": "flip_demote_s1",
+                        "cycle": int(i),
+                        "s1": int(s1),
+                        "old_s1_next": int(s1_next),
+                        "new_s2_for_cycle": int(new_s2),
+                        "new_s1_next": int(new_s1_cand),
+                        "s2_score": float(s2_score),
+                        "s1_score": float(s1_score),
+                    })
+                    logging.info(
+                        "Pass 3 C.2: flipped S1@%d→S2, new S1 at %d (cycle %d, diastole was %.3fs).",
+                        s1_next, new_s1_cand, i, diag["diastole_sec"],
+                    )
+                    changed = True
+                    break
+
+            # --- Pass C.3: Find faint S2 (systole too long, Pass A already failed) ---
+            if not changed:
+                for diag in cycle_diagnostics:
+                    i = diag["i"]
+                    if not diag["flags"].get("systole_too_long", False):
+                        continue
+                    s1 = diag["s1"]
+                    s1_next = diag["s1_next"]
+                    bpm_c = diag["bpm"]
+                    ivs_c = calculate_bpm_intervals(bpm_c, params)
+                    s1_s2_nominal_c = float(ivs_c.get("s1_s2_nominal", 0.30))
+                    expected_diastole_c = max(0.0, float(ivs_c.get("rr_interval", 0.75)) - s1_s2_nominal_c)
+                    t_s2_pred = int(s1) / float(sample_rate) + s1_s2_nominal_c
+                    search_half_sec = local_peak_window_ms / 2000.0
+
+                    new_s2: Optional[int] = None
+                    method_used: Optional[str] = None
+                    spectral_score: Optional[float] = None
+
+                    # Priority 1: local sensitive re-detection.
+                    sens_cand = _find_sensitive_peaks_near(t_s2_pred, local_peak_window_samples, local_peak_sensitivity)
+                    if sens_cand is not None and int(s1) < sens_cand < int(s1_next):
+                        new_s2 = sens_cand
+                        method_used = "sensitive_peak"
+
+                    # Priority 2: spectral S2 search (label-dependent, confirmation-bias risk noted).
+                    if new_s2 is None:
+                        sp_result = _choose_s2_spectral(t_s2_pred, search_half_sec)
+                        if sp_result is not None:
+                            sp_idx, sp_score = sp_result
+                            if int(s1) < sp_idx < int(s1_next):
+                                new_s2 = sp_idx
+                                spectral_score = sp_score
+                                method_used = "spectral_s2"
+
+                    if new_s2 is None:
+                        continue
+
+                    # Validate: placing S2 here must produce a plausible diastole
+                    # AND leave room for the S2 event itself before the diastole starts.
+                    new_systole = (new_s2 - int(s1)) / float(sample_rate)
+                    new_diastole = (int(s1_next) - new_s2) / float(sample_rate)
+                    s2_min_c = float(ivs_c.get("s2_min", 0.010))
+                    diastole_min_c = float(ivs_c.get("diastole_min", 0.08))
+                    if new_systole < float(ivs_c.get("s1_s2_min", 0.12)):
+                        continue
+                    # Must fit at least the S2 event window + minimum diastole after new_s2.
+                    if new_diastole < s2_min_c + diastole_min_c:
+                        continue
+
+                    # Commit.
+                    s2_events[i] = new_s2
+                    corr: Dict[str, Any] = {
+                        "type": method_used,
+                        "cycle": int(i),
+                        "s1": int(s1),
+                        "new_s2": int(new_s2),
+                        "t_s2_pred_sec": float(t_s2_pred),
+                        "new_systole_sec": float(new_systole),
+                        "new_diastole_sec": float(new_diastole),
+                    }
+                    if spectral_score is not None:
+                        corr["spectral_score"] = float(spectral_score)
+                    corrections.append(corr)
+                    logging.info(
+                        "Pass 3 C.3: placed faint S2 at sample %d via %s (cycle %d, systole %.3fs→%.3fs).",
+                        new_s2, method_used, i, diag["systole_sec"], new_systole,
+                    )
+                    changed = True
+                    break
+
         if not changed:
             break
 
@@ -547,11 +892,83 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
     peaks_out = np.asarray(s1_list, dtype=np.int64)
 
     # ---------------------------------------------------------------------
+    # Pre-build lookups used by the debug reasoning attached to each segment.
+    # ---------------------------------------------------------------------
+    _sr_f = float(sample_rate)
+
+    # before_s2_by_s1[s1] = s2 sample before any Pass 3 corrections.
+    # before_s1next_by_s1[s1] = s1_next sample before any Pass 3 corrections.
+    _before_s2_by_s1: Dict[int, int] = {}
+    _s2_to_s1_before: Dict[int, int] = {}
+    _before_s1next_by_s1: Dict[int, int] = {}
+    for _bs, _be, _bst, _bm in state_boundaries_before:
+        if _bst == "systole":
+            _s1k = _bm.get("s1"); _s2k = _bm.get("s2")
+            if _s1k is not None and _s2k is not None:
+                _before_s2_by_s1[int(_s1k)] = int(_s2k)
+                _s2_to_s1_before[int(_s2k)] = int(_s1k)
+        elif _bst == "diastole":
+            _s2k = _bm.get("s2"); _s1nk = _bm.get("s1_next")
+            if _s2k is not None and _s1nk is not None:
+                _par = _s2_to_s1_before.get(int(_s2k))
+                if _par is not None:
+                    _before_s1next_by_s1[_par] = int(_s1nk)
+
+    # corrections keyed by the s1 sample of the affected cycle.
+    _corrs_by_s1: Dict[int, List[Dict[str, Any]]] = {}
+    for _c in corrections:
+        _ck = _c.get("s1") if _c.get("s1") is not None else _c.get("s1_prev")
+        if _ck is not None:
+            _corrs_by_s1.setdefault(int(_ck), []).append(_c)
+
+    # Sorted (time_sec, correction) for cascade attribution.
+    _all_corr_sorted = sorted(
+        [(float(_c.get("s1", _c.get("s1_prev", 0))) / _sr_f, _c) for _c in corrections],
+        key=lambda x: x[0],
+    )
+
+    def _fmt_corr_note(c: Dict[str, Any]) -> str:
+        """Return a ⚠ warning line describing the direct correction applied."""
+        ctype = c.get("type", "")
+        if ctype == "resnap_s2":
+            new_sys = round((c.get("new_s2", 0) - c.get("s1", 0)) / _sr_f * 1000)
+            return f"⚠ Systole out of range — S2 repositioned, systole now {new_sys}ms"
+        if ctype == "insert_s1":
+            return f"⚠ RR gap too long — missing beat inserted at {c.get('t_expected_sec', 0):.2f}s"
+        if ctype == "remove_false_s1":
+            return f"⚠ Both systole+diastole too short — false beat at {c.get('removed_s1', 0) / _sr_f:.2f}s removed"
+        if ctype == "flip_demote_s1":
+            old_t = c.get("old_s1_next", 0) / _sr_f
+            new_t = c.get("new_s1_next", 0) / _sr_f
+            return f"⚠ Diastole too short — beat at {old_t:.2f}s re-labeled as S2, new S1 at {new_t:.2f}s"
+        if ctype in ("sensitive_peak", "spectral_s2"):
+            new_sys = round(c.get("new_systole_sec", 0) * 1000)
+            method = "sensitive peak detection" if ctype == "sensitive_peak" else "spectral fingerprint"
+            return f"⚠ Systole too long — faint S2 found via {method}, systole now {new_sys}ms"
+        return f"⚠ Correction applied ({ctype})"
+
+    def _fmt_cascade_note(src: Dict[str, Any]) -> str:
+        """Return a ℹ info line describing an upstream correction that shifted this segment."""
+        ctype = src.get("type", "")
+        src_t = src.get("s1", src.get("s1_prev", 0)) / _sr_f
+        label = {
+            "resnap_s2": "S2 resnap",
+            "insert_s1": "beat insertion",
+            "remove_false_s1": "false beat removal",
+            "flip_demote_s1": "S1/S2 flip correction",
+            "sensitive_peak": "faint-S2 detection",
+            "spectral_s2": "spectral S2 detection",
+        }.get(ctype, ctype)
+        return f"ℹ Shifted by {label} at {src_t:.2f}s; duration still within expected range"
+
+    # ---------------------------------------------------------------------
     # 3) Paint the final state timeline from corrected events
     # ---------------------------------------------------------------------
     state_labels[:] = STATE_DIASTOLE
     state_boundaries.clear()
     s2_events_final: List[int] = []
+
+    _SHIFT_THRESH_SAMP = int(0.020 * sample_rate)  # 20 ms shift threshold for cascade note
 
     for i in range(len(peaks_out) - 1):
         s1 = int(peaks_out[i])
@@ -563,11 +980,11 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         if i < len(s2_events):
             s2 = int(s2_events[i])
         else:
-            t_s1 = s1 / float(sample_rate)
+            t_s1 = s1 / _sr_f
             bpm = _bpm_at_time(t_s1)
             intervals = calculate_bpm_intervals(bpm, params)
             s1_s2_nominal = float(intervals.get("s1_s2_nominal", 0.30))
-            s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
+            s2_pred = int(round(s1 + s1_s2_nominal * _sr_f))
             s2 = _choose_s2_near(s1, s1_next, s2_pred, snap_half)
 
         s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
@@ -587,18 +1004,72 @@ def _refine_and_correct_peaks(s1_peaks: np.ndarray, all_raw_peaks: np.ndarray,
         if s2_end >= s1_next:
             s2_end = min(s2_end, s1_next)
 
+        # ---- Build debug reasoning payload for each state in this cycle ----
+        _t_s1_r = s1 / _sr_f
+        _ivs_r = calculate_bpm_intervals(_bpm_at_time(_t_s1_r), params)
+
+        _exp_s1_ms  = round(_ivs_r.get("s1_nominal",    0.040) * 1000)
+        _exp_sys_ms = round(_ivs_r.get("s1_s2_nominal", 0.300) * 1000)
+        _exp_s2_ms  = round(_ivs_r.get("s2_nominal",    0.030) * 1000)
+        _exp_dia_ms = round(_ivs_r.get("s2_s1_nominal", 0.400) * 1000)
+
+        _meas_s1_ms  = round((s1_end  - s1_start) / _sr_f * 1000) if s1_end  > s1_start else 0
+        _meas_sys_ms = round((s2_start - s1_end)  / _sr_f * 1000) if s2_start > s1_end   else 0
+        _meas_s2_ms  = round((s2_end  - s2_start) / _sr_f * 1000) if s2_end  > s2_start  else 0
+        _meas_dia_ms = round((s1_next - s2_end)   / _sr_f * 1000) if s1_next > s2_end    else 0
+
+        # Before-correction S2 and S1_next positions for this cycle.
+        _bef_s2    = _before_s2_by_s1.get(s1)
+        _bef_s1nxt = _before_s1next_by_s1.get(s1)
+        _bef_sys_ms = round((_bef_s2 - s1) / _sr_f * 1000)        if _bef_s2    is not None else None
+        _bef_dia_ms = round((_bef_s1nxt - _bef_s2) / _sr_f * 1000) if (_bef_s2 is not None and _bef_s1nxt is not None) else None
+
+        # Direct corrections recorded for this s1.
+        _direct = _corrs_by_s1.get(s1, [])
+
+        # Most recent correction strictly before this cycle (cascade source).
+        _cascade_src = None
+        for _ct, _cc in _all_corr_sorted:
+            if _ct >= _t_s1_r - 0.010:
+                break
+            if _cc not in _direct:
+                _cascade_src = _cc
+
+        # Per-state notes.
+        _s1_notes: List[str] = [_fmt_corr_note(c) for c in _direct if c.get("type") == "remove_false_s1"]
+        _sys_notes: List[str] = [_fmt_corr_note(c) for c in _direct
+                                  if c.get("type") in ("resnap_s2", "flip_demote_s1", "sensitive_peak", "spectral_s2")]
+        _s2_notes:  List[str] = [_fmt_corr_note(c) for c in _direct
+                                  if c.get("type") in ("resnap_s2", "sensitive_peak", "spectral_s2")]
+        _dia_notes: List[str] = [_fmt_corr_note(c) for c in _direct
+                                  if c.get("type") in ("insert_s1", "flip_demote_s1")]
+
+        # Cascade shift notes for states that moved but have no direct correction.
+        if _cascade_src:
+            if not _sys_notes and _bef_s2 is not None and abs(_bef_s2 - s2) > _SHIFT_THRESH_SAMP:
+                _sys_notes.append(_fmt_cascade_note(_cascade_src))
+            if not _dia_notes and _bef_s1nxt is not None and abs(_bef_s1nxt - s1_next) > _SHIFT_THRESH_SAMP:
+                _dia_notes.append(_fmt_cascade_note(_cascade_src))
+
+        _reasoning: Dict[str, Any] = {
+            "S1":       {"expected_ms": _exp_s1_ms,  "measured_ms": _meas_s1_ms,  "notes": _s1_notes},
+            "systole":  {"expected_ms": _exp_sys_ms, "measured_ms": _meas_sys_ms, "notes": _sys_notes},
+            "S2":       {"expected_ms": _exp_s2_ms,  "measured_ms": _meas_s2_ms,  "notes": _s2_notes},
+            "diastole": {"expected_ms": _exp_dia_ms, "measured_ms": _meas_dia_ms, "notes": _dia_notes},
+        }
+
         if s1_end > s1_start:
             state_labels[s1_start:s1_end] = STATE_S1
-            state_boundaries.append((s1_start, s1_end, "S1", {"s1": s1}))
+            state_boundaries.append((s1_start, s1_end, "S1", {"s1": s1, "reasoning": _reasoning["S1"]}))
         if s2_start > s1_end:
             state_labels[s1_end:s2_start] = STATE_SYSTOLE
-            state_boundaries.append((s1_end, s2_start, "systole", {"s1": s1, "s2": s2}))
+            state_boundaries.append((s1_end, s2_start, "systole", {"s1": s1, "s2": s2, "reasoning": _reasoning["systole"]}))
         if s2_end > s2_start:
             state_labels[s2_start:s2_end] = STATE_S2
-            state_boundaries.append((s2_start, s2_end, "S2", {"s2": s2}))
+            state_boundaries.append((s2_start, s2_end, "S2", {"s2": s2, "reasoning": _reasoning["S2"]}))
         if s1_next > s2_end:
             state_labels[s2_end:s1_next] = STATE_DIASTOLE
-            state_boundaries.append((s2_end, s1_next, "diastole", {"s2": s2, "s1_next": s1_next}))
+            state_boundaries.append((s2_end, s1_next, "diastole", {"s2": s2, "s1_next": s1_next, "reasoning": _reasoning["diastole"]}))
 
     analysis_data["pass3_state_labels"] = state_labels
     analysis_data["pass3_state_labels_encoding"] = {

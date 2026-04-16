@@ -313,6 +313,7 @@ def prepare_pass3_s1_insert_context(
         "full_sr": int(full_sr),
         "freqs": freqs,
         "mu_s1_db": preproc_s1_db,
+        "mu_s2_db": preproc_s2_db,
         "n_fft": int(n_fft),
         "half_samples": int(half_samples),
         "window_ms": window_ms,
