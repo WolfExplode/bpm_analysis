@@ -20,7 +20,7 @@ from typing import Any, List, Optional, Tuple
 from time_utils import timestamp_str
 from ui_settings_loader import migrate_ui_settings_keys
 from console_logging import configure_analysis_console_logging
-from bpm_input_rename import try_rename_input_with_bpm_annotation
+from bpm_input_rename import rename_analysis_outputs_after_input_bpm_rename, try_rename_input_with_bpm_annotation
 
 class UIMessageType(Enum):
     STATUS = auto()
@@ -62,9 +62,11 @@ class BPMApp:
         self.log_queue = queue.Queue()
         self.settings_file = os.path.join(os.getcwd(), "ui_settings.json")
         self._loading_settings = True  # Prevent saving during initialization
+        self._analysis_running = False
         self._general_console_log_filters: list[tuple[logging.Handler, logging.Filter]] = []
         self._dnd_available = self._init_drag_drop(root)
         self.create_widgets()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close_request)
         self.load_ui_settings()
         self._loading_settings = False  # Re-enable saving after load
         self.root.after(100, self.process_log_queue)
@@ -458,6 +460,9 @@ class BPMApp:
                 continue
             new_abs = self._try_rename_input_with_bpm_annotation(file_path, info)
             if new_abs:
+                rename_analysis_outputs_after_input_bpm_rename(
+                    file_path, new_abs, getattr(result, "output_dir", "") or ""
+                )
                 self._sync_file_list_after_rename(file_path, new_abs)
 
     def _sync_file_list_after_rename(self, old_path: str, new_path: str) -> None:
@@ -685,9 +690,30 @@ class BPMApp:
         else:
             self._update_status(f"Starting batch analysis of {len(self.current_files)} files...")
 
+        self._analysis_running = True
         analysis_thread = threading.Thread(target=self._run_analysis_in_background)
         analysis_thread.daemon = True
         analysis_thread.start()
+
+    def _on_close_request(self):
+        """Quit immediately during analysis (terminate workers, exit process); otherwise close normally."""
+        if self._analysis_running:
+            try:
+                self.save_ui_settings()
+            except Exception:
+                pass
+            try:
+                import multiprocessing
+
+                for p in multiprocessing.active_children():
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            os._exit(0)
+        self.root.destroy()
 
     def _run_analysis_in_background(self):
         try:
@@ -807,3 +833,5 @@ class BPMApp:
             error_info = f"A critical error occurred during batch setup:\n{str(e)}"
             self.log_queue.put(UIMessage(UIMessageType.ERROR, error_info))
             self.root.after(0, lambda: self.analyze_btn.config(state=tk.NORMAL))
+        finally:
+            self._analysis_running = False

@@ -8,6 +8,29 @@ import os
 import re
 from typing import Any, Callable, Dict, Optional
 
+from config import output_stem_from_path
+
+# Suffixes of analysis artifacts under output_directory that use output_stem_from_path(input).
+# Used to rename outputs when the input file is BPM-tagged (single-channel only); order matters for HTML patching.
+_OUTPUT_STEM_SUFFIXES: tuple[str, ...] = (
+    "_pass1.html",
+    "_pass2.html",
+    "_pass2.png",
+    "_pass2.csv",
+    "_pass3.html",
+    "_pass3.png",
+    "_pass3.csv",
+    "_bpm_plot.html",
+    "_bpm_plot.png",
+    "_bpm_plot.csv",
+    "_spectrogram.png",
+    "_filtered_spectrogram.png",
+    "_fft_profiles.html",
+    "_Analysis_Summary.md",
+    "_Debug_Log.md",
+    "_filtered_debug.wav",
+)
+
 # Trailing BPM tags stripped from the stem before appending a fresh annotation (end of stem only).
 _BPM_FILENAME_TAIL_RE = re.compile(
     r"(?:\s+(?:\d+\s*,\s*\d+\s*-\s*\d+\s*bpm|\d+\s*to\s*\d+\s*bpm|\d+\s*bpm))+$",
@@ -96,3 +119,97 @@ def try_rename_input_with_bpm_annotation(
     except OSError as e:
         _warn(warn, str(e), base)
         return None
+
+
+def _patch_html_output_references(
+    file_path: str,
+    old_stem: str,
+    new_stem: str,
+    old_basename: str,
+    new_basename: str,
+) -> None:
+    """Update embedded artifact names after on-disk renames (audio, spectrograms, etc.)."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return
+    # Stem-prefixed outputs first so paths like name_spectrogram.png track the new stem.
+    updated = content.replace(old_stem + "_", new_stem + "_")
+    updated = updated.replace(old_basename, new_basename)
+    # Copied working WAV in the output folder uses stem.wav (even when input was e.g. .mp3).
+    updated = updated.replace(old_stem + ".wav", new_stem + ".wav")
+    if updated != content:
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+            logging.info("Updated embedded file references in %s", os.path.basename(file_path))
+        except OSError as e:
+            logging.warning("Could not update HTML references in %s: %s", file_path, e)
+
+
+def rename_analysis_outputs_after_input_bpm_rename(
+    old_input_path: str,
+    new_input_path: str,
+    output_directory: str,
+) -> None:
+    """
+    After try_rename_input_with_bpm_annotation, rename outputs that used the old input stem
+    so they match the new file name (e.g. name_bpm_plot.png -> name 100,120-206bpm_bpm_plot.png).
+    """
+    if not output_directory or not os.path.isdir(output_directory):
+        return
+    old_stem = output_stem_from_path(old_input_path)
+    new_stem = output_stem_from_path(new_input_path)
+    old_basename = os.path.basename(old_input_path)
+    new_basename = os.path.basename(new_input_path)
+    if old_stem == new_stem and old_basename == new_basename:
+        return
+
+    for suffix in _OUTPUT_STEM_SUFFIXES:
+        old_path = os.path.join(output_directory, old_stem + suffix)
+        new_path = os.path.join(output_directory, new_stem + suffix)
+        if not os.path.isfile(old_path):
+            continue
+        if os.path.exists(new_path):
+            logging.warning(
+                "Skipping output rename (target exists): %s",
+                os.path.basename(new_path),
+            )
+            continue
+        try:
+            os.rename(old_path, new_path)
+            logging.info(
+                "Renamed output %s -> %s",
+                os.path.basename(old_path),
+                os.path.basename(new_path),
+            )
+        except OSError as e:
+            logging.warning("Could not rename output %s: %s", old_path, e)
+            continue
+
+    # Working / copied WAV in the output folder (same stem as original for typical .wav inputs).
+    old_plain_wav = os.path.join(output_directory, old_stem + ".wav")
+    new_plain_wav = os.path.join(output_directory, new_stem + ".wav")
+    if os.path.isfile(old_plain_wav) and not os.path.exists(new_plain_wav):
+        try:
+            os.rename(old_plain_wav, new_plain_wav)
+            logging.info(
+                "Renamed output %s -> %s",
+                os.path.basename(old_plain_wav),
+                os.path.basename(new_plain_wav),
+            )
+        except OSError as e:
+            logging.warning("Could not rename %s: %s", old_plain_wav, e)
+    elif os.path.isfile(old_plain_wav) and os.path.exists(new_plain_wav):
+        logging.warning(
+            "Skipping WAV rename in output dir (target exists): %s",
+            os.path.basename(new_plain_wav),
+        )
+
+    for suffix in _OUTPUT_STEM_SUFFIXES:
+        if not suffix.endswith(".html"):
+            continue
+        html_path = os.path.join(output_directory, new_stem + suffix)
+        if os.path.isfile(html_path):
+            _patch_html_output_references(html_path, old_stem, new_stem, old_basename, new_basename)

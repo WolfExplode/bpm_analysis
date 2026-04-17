@@ -183,6 +183,7 @@ class BatchJobResult:
     fft_data_list: List[Any] = field(default_factory=list)
     bpm_rename_info: Optional[Dict[str, Any]] = None
     analyze_had_multiple_channels: bool = False
+    output_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -293,6 +294,7 @@ def run_single_input_file(
             fft_data_list=fft_data_list,
             bpm_rename_info=bpm_rename_info_for_file,
             analyze_had_multiple_channels=multi_channel,
+            output_dir=os.path.abspath(output_dir),
         )
     except Exception as e:
         logging.error("Error processing '%s': %s", basename, e)
@@ -304,6 +306,7 @@ def run_single_input_file(
             fft_data_list=fft_data_list,
             bpm_rename_info=bpm_rename_info_for_file,
             analyze_had_multiple_channels=multi_channel,
+            output_dir=os.path.abspath(output_dir),
         )
     finally:
         if working_tmp:
