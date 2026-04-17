@@ -183,7 +183,7 @@ DEFAULT_PARAMS = {
     # Missing-beat insertion (S1 only):
     "pass3_enable_insert_missing_s1": True,    # True → add beats in long-RR spans when evidence exists (higher recall; risk of false inserted beats). False → never insert new S1s (safer, but missed-beat gaps remain).
     "pass3_rr_too_long_frac": 1.7,             # Lower → insert beats more readily (aggressive). Higher → only insert on very obvious missed beats (conservative).
-    "pass3_gap_fill_max_duration_sec": 5.0,    # Lower → avoid corrections in dropouts (conservative). Higher → attempt to correct longer gaps (aggressive; can create artifacts in true signal loss).
+    "pass3_gap_fill_max_duration_sec": 10.0,    # Lower → avoid corrections in dropouts (conservative). Higher → attempt to correct longer gaps (aggressive; can create artifacts in true signal loss).
     "pass3_insert_s1_search_window_ms": 180.0, # Larger → easier to find an insert candidate (aggressive; more false insert risk). Smaller → only insert when a peak is very near expected time (conservative).
     # When no raw peak exists in that window, slide FFT windows on bandpass audio and match the S1 template (paired high-confidence S1s):
     "pass3_insert_use_spectrum": True,         # False → only insert on raw peaks (legacy). True → allow spectral placement for faint missed beats.

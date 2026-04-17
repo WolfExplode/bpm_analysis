@@ -20,7 +20,7 @@ import sys
 from typing import Any, Dict, List
 
 from batch_runner import run_batch_parallel
-from bpm_input_rename import try_rename_input_with_bpm_annotation
+from bpm_input_rename import rename_analysis_outputs_after_input_bpm_rename, try_rename_input_with_bpm_annotation
 from config import DEFAULT_PARAMS
 from console_logging import configure_analysis_console_logging
 from ui_settings_loader import batch_cli_defaults_from_ui_settings, load_ui_settings_json
@@ -423,7 +423,9 @@ def main(argv: List[str] | None = None) -> int:
                     os.path.basename(fp),
                 )
                 continue
-            try_rename_input_with_bpm_annotation(fp, info)
+            new_path = try_rename_input_with_bpm_annotation(fp, info)
+            if new_path:
+                rename_analysis_outputs_after_input_bpm_rename(fp, new_path, res.output_dir)
 
     if not summary.all_ok:
         logging.error("Batch finished with errors: %s", ", ".join(summary.error_basenames))
