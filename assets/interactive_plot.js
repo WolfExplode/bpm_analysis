@@ -957,6 +957,63 @@
     return { xVal: tr.x[bestI], yVal };
   }
 
+  /**
+   * Smoothed BPM for this pass at timeSec (nearest sample on the pass BPM curve).
+   * Trace names match plotting.py: Pass 3 / Pass 2 / pass 1 preliminary / final "Average BPM".
+   */
+  function getBpmSmoothedAtTime(timeSec) {
+    if (!plotlyGraphDiv || !plotlyGraphDiv.data || !Number.isFinite(timeSec)) {
+      return null;
+    }
+    const candidateNames = [
+      "BPM (Pass 3)",
+      "BPM (Pass 2)",
+      "BPM (pass 1)",
+      "Average BPM",
+    ];
+    for (let ni = 0; ni < candidateNames.length; ni++) {
+      const idx = findTraceIndexByName(candidateNames[ni]);
+      if (idx === null) continue;
+      const tr = plotlyGraphDiv.data[idx];
+      if (!tr || !tr.x || !tr.y || !tr.x.length) continue;
+
+      let bestI = -1;
+      let bestDt = Infinity;
+      for (let i = 0; i < tr.x.length; i++) {
+        const xVal = tr.x[i];
+        if (!xVal) continue;
+
+        let tSec = null;
+        if (xVal instanceof Date) {
+          const ms = xVal.getTime();
+          if (Number.isFinite(ms)) {
+            tSec = (ms - EPOCH.getTime()) / 1000;
+          }
+        } else {
+          const d = new Date(xVal);
+          const ms = d.getTime();
+          if (Number.isFinite(ms)) {
+            tSec = (ms - EPOCH.getTime()) / 1000;
+          }
+        }
+        if (tSec === null || !Number.isFinite(tSec)) continue;
+
+        const dt = Math.abs(tSec - timeSec);
+        if (dt < bestDt) {
+          bestDt = dt;
+          bestI = i;
+        }
+      }
+
+      if (bestI < 0) continue;
+      const yVal = getNumericFromArrayLike(tr.y, bestI);
+      if (yVal !== null && Number.isFinite(yVal)) {
+        return yVal;
+      }
+    }
+    return null;
+  }
+
   function buildEditablePeaks() {
     editablePeaks = [];
     if (!plotlyGraphDiv || !plotlyGraphDiv.data) return;
@@ -1261,8 +1318,9 @@
 
     // Debug-friendly export: include both logical time and the actual x/y used for plotting.
     // x_plot_sec is just time_sec; y_plot is the envelope/sample value used when drawing.
+    // bpm_smoothed is the pass smoothed BPM curve at that time (nearest point on the plot).
     const header =
-      "time_sec,base_label,manual_label,x_plot_sec,y_plot\n";
+      "time_sec,base_label,manual_label,x_plot_sec,y_plot,bpm_smoothed\n";
     const sorted = [...editablePeaks].sort(
       (a, b) => a.timeSec - b.timeSec
     );
@@ -1301,12 +1359,19 @@
 
       if (!Number.isFinite(yPlot)) missingYCount++;
 
+      const bpmSmoothed = Number.isFinite(t) ? getBpmSmoothedAtTime(t) : null;
+      const safeBpm =
+        bpmSmoothed !== null && Number.isFinite(bpmSmoothed)
+          ? bpmSmoothed.toFixed(3)
+          : "";
+
       return [
         Number.isFinite(t) ? t.toFixed(3) : "",
         p.baseLabel ?? "",
         p.manualLabel ?? "",
         Number.isFinite(t) ? t.toFixed(3) : "",
         safeY,
+        safeBpm,
       ].join(",");
     });
     const csvContent = header + lines.join("\n");

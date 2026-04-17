@@ -20,30 +20,53 @@ EXPORT_X_SCALE = 60.0  # X-axis: multiply by 60 for time in seconds
 # ============================================================================ #
 
 def read_csv_points(file_path):
-    """Read CSV and return list of (x, y, z) coordinates."""
+    """Read CSV and return list of (x, y, z) coordinates.
+    Supports (1) two columns: time, BPM e.g. Time (s), BPM (Pass 3), or
+    (2) HTML labels export: time_sec,...,bpm_smoothed (uses time_sec + bpm_smoothed; skips empty BPM cells).
+    """
     points = []
     try:
         with open(file_path, 'r', newline='') as csvfile:
             csvreader = csv.reader(csvfile)
-            next(csvreader)  # Skip header row
-            
-            for row in csvreader:
-                if len(row) != 2:
-                    continue
-                    
-                try:
-                    time_sec = float(row[0])
-                    value = float(row[1])
-                    x = time_sec * IMPORT_X_SCALE
-                    y = value * IMPORT_Y_SCALE
-                    points.append((x, y, 0.0))
-                except ValueError:
-                    print(f"Skipping invalid row: {row}")
-                    
+            header = next(csvreader, None)
+            if not header:
+                return []
+            lowered = [h.strip().lower() for h in header]
+
+            if "time_sec" in lowered and "bpm_smoothed" in lowered:
+                i_t = lowered.index("time_sec")
+                i_bpm = lowered.index("bpm_smoothed")
+                for row in csvreader:
+                    if len(row) <= max(i_t, i_bpm):
+                        continue
+                    try:
+                        time_sec = float(row[i_t].strip())
+                        b_cell = row[i_bpm].strip()
+                        if not b_cell:
+                            continue
+                        value = float(b_cell)
+                        x = time_sec * IMPORT_X_SCALE
+                        y = value * IMPORT_Y_SCALE
+                        points.append((x, y, 0.0))
+                    except ValueError:
+                        print(f"Skipping invalid row: {row}")
+            else:
+                for row in csvreader:
+                    if len(row) != 2:
+                        continue
+                    try:
+                        time_sec = float(row[0])
+                        value = float(row[1])
+                        x = time_sec * IMPORT_X_SCALE
+                        y = value * IMPORT_Y_SCALE
+                        points.append((x, y, 0.0))
+                    except ValueError:
+                        print(f"Skipping invalid row: {row}")
+
     except Exception as e:
         print(f"Error reading CSV: {e}")
         return []
-    
+
     return points
 
 def create_curve_from_points(point_list, curve_name):
