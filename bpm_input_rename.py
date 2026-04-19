@@ -7,8 +7,9 @@ import logging
 import os
 import re
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import quote
 
-from config import output_stem_from_path
+from config import output_stem_from_path, strip_output_filename_emojis
 
 # Suffixes of analysis artifacts under output_directory that use output_stem_from_path(input).
 # Used to rename outputs when the input file is BPM-tagged (single-channel only); order matters for HTML patching.
@@ -42,6 +43,12 @@ _MAX_FULL_PATH_LEN = 260
 
 def strip_trailing_bpm_filename_annotations(stem: str) -> str:
     return _BPM_FILENAME_TAIL_RE.sub("", stem).rstrip()
+
+
+def _output_audio_basename_for_html(input_basename: str) -> str:
+    """Match plotting._generate_custom_html: emoji-strip stem, keep extension (copied WAV name in output dir)."""
+    stem, ext = os.path.splitext(input_basename)
+    return strip_output_filename_emojis(stem) + ext
 
 
 def format_bpm_filename_annotation(start_bpm: float, min_bpm: float, max_bpm: float) -> str:
@@ -139,6 +146,15 @@ def _patch_html_output_references(
     updated = updated.replace(old_basename, new_basename)
     # Copied working WAV in the output folder uses stem.wav (even when input was e.g. .mp3).
     updated = updated.replace(old_stem + ".wav", new_stem + ".wav")
+    # BPM_ANALYZER_CONFIG stores audioSources / filtered paths with urllib.parse.quote(...) — plain
+    # replace() misses those; the on-disk WAV/HTML renames succeed but the <audio> URL stayed stale.
+    old_audio_bn = _output_audio_basename_for_html(old_basename)
+    new_audio_bn = _output_audio_basename_for_html(new_basename)
+    updated = updated.replace(quote(old_audio_bn), quote(new_audio_bn))
+    updated = updated.replace(
+        quote(old_stem + "_filtered_debug.wav"),
+        quote(new_stem + "_filtered_debug.wav"),
+    )
     if updated != content:
         try:
             with open(file_path, "w", encoding="utf-8") as f:
