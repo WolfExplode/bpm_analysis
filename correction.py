@@ -15,6 +15,7 @@ Structure
 """
 
 import logging
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -125,42 +126,69 @@ def _find_transient_bounds(
         return max(0, peak_idx - half_window), min(n_samples, peak_idx + half_window + 1)
 
 
+def _s2_index_respects_pass3_intervals(
+    s1: int,
+    s1_next: int,
+    s2_idx: int,
+    sample_rate: int,
+    intervals: Dict,
+    params: Dict,
+) -> bool:
+    """
+    True when S2 at s2_idx yields systole/diastole durations that Pass A would not flag
+    as too short (same thresholds as _pass_a_resnap_s2).
+    """
+    if s2_idx <= s1 or s2_idx >= s1_next:
+        return False
+    sr = float(sample_rate)
+    systole = (s2_idx - s1) / sr
+    diastole = (s1_next - s2_idx) / sr
+    s1_s2_min = float(intervals.get("s1_s2_min", 0.12))
+    diastole_min = float(intervals.get("diastole_min", 0.08))
+    sys_slack = float(params.get("pass3_systole_slack_frac", 0.15))
+    dia_slack = float(params.get("pass3_diastole_slack_frac", 0.20))
+    systole_too_short = systole < (1.0 - sys_slack) * s1_s2_min
+    diastole_too_short = diastole < (1.0 - dia_slack) * diastole_min
+    return not (systole_too_short or diastole_too_short)
+
+
 def _choose_s2_near(
     s1: int,
     s1_next: int,
     s2_pred: int,
     half_window_samples: int,
-    all_raw_peaks: np.ndarray,
-    pc: Dict,
     snap_s2: bool,
-    max_snap_dist_sec: float,
+    insert_spectrum_ctx: Optional[Dict],
     sample_rate: int,
+    n_samples: int,
+    params: Dict,
+    intervals: Dict,
 ) -> int:
-    """Choose best S2 near predicted time using label_scores['S2']."""
+    """Choose S2 near predicted time by sliding FFT windows against the S2 spectral template.
+
+    If snap_s2 is False, no spectral context is available, or no confident match is found,
+    returns s2_pred clamped within [s1+1, s1_next-1] — keeps rhythm at nominal ejection time
+    without requiring a peak at that location.
+
+    A spectral winner is rejected if it would make systole or diastole shorter than Pass A's
+    minimum plausible durations for this BPM (calculate_bpm_intervals + slack).
+    """
     s2 = int(max(s1 + 1, min(s2_pred, s1_next - 1)))
-    if (not snap_s2) or (len(all_raw_peaks) == 0) or (s1_next <= s1 + 2):
+    if not snap_s2 or insert_spectrum_ctx is None:
         return s2
-    lo = max(s1 + 1, s2_pred - half_window_samples)
-    hi = min(s1_next - 1, s2_pred + half_window_samples)
-    if hi <= lo:
+    t_pred_sec = float(s2_pred) / float(sample_rate)
+    search_half_sec = float(half_window_samples) / float(sample_rate)
+    result = _choose_s2_spectral(
+        t_pred_sec, search_half_sec, insert_spectrum_ctx, params, sample_rate, n_samples,
+    )
+    if result is None:
         return s2
-    cand = [int(p) for p in all_raw_peaks if lo <= int(p) <= hi]
-    if not cand:
+    sp_idx, _ = result
+    if not (s1 < sp_idx < s1_next):
         return s2
-    best: Optional[int] = None
-    best_score: Optional[float] = None
-    for p in cand:
-        entry = pc.get(int(p)) or {}
-        ls = entry.get("label_scores") if isinstance(entry, dict) else None
-        s2_score = float(ls.get("S2", 0.0)) if isinstance(ls, dict) else 0.0
-        noise_score = float(ls.get("noise", 0.0)) if isinstance(ls, dict) else 0.0
-        dist_sec = abs(p - s2_pred) / float(sample_rate)
-        if dist_sec > max_snap_dist_sec:
-            continue
-        score = (2.0 * s2_score) - (1.0 * noise_score) - (0.75 * dist_sec)
-        if best is None or score > best_score:
-            best, best_score = p, score
-    return int(best) if best is not None else s2
+    if not _s2_index_respects_pass3_intervals(s1, s1_next, int(sp_idx), sample_rate, intervals, params):
+        return s2
+    return int(sp_idx)
 
 
 def _choose_s1_near(
@@ -425,8 +453,9 @@ def _build_reasoning_payload(
     before_s1nxt: Optional[int],
     sample_rate: float,
     shift_thresh_samp: int,
+    snap_s2: bool,
 ) -> Dict[str, Any]:
-    """Build expected/measured ms + warning notes per state for the HTML overlay."""
+    """Build expected/measured ms + warning notes per state for the HTML overlay (cardiac strip hover)."""
     _exp_s1_ms  = round(ivs.get("s1_nominal",    0.040) * 1000)
     _exp_sys_ms = round(ivs.get("s1_s2_nominal", 0.300) * 1000)
     _exp_s2_ms  = round(ivs.get("s2_nominal",    0.030) * 1000)
@@ -442,7 +471,7 @@ def _build_reasoning_payload(
     _sys_notes = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
                   if c.get("type") in ("resnap_s2", "flip_demote_s1", "sensitive_peak", "spectral_s2")]
     _s2_notes  = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
-                  if c.get("type") in ("resnap_s2", "sensitive_peak", "spectral_s2")]
+                  if c.get("type") in ("resnap_s2", "flip_demote_s1", "sensitive_peak", "spectral_s2")]
     _dia_notes = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
                   if c.get("type") in ("insert_s1", "flip_demote_s1")]
 
@@ -451,6 +480,19 @@ def _build_reasoning_payload(
             _sys_notes.append(_fmt_cascade_note(cascade_src, sample_rate))
         if not _dia_notes and before_s1nxt is not None and abs(before_s1nxt - s1_next) > shift_thresh_samp:
             _dia_notes.append(_fmt_cascade_note(cascade_src, sample_rate))
+        if not _s2_notes and before_s2 is not None and abs(before_s2 - s2) > shift_thresh_samp:
+            _s2_notes.append(_fmt_cascade_note(cascade_src, sample_rate))
+
+    # Initial S2 placement uses FFT template matching when pass3_align_s2_to_s2_spectral_profile is on.
+    # There is no per-beat correction dict for that path — explain when S2 still differs from the nominal index.
+    if snap_s2 and not _s2_notes:
+        s2_pred_nom = int(round(s1 + float(ivs.get("s1_s2_nominal", 0.30)) * sample_rate))
+        s2_nom_idx = int(max(s1 + 1, min(s2_pred_nom, s1_next - 1)))
+        if abs(s2 - s2_nom_idx) > shift_thresh_samp:
+            d_ms = round(abs(s2 - s2_nom_idx) / sample_rate * 1000)
+            _s2_notes.append(
+                f"\u2139 S2 placed by S2 spectral template match ({d_ms} ms from nominal ejection time)."
+            )
 
     return {
         "S1":       {"expected_ms": _exp_s1_ms,  "measured_ms": _meas_s1_ms,  "notes": _s1_notes},
@@ -466,17 +508,25 @@ def _build_reasoning_payload(
 
 def _rebuild_s2_events(
     s1_list: List[int],
-    all_raw_peaks: np.ndarray,
-    pc: Dict,
     lt_series: Optional[pd.Series],
     fallback_bpm: float,
     sample_rate: int,
     params: Dict,
     snap_s2: bool,
     snap_half: int,
-    max_snap_dist_sec: float,
+    n_samples: int,
+    insert_spectrum_ctx: Optional[Dict],
+    noise_ivs: Optional[List[Tuple[int, int]]] = None,
+    seed_s2_events: Optional[List[int]] = None,
 ) -> List[int]:
-    """Rebuild s2_events from scratch given the current s1_list."""
+    """Rebuild s2_events from scratch given the current s1_list.
+
+    When ``seed_s2_events`` is set (e.g. after HF noise repair), cycles that still
+    overlap HF-noise keep ``seed_s2_events[j]`` so spectral snap cannot override
+    BPM-based S2 placement for those beats.
+    """
+    niv = noise_ivs or []
+    seed = seed_s2_events
     s2_events: List[int] = []
     for j in range(len(s1_list) - 1):
         a = int(s1_list[j])
@@ -484,17 +534,384 @@ def _rebuild_s2_events(
         if b <= a:
             s2_events.append(int(a))
             continue
+        if (
+            seed is not None
+            and j < len(seed)
+            and niv
+            and _hf_noise_disables_s2_snap(a, b, niv, s2_check=int(seed[j]))
+        ):
+            s2_keep = int(max(a + 1, min(int(seed[j]), b - 1)))
+            s2_events.append(s2_keep)
+            continue
         t_a = a / float(sample_rate)
         bpm_a = _bpm_at_time(t_a, lt_series, fallback_bpm)
         ivs_a = calculate_bpm_intervals(bpm_a, params)
         s1_s2_nominal_a = float(ivs_a.get("s1_s2_nominal", 0.30))
         s2_pred_a = int(round(a + s1_s2_nominal_a * sample_rate))
+        snap_here = _effective_snap_s2(snap_s2, a, b, niv, s2_check=None)
         s2_a = _choose_s2_near(
             a, b, s2_pred_a, snap_half,
-            all_raw_peaks, pc, snap_s2, max_snap_dist_sec, sample_rate,
+            snap_here, insert_spectrum_ctx, sample_rate, n_samples, params, ivs_a,
         )
         s2_events.append(int(s2_a))
     return s2_events
+
+
+def _noise_sample_intervals(
+    noise_event_segments: Optional[List[Dict[str, Any]]],
+    sample_rate: int,
+    n_samples: int,
+) -> List[Tuple[int, int]]:
+    """Convert noise_event_segments (seconds) to half-open sample intervals [lo, hi)."""
+    out: List[Tuple[int, int]] = []
+    if not noise_event_segments or sample_rate <= 0 or n_samples <= 0:
+        return out
+    for seg in noise_event_segments:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            t0 = float(seg.get("start", float("nan")))
+            t1 = float(seg.get("end", float("nan")))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(t0) and math.isfinite(t1)) or t1 <= t0:
+            continue
+        lo = int(math.floor(t0 * sample_rate))
+        hi = int(math.ceil(t1 * sample_rate))
+        lo = max(0, lo)
+        hi = min(n_samples, max(lo + 1, hi))
+        out.append((lo, hi))
+    return out
+
+
+def _cycle_needs_noise_repair(
+    s1: int,
+    s1_next: int,
+    s2: int,
+    noise_ivs: List[Tuple[int, int]],
+) -> bool:
+    """True if the RR window or current S2 index intersects HF-noise intervals."""
+    for lo, hi in noise_ivs:
+        if lo < s1_next and hi > s1:
+            return True
+        if lo <= s2 < hi:
+            return True
+    return False
+
+
+def _hf_noise_disables_s2_snap(
+    s1: int,
+    s1_next: int,
+    noise_ivs: List[Tuple[int, int]],
+    s2_check: Optional[int] = None,
+) -> bool:
+    """
+    True → do not use pass3_align_s2_to_s2_spectral_profile (spectral / sliding template) for this cycle.
+    HF-noise segments make the underlying audio unreliable; use nominal timing only.
+    """
+    if not noise_ivs:
+        return False
+    for lo, hi in noise_ivs:
+        if lo < s1_next and hi > s1:
+            return True
+        if s2_check is not None and lo <= int(s2_check) < hi:
+            return True
+    return False
+
+
+def _effective_snap_s2(
+    snap_s2: bool,
+    s1: int,
+    s1_next: int,
+    noise_ivs: List[Tuple[int, int]],
+    s2_check: Optional[int] = None,
+) -> bool:
+    """Spectral S2 snap allowed only when globally on and cycle not in HF-noise."""
+    if not snap_s2:
+        return False
+    return not _hf_noise_disables_s2_snap(s1, s1_next, noise_ivs, s2_check)
+
+
+def _lt_series_masked_for_noise(
+    lt_series: Optional[pd.Series],
+    noise_event_segments: List[Dict[str, Any]],
+    fallback_bpm: float,
+) -> Optional[pd.Series]:
+    """
+    NaN-out long_term_bpm_series samples whose time index falls inside noise segments,
+    then linearly interpolate so BPM-at-time is smooth through artifacts.
+    """
+    if lt_series is None or getattr(lt_series, "empty", True) or not noise_event_segments:
+        return lt_series
+    try:
+        s = lt_series.astype(float).copy()
+        idx = np.asarray(s.index.values, dtype=np.float64)
+        vals = np.asarray(s.values, dtype=np.float64).copy()
+        for seg in noise_event_segments:
+            if not isinstance(seg, dict):
+                continue
+            try:
+                t0 = float(seg.get("start", float("nan")))
+                t1 = float(seg.get("end", float("nan")))
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(t0) and math.isfinite(t1)) or t1 <= t0:
+                continue
+            mask = (idx >= t0) & (idx <= t1)
+            vals[mask] = np.nan
+        s = pd.Series(vals, index=s.index, dtype=float)
+        s = s.interpolate(method="linear", limit_direction="both")
+        s = s.fillna(float(fallback_bpm))
+        return s
+    except Exception:
+        return lt_series
+
+
+def _noise_full_phase_boundaries(
+    s1: int,
+    s1_next: int,
+    bpm: float,
+    sample_rate: int,
+    params: Dict,
+    n_samples: int,
+) -> Tuple[int, int, int, int, int]:
+    """
+    Build S1 / systole / S2 / diastole sample boundaries from interpolated BPM only.
+
+    Scales nominal phase durations (s1 + systole + s2 + diastole) from
+    calculate_bpm_intervals so their integer sample counts sum to the actual RR
+    (s1_next - s1). Partitions [s1, s1_next): S1 begins at the S1 peak index; S2 peak
+    is the midpoint of the S2 segment. Returns (s1_start, s1_end, s2_start, s2_end, s2_peak).
+    """
+    _ = sample_rate  # kept for API symmetry with other boundary helpers
+    s1_i = int(s1)
+    s1n_i = int(s1_next)
+    rr_samp = s1n_i - s1_i
+    if rr_samp < 4:
+        mid = (s1_i + s1n_i) // 2
+        mid = max(s1_i + 1, min(mid, s1n_i - 1))
+        return s1_i, min(s1_i + 1, s1n_i - 1), mid - 1, mid + 1, mid
+
+    ivs = calculate_bpm_intervals(bpm, params)
+    w1 = float(ivs.get("s1_nominal", 0.040))
+    w2 = float(ivs.get("s1_s2_nominal", 0.30))
+    w3 = float(ivs.get("s2_nominal", 0.030))
+    w4 = float(ivs.get("s2_s1_nominal", 0.40))
+    W = w1 + w2 + w3 + w4
+    if W <= 1e-12:
+        q = max(1, rr_samp // 4)
+        w1 = w2 = w3 = w4 = float(q)
+        W = w1 + w2 + w3 + w4
+
+    n1 = max(1, int(round(rr_samp * w1 / W)))
+    n2 = max(1, int(round(rr_samp * w2 / W)))
+    n3 = max(1, int(round(rr_samp * w3 / W)))
+    n4 = rr_samp - n1 - n2 - n3
+    guard = 0
+    while n4 < 1 and guard < rr_samp:
+        if n2 >= n3 and n2 > 1:
+            n2 -= 1
+        elif n3 > 1:
+            n3 -= 1
+        elif n1 > 1:
+            n1 -= 1
+        else:
+            break
+        n4 = rr_samp - n1 - n2 - n3
+        guard += 1
+    if n4 < 1:
+        n4 = 1
+        n2 = max(1, n2 - 1)
+        n4 = rr_samp - n1 - n2 - n3
+
+    # Contiguous partition of [s1_i, s1n_i): S1 | systole | S2 | diastole
+    s1_start = s1_i
+    s1_end = s1_start + n1
+    s2_start = s1_end + n2
+    s2_end = s2_start + n3
+    if s2_end > s1n_i:
+        overflow = s2_end - s1n_i
+        take = min(overflow, max(0, n2 - 1))
+        n2 -= take
+        s2_start = s1_end + n2
+        s2_end = s2_start + n3
+        if s2_end > s1n_i:
+            take = min(s2_end - s1n_i, max(0, n3 - 1))
+            n3 -= take
+            s2_end = s2_start + n3
+        if s2_end > s1n_i:
+            s2_end = s1n_i - 1
+            s2_start = max(s1_end + 1, s2_end - max(1, n3))
+
+    n4 = s1n_i - s2_end
+    if n4 < 1:
+        s2_end = s1n_i - 1
+        s2_start = max(s1_end + 1, s2_end - max(1, n3))
+
+    s1_start, s1_end, s2_start, s2_end = _resolve_boundary_overlap(
+        s1_start, s1_end, s2_start, s2_end, s1n_i,
+    )
+    s1_start = max(0, s1_start)
+    s2_end = min(s2_end, n_samples, s1n_i)
+    s2_peak = int((s2_start + s2_end) // 2)
+    s2_peak = int(max(s1_i + 1, min(s2_peak, s1n_i - 1)))
+    return s1_start, s1_end, s2_start, s2_end, s2_peak
+
+
+def _seed_s2_from_pass2_pairs(
+    s1_list: List[int],
+    s1_s2_pairs: List[Tuple[int, int]],
+    lt_series: Optional[pd.Series],
+    fallback_bpm: float,
+    sample_rate: int,
+    params: Dict,
+    n_samples: int,
+) -> List[int]:
+    """
+    Build the initial s2_events list from Pass 2's acoustically-detected S1-S2 pairs.
+
+    For each beat (s1_list[j] → s1_list[j+1]):
+    - If Pass 2 paired an S2 with this S1 and it falls inside the RR window, use it.
+    - Otherwise fall back to BPM-nominal ejection time (lone S1, missed S2, etc.).
+    """
+    pair_map: Dict[int, int] = {int(s1): int(s2) for s1, s2 in (s1_s2_pairs or [])}
+    s2_events: List[int] = []
+    for j in range(len(s1_list) - 1):
+        s1 = int(s1_list[j])
+        s1_next = int(s1_list[j + 1])
+        if s1_next <= s1:
+            s2_events.append(s1)
+            continue
+        s2_p2 = pair_map.get(s1)
+        if s2_p2 is not None and s1 < int(s2_p2) < s1_next:
+            s2_events.append(int(s2_p2))
+        else:
+            t_s1 = s1 / float(sample_rate)
+            bpm = _bpm_at_time(t_s1, lt_series, fallback_bpm)
+            ivs = calculate_bpm_intervals(bpm, params)
+            s2_pred = int(round(s1 + float(ivs.get("s1_s2_nominal", 0.30)) * sample_rate))
+            s2_events.append(int(max(s1 + 1, min(s2_pred, s1_next - 1))))
+    return s2_events
+
+
+def _pass_noise_repair_events(
+    s1_list: List[int],
+    s2_events: List[int],
+    noise_event_segments: List[Dict[str, Any]],
+    lt_for_bpm: Optional[pd.Series],
+    fallback_bpm: float,
+    sample_rate: int,
+    params: Dict,
+    n_samples: int,
+) -> Tuple[List[int], List[Dict[str, Any]], bool]:
+    """
+    For cycles overlapping HF-noise, rebuild the full S1/systole/S2/diastole timing from
+    interpolated BPM (proportional phase durations). Updates s2_events to the new S2 peak.
+    """
+    noise_ivs = _noise_sample_intervals(noise_event_segments, sample_rate, n_samples)
+    if not noise_ivs:
+        return s2_events, [], False
+
+    n_cyc = max(0, len(s1_list) - 1)
+    new_s2: List[int] = list(s2_events[:n_cyc])
+    while len(new_s2) < n_cyc:
+        new_s2.append(int(s1_list[len(new_s2)]))
+
+    corrs: List[Dict[str, Any]] = []
+    changed = False
+
+    for i in range(n_cyc):
+        s1 = int(s1_list[i])
+        s1_next = int(s1_list[i + 1])
+        if s1_next <= s1:
+            continue
+        s2_old = int(new_s2[i])
+        s2_old = max(s1 + 1, min(s2_old, s1_next - 1))
+        if not _cycle_needs_noise_repair(s1, s1_next, s2_old, noise_ivs):
+            continue
+        t_mid = 0.5 * float(s1 + s1_next) / float(sample_rate)
+        bpm = _bpm_at_time(t_mid, lt_for_bpm, fallback_bpm)
+        _ss1, _se1, _ss2, _se2, s2_new = _noise_full_phase_boundaries(
+            s1, s1_next, bpm, sample_rate, params, n_samples,
+        )
+        if s2_new != s2_old:
+            new_s2[i] = int(s2_new)
+            changed = True
+            corrs.append({
+                "type": "noise_repair_cycle",
+                "cycle": int(i),
+                "s1": int(s1),
+                "s1_next": int(s1_next),
+                "old_s2": int(s2_old),
+                "new_s2": int(s2_new),
+                "bpm": float(bpm),
+                "s1_start": int(_ss1),
+                "s1_end": int(_se1),
+                "s2_start": int(_ss2),
+                "s2_end": int(_se2),
+            })
+
+    if changed:
+        logging.info(
+            "Pass 3 noise repair: %d cycle(s) — full four-phase BPM partition (HF noise).",
+            len(corrs),
+        )
+    return new_s2, corrs, changed
+
+
+def _build_state_boundaries_before_from_cycles(
+    s1_list: List[int],
+    s2_events: List[int],
+    s1_half: int,
+    s2_half: int,
+    n_samples: int,
+    *,
+    noise_ivs: Optional[List[Tuple[int, int]]] = None,
+    lt_for_bpm: Optional[pd.Series] = None,
+    fallback_bpm: float = 80.0,
+    params: Optional[Dict] = None,
+    sample_rate: int = 600,
+) -> List[Tuple]:
+    """Initial S1/systole/S2/diastole boundary list (no transient edge detection)."""
+    niv = noise_ivs or []
+    pr = params or {}
+    state_boundaries_before: List[Tuple] = []
+    for i in range(len(s1_list) - 1):
+        s1 = int(s1_list[i])
+        s1_next = int(s1_list[i + 1])
+        if s1_next <= s1:
+            continue
+        s2 = int(max(s1 + 1, min(
+            int(s2_events[i]) if i < len(s2_events) else s1,
+            s1_next - 1,
+        )))
+        use_bpm_phases = bool(niv) and _cycle_needs_noise_repair(s1, s1_next, s2, niv)
+        if use_bpm_phases:
+            t_mid = 0.5 * float(s1 + s1_next) / float(sample_rate)
+            bpm = _bpm_at_time(t_mid, lt_for_bpm, fallback_bpm)
+            s1_start, s1_end, s2_start, s2_end, s2 = _noise_full_phase_boundaries(
+                s1, s1_next, bpm, sample_rate, pr, n_samples,
+            )
+            meta_extra = {"noise_bpm_partition": True, "bpm": float(bpm)}
+        else:
+            s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
+                s1, s2, s1_next, s1_half, s2_half, n_samples,
+                use_transient_detection=False,
+            )
+            meta_extra = {}
+        if s1_end > s1_start:
+            m = {"s1": s1, **meta_extra}
+            state_boundaries_before.append((s1_start, s1_end, "S1", m))
+        if s2_start > s1_end:
+            m = {"s1": s1, "s2": s2, **meta_extra}
+            state_boundaries_before.append((s1_end, s2_start, "systole", m))
+        if s2_end > s2_start:
+            m = {"s2": s2, **meta_extra}
+            state_boundaries_before.append((s2_start, s2_end, "S2", m))
+        if s1_next > s2_end:
+            m = {"s2": s2, "s1_next": s1_next, **meta_extra}
+            state_boundaries_before.append((s2_end, s1_next, "diastole", m))
+    return state_boundaries_before
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -504,17 +921,17 @@ def _rebuild_s2_events(
 def _pass_a_resnap_s2(
     s1_list: List[int],
     s2_events: List[int],
-    all_raw_peaks: np.ndarray,
-    pc: Dict,
     lt_series: Optional[pd.Series],
     fallback_bpm: float,
     sample_rate: int,
     params: Dict,
     snap_s2: bool,
     resnap_half: int,
-    max_snap_dist_sec: float,
+    n_samples: int,
+    insert_spectrum_ctx: Optional[Dict],
     systole_slack: float,
     diastole_slack: float,
+    noise_ivs: Optional[List[Tuple[int, int]]] = None,
 ) -> Tuple[List[int], List[Dict[str, Any]], List[Dict[str, Any]], bool]:
     """
     Re-snap S2 when systole/diastole are out of plausible range.
@@ -526,6 +943,7 @@ def _pass_a_resnap_s2(
     new_corrections: List[Dict[str, Any]] = []
     cycle_diagnostics: List[Dict[str, Any]] = []
     changed = False
+    niv = noise_ivs or []
 
     for i in range(len(s1_list) - 1):
         s1 = int(s1_list[i])
@@ -588,11 +1006,12 @@ def _pass_a_resnap_s2(
             },
         })
 
-        if (too_short or too_long or far_from_nominal) and len(all_raw_peaks) > 0:
+        snap_here = _effective_snap_s2(snap_s2, s1, s1_next, niv, s2_check=s2)
+        if (too_short or too_long or far_from_nominal) and snap_here and insert_spectrum_ctx is not None:
             s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
             new_s2 = _choose_s2_near(
                 s1, s1_next, s2_pred, resnap_half,
-                all_raw_peaks, pc, snap_s2, max_snap_dist_sec, sample_rate,
+                snap_here, insert_spectrum_ctx, sample_rate, n_samples, params, intervals,
             )
             new_s2 = int(max(s1 + 1, min(new_s2, s1_next - 1)))
             if new_s2 != s2:
@@ -631,8 +1050,8 @@ def _pass_b_insert_missing_s1(
     min_sep_samples: int,
     snap_s2: bool,
     snap_half: int,
-    max_snap_dist_sec: float,
     insert_spectrum_ctx: Optional[Dict],
+    noise_ivs: Optional[List[Tuple[int, int]]] = None,
 ) -> Tuple[List[int], List[int], List[Dict[str, Any]], bool]:
     """
     Insert missing S1 beats when RR is implausibly long vs the BPM prior.
@@ -715,8 +1134,9 @@ def _pass_b_insert_missing_s1(
             corr["spectrum_score"] = float(spectrum_score)
 
         new_s2_events = _rebuild_s2_events(
-            new_s1_list, all_raw_peaks, pc, lt_series, fallback_bpm,
-            sample_rate, params, snap_s2, snap_half, max_snap_dist_sec,
+            new_s1_list, lt_series, fallback_bpm,
+            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
+            noise_ivs=noise_ivs,
         )
         return new_s1_list, new_s2_events, [corr], True
 
@@ -749,8 +1169,8 @@ def _pass_c_phase_correction(
     min_sep_samples: int,
     snap_s2: bool,
     snap_half: int,
-    max_snap_dist_sec: float,
     insert_spectrum_ctx: Optional[Dict],
+    noise_ivs: Optional[List[Tuple[int, int]]] = None,
 ) -> Tuple[List[int], List[int], List[Dict[str, Any]], bool]:
     """
     Phase-shift cascade corrections (one fix per call; outer loop handles multiples).
@@ -764,6 +1184,7 @@ def _pass_c_phase_correction(
     if not enable_phase_correction or not cycle_diagnostics:
         return s1_list, s2_events, [], False
 
+    niv = noise_ivs or []
     new_s1_list = list(s1_list)
     new_s2_events = list(s2_events)
 
@@ -796,8 +1217,9 @@ def _pass_c_phase_correction(
             continue
         new_s1_list = [p for p in new_s1_list if p != suspect]
         new_s2_events = _rebuild_s2_events(
-            new_s1_list, all_raw_peaks, pc, lt_series, fallback_bpm,
-            sample_rate, params, snap_s2, snap_half, max_snap_dist_sec,
+            new_s1_list, lt_series, fallback_bpm,
+            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
+            noise_ivs=niv,
         )
         corr = {
             "type": "remove_false_s1", "cycle": int(i), "s1": int(s1),
@@ -860,8 +1282,9 @@ def _pass_c_phase_correction(
         new_s1_list.append(new_s1_cand)
         new_s1_list = sorted(list(dict.fromkeys(new_s1_list)))
         new_s2_events = _rebuild_s2_events(
-            new_s1_list, all_raw_peaks, pc, lt_series, fallback_bpm,
-            sample_rate, params, snap_s2, snap_half, max_snap_dist_sec,
+            new_s1_list, lt_series, fallback_bpm,
+            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
+            noise_ivs=niv,
         )
         corr = {
             "type": "flip_demote_s1", "cycle": int(i), "s1": int(s1),
@@ -882,6 +1305,8 @@ def _pass_c_phase_correction(
             continue
         s1     = diag["s1"]
         s1_next = diag["s1_next"]
+        if _hf_noise_disables_s2_snap(int(s1), int(s1_next), niv, s2_check=int(diag["s2"])):
+            continue
         bpm_c  = diag["bpm"]
         ivs_c  = calculate_bpm_intervals(bpm_c, params)
         s1_s2_nominal_c = float(ivs_c.get("s1_s2_nominal", 0.30))
@@ -962,6 +1387,8 @@ def run_pass3_correction(
       pass3_state_boundaries, pass3_state_boundaries_before,
       pass3_s2_events, pass3_corrections, pass3_cycle_diagnostics,
       pass3_spectral_context  (template arrays only; bandpass_audio not stored).
+      pass3_noise_repairs  (optional list when HF noise triggers full four-phase BPM partition before Pass A).
+      pass3_noise_unreliable_windows_samples  (optional list of {start_sample,end_sample} for HF noise intervals).
     """
     if "peak_classifications" not in analysis_data or analysis_data["peak_classifications"] is None:
         analysis_data["peak_classifications"] = {}
@@ -991,10 +1418,15 @@ def run_pass3_correction(
     s2_min_half = max(1, int(round(float(params.get("s2_min_sec", 0.030)) * 0.5 * sample_rate)))
     s2_max_half = max(1, int(round(float(params.get("s2_max_sec", 0.080)) * 0.5 * sample_rate)))
 
-    snap_s2           = bool(params.get("pass3_snap_s2_to_peak",   True))
-    snap_window_ms    = float(params.get("pass3_snap_s2_window_ms", 120.0))
+    snap_s2           = bool(params.get(
+        "pass3_align_s2_to_s2_spectral_profile",
+        params.get("pass3_snap_s2_to_peak", True),
+    ))
+    snap_window_ms    = float(params.get(
+        "pass3_align_s2_window_ms",
+        params.get("pass3_snap_s2_window_ms", 120.0),
+    ))
     snap_half         = max(1, int(round(0.5 * snap_window_ms * sample_rate / 1000.0)))
-    max_snap_dist_sec = float(params.get("pass3_snap_s2_max_dist_sec", 0.12))
     resnap_window_ms  = float(params.get("pass3_resnap_s2_window_ms",  220.0))
     resnap_half       = max(1, int(round(0.5 * resnap_window_ms * sample_rate / 1000.0)))
     systole_slack     = float(params.get("pass3_systole_slack_frac",   0.15))
@@ -1032,6 +1464,14 @@ def run_pass3_correction(
         [int(x) for x in peaks_out.tolist() if 0 <= int(x) < n_samples]
     )))
 
+    noise_segs_raw = analysis_data.get("noise_event_segments") or []
+    noise_ivs_pass3: List[Tuple[int, int]] = []
+    if noise_segs_raw:
+        noise_ivs_pass3 = _noise_sample_intervals(noise_segs_raw, sample_rate, n_samples)
+        analysis_data["pass3_noise_unreliable_windows_samples"] = [
+            {"start_sample": int(lo), "end_sample": int(hi)} for lo, hi in noise_ivs_pass3
+        ]
+
     # ── Build spectral context (S1 + S2 templates) ───────────────────────────
     insert_spectrum_ctx: Optional[Dict] = None
     if bool(params.get("pass3_insert_use_spectrum", True)) and wav_file_path and os.path.isfile(wav_file_path):
@@ -1050,38 +1490,61 @@ def run_pass3_correction(
         except Exception as exc:
             logging.warning("Pass 3: could not build spectral context: %s", exc)
 
-    # ── Build initial s2_events ───────────────────────────────────────────────
-    s2_events = _rebuild_s2_events(
-        s1_list, all_raw_peaks, pc, lt, fallback_bpm,
-        sample_rate, params, snap_s2, snap_half, max_snap_dist_sec,
+    # ── BPM series for Pass 3 (mask + interpolate through HF noise when repair is on) ──
+    lt_pass3 = lt
+    _enable_noise_repair = bool(
+        params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True))
     )
+    if _enable_noise_repair and noise_segs_raw:
+        lt_masked = _lt_series_masked_for_noise(lt, noise_segs_raw, fallback_bpm)
+        if lt_masked is not None:
+            lt_pass3 = lt_masked
+
+    # ── S2 placement: HF noise repair *before* spectral snap (snap cannot override repaired S2) ──
+    noise_corrs: List[Dict[str, Any]] = []
+    if _enable_noise_repair and noise_segs_raw:
+        s2_seed = _rebuild_s2_events(
+            s1_list, lt_pass3, fallback_bpm,
+            sample_rate, params, False, snap_half, n_samples, insert_spectrum_ctx,
+            noise_ivs=noise_ivs_pass3,
+        )
+        s2_seed, noise_corrs, _ = _pass_noise_repair_events(
+            s1_list,
+            s2_seed,
+            noise_segs_raw,
+            lt_pass3,
+            fallback_bpm,
+            sample_rate,
+            params,
+            n_samples,
+        )
+        if noise_corrs:
+            analysis_data["pass3_noise_repairs"] = list(noise_corrs)
+        s2_events = _rebuild_s2_events(
+            s1_list, lt_pass3, fallback_bpm,
+            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
+            noise_ivs=noise_ivs_pass3,
+            seed_s2_events=s2_seed,
+        )
+    else:
+        s2_events = _rebuild_s2_events(
+            s1_list, lt_pass3, fallback_bpm,
+            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
+            noise_ivs=noise_ivs_pass3,
+        )
 
     # ── Before-correction snapshot for HTML before/after visualization ────────
-    state_boundaries_before: List[Tuple] = []
-    for i in range(len(s1_list) - 1):
-        s1     = int(s1_list[i])
-        s1_next = int(s1_list[i + 1])
-        if s1_next <= s1:
-            continue
-        s2 = int(max(s1 + 1, min(
-            int(s2_events[i]) if i < len(s2_events) else s1,
-            s1_next - 1,
-        )))
-        s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
-            s1, s2, s1_next, s1_half, s2_half, n_samples,
-            use_transient_detection=False,
-        )
-        if s1_end > s1_start:
-            state_boundaries_before.append((s1_start, s1_end, "S1", {"s1": s1}))
-        if s2_start > s1_end:
-            state_boundaries_before.append((s1_end, s2_start, "systole", {"s1": s1, "s2": s2}))
-        if s2_end > s2_start:
-            state_boundaries_before.append((s2_start, s2_end, "S2", {"s2": s2}))
-        if s1_next > s2_end:
-            state_boundaries_before.append((s2_end, s1_next, "diastole", {"s2": s2, "s1_next": s1_next}))
+    state_boundaries_before = _build_state_boundaries_before_from_cycles(
+        s1_list, s2_events, s1_half, s2_half, n_samples,
+        noise_ivs=noise_ivs_pass3 or None,
+        lt_for_bpm=lt_pass3,
+        fallback_bpm=fallback_bpm,
+        params=params,
+        sample_rate=sample_rate,
+    )
 
     # ── Correction loop ───────────────────────────────────────────────────────
-    corrections: List[Dict[str, Any]] = []
+    corrections: List[Dict[str, Any]] = list(noise_corrs)
     cycle_diagnostics: List[Dict[str, Any]] = []
 
     for _iter in range(max_iters):
@@ -1093,29 +1556,29 @@ def run_pass3_correction(
                 s2_events.append(int(s1_list[len(s2_events)]))
 
         s2_events, corrs_a, cycle_diagnostics, changed_a = _pass_a_resnap_s2(
-            s1_list, s2_events, all_raw_peaks, pc, lt, fallback_bpm,
-            sample_rate, params, snap_s2, resnap_half, max_snap_dist_sec,
-            systole_slack, diastole_slack,
+            s1_list, s2_events, lt_pass3, fallback_bpm,
+            sample_rate, params, snap_s2, resnap_half, n_samples, insert_spectrum_ctx,
+            systole_slack, diastole_slack, noise_ivs=noise_ivs_pass3,
         )
         corrections.extend(corrs_a)
 
         s1_list, s2_events, corrs_b, changed_b = _pass_b_insert_missing_s1(
-            s1_list, s2_events, all_raw_peaks, pc, lt, fallback_bpm,
+            s1_list, s2_events, all_raw_peaks, pc, lt_pass3, fallback_bpm,
             audio_envelope, analysis_data, n_samples, sample_rate, params,
             enable_insert, rr_too_long_frac, max_fill_gap_sec,
             s1_search_half, s1_search_window_ms, min_sep_samples,
-            snap_s2, snap_half, max_snap_dist_sec, insert_spectrum_ctx,
+            snap_s2, snap_half, insert_spectrum_ctx, noise_ivs=noise_ivs_pass3,
         )
         corrections.extend(corrs_b)
 
         s1_list, s2_events, corrs_c, changed_c = _pass_c_phase_correction(
             s1_list, s2_events, cycle_diagnostics,
-            all_raw_peaks, pc, lt, fallback_bpm,
+            all_raw_peaks, pc, lt_pass3, fallback_bpm,
             audio_envelope, analysis_data, n_samples, sample_rate, params,
             enable_phase_corr, phase_min_score_delta,
             local_peak_win_samp, local_peak_window_ms, local_peak_sens,
             s1_search_half, min_sep_samples,
-            snap_s2, snap_half, max_snap_dist_sec, insert_spectrum_ctx,
+            snap_s2, snap_half, insert_spectrum_ctx, noise_ivs=noise_ivs_pass3,
         )
         corrections.extend(corrs_c)
 
@@ -1123,6 +1586,8 @@ def run_pass3_correction(
             break
 
     peaks_out = np.asarray(s1_list, dtype=np.int64)
+
+    noise_ivs_final: List[Tuple[int, int]] = list(noise_ivs_pass3)
 
     # ── Debug lookup tables for reasoning payload ─────────────────────────────
     _sr_f = float(sample_rate)
@@ -1169,27 +1634,42 @@ def run_pass3_correction(
             s2 = int(s2_events[i])
         else:
             t_s1 = s1 / _sr_f
-            bpm  = _bpm_at_time(t_s1, lt, fallback_bpm)
+            bpm  = _bpm_at_time(t_s1, lt_pass3, fallback_bpm)
             ivs  = calculate_bpm_intervals(bpm, params)
             s2_pred = int(round(s1 + float(ivs.get("s1_s2_nominal", 0.30)) * _sr_f))
+            snap_paint = _effective_snap_s2(snap_s2, s1, s1_next, noise_ivs_final, s2_check=None)
             s2 = _choose_s2_near(
                 s1, s1_next, s2_pred, snap_half,
-                all_raw_peaks, pc, snap_s2, max_snap_dist_sec, sample_rate,
+                snap_paint, insert_spectrum_ctx, sample_rate, n_samples, params, ivs,
             )
         s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
+
+        noise_cycle = bool(noise_ivs_final) and _cycle_needs_noise_repair(
+            s1, s1_next, s2, noise_ivs_final,
+        )
+        if noise_cycle:
+            t_mid_bpm = 0.5 * float(s1 + s1_next) / _sr_f
+            bpm_n = _bpm_at_time(t_mid_bpm, lt_pass3, fallback_bpm)
+            s1_start, s1_end, s2_start, s2_end, s2 = _noise_full_phase_boundaries(
+                s1, s1_next, bpm_n, sample_rate, params, n_samples,
+            )
+        else:
+            s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
+                s1, s2, s1_next, s1_half, s2_half, n_samples,
+                audio_envelope=audio_envelope,
+                edge_alpha=edge_alpha, edge_n_exp=edge_n_exp,
+                min_s1_half=s1_min_half, max_s1_half=s1_max_half,
+                min_s2_half=s2_min_half, max_s2_half=s2_max_half,
+                use_transient_detection=True,
+            )
+
         s2_events_final.append(int(s2))
 
-        s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
-            s1, s2, s1_next, s1_half, s2_half, n_samples,
-            audio_envelope=audio_envelope,
-            edge_alpha=edge_alpha, edge_n_exp=edge_n_exp,
-            min_s1_half=s1_min_half, max_s1_half=s1_max_half,
-            min_s2_half=s2_min_half, max_s2_half=s2_max_half,
-            use_transient_detection=True,
-        )
-
         _t_s1_r = s1 / _sr_f
-        _bpm_r  = _bpm_at_time(_t_s1_r, lt, fallback_bpm)
+        if noise_cycle:
+            _bpm_r = _bpm_at_time(0.5 * float(s1 + s1_next) / _sr_f, lt_pass3, fallback_bpm)
+        else:
+            _bpm_r = _bpm_at_time(_t_s1_r, lt_pass3, fallback_bpm)
         _ivs_r  = calculate_bpm_intervals(_bpm_r, params)
         _bef_s2    = _before_s2_by_s1.get(s1)
         _bef_s1nxt = _before_s1next_by_s1.get(s1)
@@ -1201,10 +1681,11 @@ def run_pass3_correction(
             if _cc not in _direct:
                 _cascade = _cc
 
+        snap_reason = _effective_snap_s2(snap_s2, s1, s1_next, noise_ivs_final, s2_check=s2)
         _reasoning = _build_reasoning_payload(
             s1, s1_start, s1_end, s2, s2_start, s2_end, s1_next,
             _ivs_r, _direct, _cascade, _bef_s2, _bef_s1nxt,
-            _sr_f, _SHIFT_THRESH_SAMP,
+            _sr_f, _SHIFT_THRESH_SAMP, snap_reason,
         )
 
         if s1_end > s1_start:
