@@ -26,10 +26,12 @@ _OUTPUT_STEM_SUFFIXES: tuple[str, ...] = (
     "_bpm_plot.csv",
     "_spectrogram.png",
     "_filtered_spectrogram.png",
+    "_filtered_inverse_spectrogram.png",
     "_fft_profiles.html",
     "_Analysis_Summary.md",
     "_Debug_Log.md",
     "_filtered_debug.wav",
+    "_filtered_inverse_debug.wav",
 )
 
 # Trailing BPM tags stripped from the stem before appending a fresh annotation (end of stem only).
@@ -154,6 +156,10 @@ def _patch_html_output_references(
     updated = updated.replace(
         quote(old_stem + "_filtered_debug.wav"),
         quote(new_stem + "_filtered_debug.wav"),
+    )
+    updated = updated.replace(
+        quote(old_stem + "_filtered_inverse_debug.wav"),
+        quote(new_stem + "_filtered_inverse_debug.wav"),
     )
     if updated != content:
         try:

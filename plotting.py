@@ -466,9 +466,24 @@ class Plotter:
             plot_envelope = audio_envelope
         plot_time = _elapsed_seconds_to_plot_datetimes(plot_secs)
         fig.add_trace(
-            go.Scatter(x=plot_time, y=plot_envelope, name="Audio Envelope", line=dict(color="#47a5c4")),
+            go.Scatter(x=plot_time, y=plot_envelope, name="Audio Envelope Bandpass", line=dict(color="#47a5c4")),
             secondary_y=False,
         )
+
+        inv_env = (pass1_analysis_data or {}).get("inverse_band_envelope")
+        if inv_env is not None and isinstance(inv_env, np.ndarray) and len(inv_env) == n:
+            plot_inv = inv_env[::factor] if factor > 1 and n >= factor else inv_env
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_time,
+                    y=plot_inv,
+                    name="Audio Envelope Noise",
+                    line=dict(color="#b85c9e", width=1.25),
+                    visible="legendonly",
+                    hovertemplate="Audio Envelope Noise: %{y:.4f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
 
         if len(anchor_beats) > 0:
             in_bounds = (anchor_beats >= 0) & (anchor_beats < len(audio_envelope))
@@ -632,7 +647,7 @@ class Plotter:
         if self.fig.data:
             envelope_values = None
             for trace in self.fig.data:
-                if getattr(trace, "name", "") == "Audio Envelope" and hasattr(trace, "y"):
+                if getattr(trace, "name", "") == "Audio Envelope Bandpass" and hasattr(trace, "y"):
                     try:
                         envelope_values = np.asarray(trace.y, dtype=float)
                     except Exception:
@@ -706,7 +721,7 @@ class Plotter:
             plot_time_axis_dt = _elapsed_seconds_to_plot_datetimes(plot_secs)
 
         self.fig.add_trace(
-            go.Scatter(x=plot_time_axis_dt, y=plot_envelope, name="Audio Envelope", line=dict(color="#47a5c4")),
+            go.Scatter(x=plot_time_axis_dt, y=plot_envelope, name="Audio Envelope Bandpass", line=dict(color="#47a5c4")),
             secondary_y=False,
         )
         if (
@@ -722,6 +737,21 @@ class Plotter:
                     line=dict(color="green", width=1.5),
                     hovertemplate="Noise Floor: %{y:.4f}<extra></extra>",
                     visible="legendonly",
+                ),
+                secondary_y=False,
+            )
+
+        inv_env = analysis_data.get("inverse_band_envelope")
+        if inv_env is not None and isinstance(inv_env, np.ndarray) and len(inv_env) == n:
+            plot_inv = inv_env[::factor] if factor > 1 and n >= factor else inv_env
+            self.fig.add_trace(
+                go.Scatter(
+                    x=plot_time_axis_dt,
+                    y=plot_inv,
+                    name="Audio Envelope Noise",
+                    line=dict(color="#b85c9e", width=1.25),
+                    visible="legendonly",
+                    hovertemplate="Audio Envelope Noise: %{y:.4f}<extra></extra>",
                 ),
                 secondary_y=False,
             )
@@ -1385,9 +1415,23 @@ class Plotter:
         if filtered_available:
             logging.info(f"Using filtered debug audio: {filtered_debug_path}")
 
+        filtered_inverse_debug_file_name = f"{base_name}_filtered_inverse_debug.wav"
+        filtered_inverse_debug_path = os.path.join(
+            self.output_directory, filtered_inverse_debug_file_name
+        )
+        filtered_inverse_available = os.path.exists(filtered_inverse_debug_path)
+        filtered_inverse_audio_src = (
+            filtered_inverse_debug_file_name.replace('\\', '/') if filtered_inverse_available else ""
+        )
+        if filtered_inverse_available:
+            logging.info(f"Using inverse-band debug audio: {filtered_inverse_debug_path}")
+
         logging.info(f"HTML audio source path: '{audio_src}'")
         audio_src_escaped = urllib.parse.quote(audio_src)
         filtered_audio_src_escaped = urllib.parse.quote(filtered_audio_src) if filtered_audio_src else ""
+        filtered_inverse_audio_src_escaped = (
+            urllib.parse.quote(filtered_inverse_audio_src) if filtered_inverse_audio_src else ""
+        )
 
         # --- Resolve spectrogram paths ---
         spectrogram_original_src = ""
@@ -1432,6 +1476,10 @@ class Plotter:
         audio_source_options = ['<option value="original">Original Audio</option>']
         if filtered_available:
             audio_source_options.append('<option value="filtered">Filtered Debug</option>')
+        if filtered_inverse_available:
+            audio_source_options.append(
+                '<option value="filtered_inverse">Inverse / high-band debug</option>'
+            )
         audio_source_select_html = (
             '<select id="audio-source-select" class="audio-source-select">'
             + "".join(audio_source_options)
@@ -1455,10 +1503,16 @@ class Plotter:
             "audioSources": {
                 "original": audio_src_escaped,
                 "filtered": filtered_audio_src_escaped,
+                "filtered_inverse": filtered_inverse_audio_src_escaped,
             },
             "audioLabels": {
                 "original": audio_file_name,
                 "filtered": filtered_debug_file_name if filtered_available else audio_file_name,
+                "filtered_inverse": (
+                    filtered_inverse_debug_file_name
+                    if filtered_inverse_available
+                    else audio_file_name
+                ),
             },
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
             "htmlS1S2HoverOnByDefault": hover_on_by_default,

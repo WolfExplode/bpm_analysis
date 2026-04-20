@@ -21,6 +21,28 @@ except ImportError:
     AudioSegment = None
 
 
+def _write_peak_normalized_debug_wav(
+    out_path: str,
+    signal: np.ndarray,
+    orig_sr: int,
+    target_sr: int = 10000,
+) -> None:
+    """Peak-normalize, resample for HTML playback, write int16 mono WAV."""
+    peak = float(np.max(np.abs(signal))) if signal.size else 0.0
+    norm = signal / peak if peak > 0 else signal
+    debug_audio = librosa.resample(norm, orig_sr=orig_sr, target_sr=target_sr)
+    normalized_audio = np.int16(np.clip(debug_audio, -1.0, 1.0) * 32767)
+    wavfile.write(out_path, target_sr, normalized_audio)
+
+
+def _write_peak_normalized_wav_native_rate(out_path: str, signal: np.ndarray, sr: int) -> None:
+    """Peak-normalize and write int16 mono WAV at the given sample rate (no resampling)."""
+    peak = float(np.max(np.abs(signal))) if signal.size else 0.0
+    norm = signal / peak if peak > 0 else signal
+    normalized_audio = np.int16(np.clip(norm, -1.0, 1.0) * 32767)
+    wavfile.write(out_path, int(sr), normalized_audio)
+
+
 def _detect_and_remove_stationary_hum(
     audio_data: np.ndarray, sample_rate: int, params: Dict
 ) -> Tuple[np.ndarray, Optional[float]]:
@@ -323,7 +345,7 @@ def _calculate_dynamic_noise_floor(
 
 def preprocess_audio(
     file_path: str, params: Dict, output_directory: str, output_options: Optional[Dict] = None
-) -> Tuple[np.ndarray, int, Optional[Dict[str, np.ndarray]], pd.Series, np.ndarray]:
+) -> Tuple[np.ndarray, int, pd.Series, np.ndarray, Optional[np.ndarray]]:
     if output_options is None:
         output_options = DEFAULT_OUTPUT_OPTIONS.copy()
 
@@ -349,6 +371,66 @@ def preprocess_audio(
     highcut = float(params.get("preprocess_bandpass_high_hz", 220.0))
     order = int(params.get("preprocess_bandpass_order", 2))
     nyquist = 0.5 * new_sample_rate
+
+    # Out-of-band path: native sample rate so high-pass content is not capped by analysis Nyquist.
+    inverse_band_envelope: Optional[np.ndarray] = None
+    audio_inverse_hp_native: Optional[np.ndarray] = None
+    native_sr_int: Optional[int] = None
+    smooth_ms = float(params.get("envelope_smooth_window_ms", 50))
+
+    if highcut <= 0.0:
+        logging.warning("Inverse-band high-pass skipped: preprocess_bandpass_high_hz must be > 0.")
+    else:
+        try:
+            audio_native, native_sr = librosa.load(file_path, sr=None, mono=True)
+            native_sr_int = int(round(float(native_sr)))
+            audio_native = np.asarray(audio_native, dtype=np.float64)
+        except Exception as e:
+            logging.warning("Could not load native-rate audio for inverse-band path: %s", e)
+            audio_native = np.array([], dtype=np.float64)
+            native_sr_int = None
+
+        if native_sr_int is not None and audio_native.size > 0:
+            nyquist_native = 0.5 * float(native_sr_int)
+            if highcut >= nyquist_native:
+                logging.warning(
+                    "Inverse-band high-pass skipped: cutoff %.1f Hz >= native Nyquist %.1f Hz.",
+                    highcut,
+                    nyquist_native,
+                )
+            else:
+                try:
+                    sos_hp = butter(order, highcut, btype="high", fs=native_sr_int, output="sos")
+                    audio_inverse_hp_native = sosfiltfilt(sos_hp, audio_native)
+                except Exception as e:
+                    logging.warning("Inverse-band high-pass (native rate) failed: %s", e)
+                    audio_inverse_hp_native = None
+
+                if audio_inverse_hp_native is not None and audio_inverse_hp_native.size > 0:
+                    analytic_inv = hilbert(audio_inverse_hp_native)
+                    envelope_inv_raw = np.abs(analytic_inv).astype(np.float64)
+                    smooth_window_nat = max(1, int(smooth_ms * native_sr_int / 1000))
+                    inv_smooth_nat = pd.Series(envelope_inv_raw).rolling(
+                        window=smooth_window_nat, min_periods=1, center=True
+                    ).mean().values
+                    try:
+                        inverse_band_envelope = librosa.resample(
+                            inv_smooth_nat.astype(np.float64),
+                            orig_sr=native_sr_int,
+                            target_sr=new_sample_rate,
+                        )
+                        n_expect = len(audio_downsampled)
+                        if inverse_band_envelope.size > n_expect:
+                            inverse_band_envelope = inverse_band_envelope[:n_expect].copy()
+                        elif inverse_band_envelope.size < n_expect:
+                            pad = n_expect - inverse_band_envelope.size
+                            inverse_band_envelope = np.pad(
+                                inverse_band_envelope, (0, pad), mode="edge"
+                            )
+                    except Exception as e:
+                        logging.warning("Could not resample inverse-band envelope to analysis rate: %s", e)
+                        inverse_band_envelope = None
+
     low, high = lowcut / nyquist, highcut / nyquist
 
     if high >= 1.0:
@@ -360,27 +442,11 @@ def preprocess_audio(
     if save_debug_file:
         base_name = output_stem_from_path(file_path)
         debug_path = os.path.join(output_directory, f"{base_name}_filtered_debug.wav")
-
-        # Resample to a browser-friendly sample rate for HTML5 audio playback.
-        # Very low sample rates (e.g. 500 Hz) can cause some browsers to report
-        # "Audio format not supported", even though the WAV file is valid.
-        # Increased debug_sample_rate to 10k to avoid Empty filters detected in mel frequency basis warnings.
         debug_sample_rate = 10000
         try:
-            peak = float(np.max(np.abs(audio_filtered))) if audio_filtered.size else 0.0
-            if peak > 0:
-                norm = audio_filtered / peak
-            else:
-                norm = audio_filtered
-
-            # Upsample for playback while preserving duration
-            debug_audio = librosa.resample(
-                norm, orig_sr=new_sample_rate, target_sr=debug_sample_rate
+            _write_peak_normalized_debug_wav(
+                debug_path, audio_filtered, new_sample_rate, debug_sample_rate
             )
-            normalized_audio = np.int16(
-                np.clip(debug_audio, -1.0, 1.0) * 32767
-            )
-            wavfile.write(debug_path, debug_sample_rate, normalized_audio)
             logging.info(
                 "Saved filtered audio WAV debug file (%s, %d Hz, int16) for HTML playback.",
                 debug_path,
@@ -388,6 +454,21 @@ def preprocess_audio(
             )
         except Exception as e:
             logging.error(f"Failed to write filtered debug WAV file {debug_path}: {e}")
+
+        if audio_inverse_hp_native is not None and audio_inverse_hp_native.size > 0 and native_sr_int:
+            inv_path = os.path.join(output_directory, f"{base_name}_filtered_inverse_debug.wav")
+            try:
+                _write_peak_normalized_wav_native_rate(
+                    inv_path, audio_inverse_hp_native, native_sr_int
+                )
+                logging.info(
+                    "Saved inverse-band (high-pass @ %.1f Hz) debug WAV (%s, native %d Hz, int16).",
+                    highcut,
+                    inv_path,
+                    native_sr_int,
+                )
+            except Exception as e:
+                logging.error(f"Failed to write inverse-band debug WAV file {inv_path}: {e}")
     elif params["save_filtered_wav"] and not output_options.get("filtered_wav", True):
         logging.info("Skipping filtered audio WAV generation as requested.")
 
@@ -396,11 +477,10 @@ def preprocess_audio(
     analytic = hilbert(audio_filtered)
     envelope_raw = np.abs(analytic).astype(np.float64)
     # Smoothing to reduce ripple (e.g. between S1 and S2); window in ms from config (default 50 ms).
-    smooth_ms = params.get("envelope_smooth_window_ms", 50)
     smooth_window = max(1, int(smooth_ms * new_sample_rate / 1000))
     audio_envelope = pd.Series(envelope_raw).rolling(
         window=smooth_window, min_periods=1, center=True
     ).mean().values
 
     noise_floor, trough_indices = _calculate_dynamic_noise_floor(audio_envelope, new_sample_rate, params)
-    return audio_envelope, new_sample_rate, noise_floor, trough_indices
+    return audio_envelope, new_sample_rate, noise_floor, trough_indices, inverse_band_envelope

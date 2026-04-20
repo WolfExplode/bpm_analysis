@@ -3,10 +3,10 @@
 // This script expects a global configuration object:
 //   window.BPM_ANALYZER_CONFIG = {
 //       totalDuration: number,
-//       spectrogramSources: { original: string, filtered: string },
-//       spectrogramAvailable: { original: boolean, filtered: boolean },
-//       audioSources: { original: string, filtered: string },
-//       audioLabels: { original: string, filtered: string },
+//       spectrogramSources: { original: string, filtered: string, filtered_inverse?: string },
+//       spectrogramAvailable: { original: boolean, filtered: boolean, filtered_inverse?: boolean },
+//       audioSources: { original: string, filtered: string, filtered_inverse?: string },
+//       audioLabels: { original: string, filtered: string, filtered_inverse?: string },
 //       htmlS1S2HoverOnByDefault: boolean  // optional; default false = hover off until user toggles toolbar
 //   };
 
@@ -74,9 +74,11 @@
     if (!AUDIO_SOURCES || typeof AUDIO_SOURCES !== "object") return false;
     const orig = AUDIO_SOURCES.original;
     const filt = AUDIO_SOURCES.filtered;
+    const inv = AUDIO_SOURCES.filtered_inverse;
     return (
       (typeof orig === "string" && orig.trim() !== "") ||
-      (typeof filt === "string" && filt.trim() !== "")
+      (typeof filt === "string" && filt.trim() !== "") ||
+      (typeof inv === "string" && inv.trim() !== "")
     );
   }
 
@@ -772,7 +774,8 @@
 
   // --- Legend category filter (Debug vs Analysis Data) ---
   const LEGEND_DEBUG_NAMES = new Set([
-    "Audio Envelope",
+    "Audio Envelope Bandpass",
+    "Audio Envelope Noise",
     "Dynamic Noise Floor",
     "Troughs",
     "S1 Beats",
@@ -902,11 +905,11 @@
     return null;
   }
 
-  // Sample the "Audio Envelope" trace at an arbitrary time (in seconds).
+  // Sample the "Audio Envelope Bandpass" trace at an arbitrary time (in seconds).
   // Returns { xVal, yVal } or null if the envelope trace is missing.
   function getEnvelopePointAtTime(timeSec) {
     if (!plotlyGraphDiv || !plotlyGraphDiv.data) return null;
-    const idx = findTraceIndexByName("Audio Envelope");
+    const idx = findTraceIndexByName("Audio Envelope Bandpass");
     if (idx === null) return null;
 
     const tr = plotlyGraphDiv.data[idx];
@@ -1162,7 +1165,7 @@
           yVal = getNumericFromArrayLike(baseTrace.y, p.pointIndex) ?? yVal;
         }
 
-        // 3) Fallback: sample from the Audio Envelope trace at this time
+        // 3) Fallback: sample from the Audio Envelope Bandpass trace at this time
         if (yVal === null || typeof yVal === "undefined") {
           const envPt = getEnvelopePointAtTime(p.timeSec);
           if (envPt && typeof envPt.yVal === "number") {
@@ -1344,7 +1347,7 @@
         const baseTrace = plotlyGraphDiv.data[p.traceIndex];
         yPlot = getNumericFromArrayLike(baseTrace.y, p.pointIndex) ?? yPlot;
       } else {
-        // Fallback for robustness: sample from Audio Envelope at this time.
+        // Fallback for robustness: sample from Audio Envelope Bandpass at this time.
         try {
           const envPt = getEnvelopePointAtTime(p.timeSec);
           if (envPt && typeof envPt.yVal === "number") {
@@ -1780,7 +1783,9 @@
   function initSpectrogramControls() {
     if (!spectrogramBtn || !spectrogramOpacity) return;
     const anySpectrogramAvailable =
-      SPECTROGRAM_AVAILABLE.original || SPECTROGRAM_AVAILABLE.filtered;
+      SPECTROGRAM_AVAILABLE.original ||
+      SPECTROGRAM_AVAILABLE.filtered ||
+      SPECTROGRAM_AVAILABLE.filtered_inverse;
     if (!anySpectrogramAvailable) {
       spectrogramBtn.style.opacity = "0.5";
       spectrogramBtn.style.cursor = "not-allowed";

@@ -27,7 +27,8 @@
   }
 
   const LEGEND_DEBUG_NAMES = new Set([
-    "Audio Envelope",
+    "Audio Envelope Bandpass",
+    "Audio Envelope Noise",
     "Dynamic Noise Floor",
     "Troughs",
     "S1 Beats",

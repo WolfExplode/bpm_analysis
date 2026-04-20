@@ -278,12 +278,16 @@ def analyze_wav_file(
 
     # STAGE 1: Initialization
     _ui("Preprocessing audio...")
-    audio_envelope, sample_rate, noise_floor, troughs = preprocess_audio(wav_file_path, params, output_directory, output_options)
+    audio_envelope, sample_rate, noise_floor, troughs, inverse_band_envelope = preprocess_audio(
+        wav_file_path, params, output_directory, output_options
+    )
 
     _ui("Pass 1: detecting anchor beats...")
     start_bpm, peak_time, recovery_time, anchor_beats, pass1_bpm, pass1_analysis_data = _run_pass1(
         audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
     )
+    if inverse_band_envelope is not None:
+        pass1_analysis_data["inverse_band_envelope"] = inverse_band_envelope
 
     # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
     _opts = output_options if output_options is not None else DEFAULT_OUTPUT_OPTIONS.copy()
@@ -327,6 +331,8 @@ def analyze_wav_file(
         pass1_bpm_prior=pass1_bpm_prior,
     )
     s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
+    if inverse_band_envelope is not None:
+        analysis_data["inverse_band_envelope"] = inverse_band_envelope
 
     # Set default output options if none provided (needed for pass 2/pass 3 plot decisions)
     if output_options is None:
