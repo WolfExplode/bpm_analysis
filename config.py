@@ -3,7 +3,7 @@
 import os
 # Values are tuned for typical PCG recordings from consumer hardware.
 # See Documentation.md "Parameter Tuning Rationale" for reasoning behind specific values.
-
+# Note to AI: Stop adding new config parameters unless absolutely necessary.
 
 DEFAULT_PARAMS = {
     # =================================================================================
@@ -163,48 +163,54 @@ DEFAULT_PARAMS = {
     "lone_s1_missed_beat_tolerance_frac": 0.22,  # |span − m×RR| / (m×RR) must be ≤ this (m = k+1).
 
     # =================================================================================
-    # 6. Pass 3 — Correction + State Timeline (Bridge to future Viterbi)
+    # 6. Pass 3 — Correction + dense state timeline (bridge to Pass 4)
     # =================================================================================
-    # Dense per-sample state labels:
-    #   0: S1, 1: systole, 2: S2, 3: diastole
-    "pass3_state_s1_window_ms": 120.0,          # Max search window (ms) for S1 edge detection; acts as a hard cap. Previously the fixed duration—now only a ceiling.
-    "pass3_state_s2_window_ms": 120.0,          # Max search window (ms) for S2 edge detection; acts as a hard cap. Previously the fixed duration—now only a ceiling.
-    # Envelope-based transient edge detection: replaces the fixed ±half-window with a super-Gaussian weighted half-max walk.
-    "pass3_state_edge_alpha": 0.03,             # Fraction of the weighted-peak value that marks the transient edge (0.5 = half-max). Lower → wider S1/S2 marks; higher → tighter.
-    "pass3_state_edge_n_exp": 4.0,             # Super-Gaussian exponent for transient edge weighting. 2 = Gaussian (tracks signal decay); higher = harder cap at window boundary. Keep lower than peak_refine_super_gaussian_n.
-    # S2 snapping near predicted ejection time (Weissler-based nominal):
-    "pass3_snap_s2_to_peak": True,             # True → use S2 evidence in raw peaks to place S2 more accurately. False → S2 stays at predicted ejection time (more stable/physiology-driven, less responsive to real S2 morphology).
-    "pass3_snap_s2_window_ms": 120.0,          # Larger → more chances to find an S2 peak (more aggressive; higher false-snap risk). Smaller → only snap when S2 evidence is close to predicted (more conservative).
-    "pass3_snap_s2_max_dist_sec": 0.12,        # Larger → allow snapping even when predicted ET is off (aggressive). Smaller → enforce near-ET snapping (conservative; may leave S2 un-snapped).
-    # Correction loop:
-    "pass3_correction_max_iters": 32,          # Larger → more opportunities to repair multiple regions (but higher chance of over-correcting). Smaller → faster/more conservative corrections.
-    "pass3_resnap_s2_window_ms": 220.0,        # Larger → stronger attempt to salvage implausible systole by searching farther for S2 (aggressive). Smaller → only minor S2 adjustments (conservative).
-    "pass3_systole_slack_frac": 0.15,          # Larger → tolerate more systole timing variation before intervening (conservative). Smaller → trigger re-snap more often (aggressive).
-    # Missing-beat insertion (S1 only):
-    "pass3_enable_insert_missing_s1": True,    # True → add beats in long-RR spans when evidence exists (higher recall; risk of false inserted beats). False → never insert new S1s (safer, but missed-beat gaps remain).
-    "pass3_rr_too_long_frac": 1.7,             # Lower → insert beats more readily (aggressive). Higher → only insert on very obvious missed beats (conservative).
-    "pass3_gap_fill_max_duration_sec": 10.0,    # Lower → avoid corrections in dropouts (conservative). Higher → attempt to correct longer gaps (aggressive; can create artifacts in true signal loss).
-    "pass3_insert_s1_search_window_ms": 180.0, # Larger → easier to find an insert candidate (aggressive; more false insert risk). Smaller → only insert when a peak is very near expected time (conservative).
-    # When no raw peak exists in that window, slide FFT windows on bandpass audio and match the S1 template (paired high-confidence S1s):
-    "pass3_insert_use_spectrum": True,         # False → only insert on raw peaks (legacy). True → allow spectral placement for faint missed beats.
-    "pass3_insert_spectrum_stride_ms": 5.0,    # Smaller → finer search (slower). Larger → faster/coarser.
-    "pass3_insert_spectrum_min_margin": 0.15,  # Best vs second-best score gap; larger → fewer ambiguous inserts (conservative).
-    "pass3_insert_spectrum_envelope_margin": 1.05,  # Require envelope ≥ this × noise floor at insert index; ≤0 disables (accept any spectrum winner).
-    "pass3_insert_spectrum_target_sr": None,   # None → native WAV sample rate for template + search. Set e.g. 32000 to match fft_aggregate_sr.
-    # Phase-shift cascade correction (Pass C): fixes S1/S2 sequence flips and removes false S1 insertions.
-    "pass3_enable_phase_correction": True,          # True → run Pass C; False → skip entirely (legacy behaviour).
-    "pass3_diastole_slack_frac": 0.20,              # Larger → tolerate more diastole variation before triggering flip correction (conservative). Smaller → trigger more aggressively.
-    "pass3_phase_min_score_delta": 0.15,            # How much higher S2/noise score must be vs S1 score to demote a peak. Larger → only demote obvious mistakes (conservative). Smaller → demote more readily (aggressive).
-    # pass3_rr_too_short_frac removed — Pass C.1 now uses per-state diastole_min from calculate_bpm_intervals (min_diastole_nominal_frac / min_diastole_sec in section 4.1).
-    "pass3_local_peak_window_ms": 100.0,            # Search window (ms) for sensitive local peak re-detection. Larger → more chances to find a faint peak. Smaller → tighter/more precise.
-    "pass3_local_peak_sensitivity_factor": 0.6,     # Height threshold multiplier for local re-detection (fraction of dynamic noise floor). Lower → more sensitive, higher false-positive risk.
-    "pass3_s2_spectral_min_templates": 3,           # Minimum paired S2 peaks needed to enable spectral S2 search. Lower → use spectral search with few templates (confirmation-bias risk). Higher → require more evidence.
+    # pass3's job is to generate the state sequence based on data from pass2. then correct that sequence.
+    #
 
-    # Continuous emission generation (Pass 3 outputs used by Pass 4 Viterbi):
-    "pass3_generate_emissions": True,               # True → run generate_pass3_emissions after correction; generates analysis_data["pass3_emissions"] (n_samples, 3).
-    "pass3_emission_spectral_tau": 5.0,             # Softmax temperature for spectral-score → probability conversion. Higher → softer/flatter distribution; lower → sharper peaks.
-    "pass3_emission_gate_width_ms": 80.0,           # Gaussian gate half-width (ms) around S1/S2 event centers when seeding emission arrays from the state timeline.
-    "pass3_emission_noise_floor": 0.05,             # Constant P(Noise) baseline added at every sample before normalization.
+    # --- 6.1 S2 spectral-profile alignment (global; not “outside the loop” only — also Pass A, B/C rebuilds, final paint) ---
+    "pass3_align_s2_to_s2_spectral_profile": False,  # If True, slide FFT vs S2 spectral template to refine S2 time; if False, nominal ejection-time index only. HF-noise beats still skip alignment per cycle.
+    "pass3_align_s2_window_ms": 120.0,          # FFT search width for initial rebuild / Pass B–C rebuild / final paint (ms), ±half around nominal S2.
+
+    # --- 6.2 HF-noise — four-phase cardiac layout from interpolated BPM (noise_event_segments) ---
+    "pass3_enable_noise_repair": True,          # If True and noise_event_segments exist, BPM-based partition for affected cycles before spectral alignment; LT BPM masked in noise then interpolated.
+
+    # --- 6.3 Correction loop (A→B→C) — iteration cap + Pass A–only search width (pass3_align_s2_to_s2_spectral_profile still applies in Pass A) ---
+    "pass3_correction_max_iters": 200,          # Max rounds of A→B→C; use 0 to skip the loop entirely. Higher fixes more disjoint issues; risks over-correction.
+    "pass3_resnap_s2_window_ms": 220.0,         # Pass A only: FFT search width when re-snapping S2 for implausible systole (wider = search farther).
+    "pass3_systole_slack_frac": 0.15,           # Pass A: tolerate systole this much shorter/longer vs BPM bounds before calling it “bad” (higher = fewer resnaps).
+    "pass3_diastole_slack_frac": 0.20,          # Pass A diagnostics + Pass C: diastole “too short” threshold slack (higher = fewer flip/demote triggers).
+
+    # --- 6.4 Pass B — insert missing S1 in long RR ---
+    "pass3_enable_insert_missing_s1": False,      # True = may add S1 in obvious gap spans (recall vs false-insert risk).
+    "pass3_rr_too_long_frac": 1.7,              # RR must exceed this × expected RR to consider an insert (lower = insert more aggressively).
+    "pass3_gap_fill_max_duration_sec": 10.0,    # Skip insert logic when RR exceeds this (likely dropout, not missed beat).
+    "pass3_insert_s1_search_window_ms": 180.0,  # Total width (ms); ±half around expected beat for raw-peak insert search.
+    "pass3_insert_use_spectrum": False,         # If True, allow S1 template search when no raw peak in window.
+    "pass3_insert_spectrum_stride_ms": 5.0,     # Template search step (ms); smaller = finer, slower.
+    "pass3_insert_spectrum_min_margin": 0.15,   # Min best-vs-second score gap to accept spectral insert.
+    "pass3_insert_spectrum_envelope_margin": 1.05,  # Require envelope ≥ this × dynamic noise floor at candidate; ≤0 disables.
+    "pass3_insert_spectrum_target_sr": None,     # None = WAV native SR for insert template; or set e.g. 32000 to match fft_aggregate_sr.
+
+    # --- 6.5 Pass C — phase / sequence fixes (false S1, S1↔S2 flip, faint S2) ---
+    "pass3_enable_phase_correction": False,     # Master switch for Pass C.
+    "pass3_phase_min_score_delta": 0.15,        # Peak must win label_scores by this much to demote/remove (higher = only obvious fixes).
+    # Pass C.1 short-RR false S1: uses diastole_min from §4.1 (min_diastole_nominal_frac / min_diastole_sec), not a separate pass3_rr_too_short_frac.
+    "pass3_local_peak_window_ms": 100.0,        # Total width (ms); ±half for sensitive local-peak hunt (Pass C.3 / helpers).
+    "pass3_local_peak_sensitivity_factor": 0.6, # vs dynamic noise floor; lower = more sensitive peaks, more false positives.
+    "pass3_s2_spectral_min_templates": 3,      # Min paired S2 templates before any spectral S2 path runs (insert context).
+
+    # --- 6.6 Final state timeline — envelope boundary paint (after loop; also caps the “before” snapshot half-windows) ---
+    "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.
+    "pass3_state_s2_window_ms": 120.0,          # Same for S2.
+    "pass3_state_edge_alpha": 0.03,             # Transient edge threshold as a fraction of weighted peak height (lower → wider S1/S2 regions).
+    "pass3_state_edge_n_exp": 4.0,              # Super-Gaussian exponent for edge weighting (higher → harder cap at window edge). Keep ≤ peak_refine_super_gaussian_n.
+
+    # --- 6.7 Emissions for Pass 4 Viterbi (requires pass3_generate_emissions=True) ---
+    "pass3_generate_emissions": False,          # If True, fill analysis_data["pass3_emissions"] after the timeline is final.
+    "pass3_emission_spectral_tau": 5.0,       # Softmax temperature mapping spectral scores → probabilities.
+    "pass3_emission_gate_width_ms": 80.0,     # Gaussian width scale (ms) for bumps seeded at S1/S2 event times (wider = smoother spread).
+    "pass3_emission_noise_floor": 0.05,         # Baseline P(noise) added before normalizing emission rows.
 
     # =================================================================================
     # 7. Output, HRV & Reporting
