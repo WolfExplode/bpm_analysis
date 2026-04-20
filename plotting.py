@@ -280,6 +280,7 @@ class Plotter:
         self._pass3_state_boundaries = analysis_data.get("pass3_state_boundaries") or []
         self._pass3_state_boundaries_before = analysis_data.get("pass3_state_boundaries_before") or []
         self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
+        self._noise_event_segments = analysis_data.get("noise_event_segments") or []
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
@@ -465,10 +466,32 @@ class Plotter:
             plot_secs = np.arange(n, dtype=np.float64) / self.sample_rate
             plot_envelope = audio_envelope
         plot_time = _elapsed_seconds_to_plot_datetimes(plot_secs)
+        use_nr_main = (pass1_analysis_data or {}).get("noise_removed_envelope") is not None
+        main_env_name = "Noise Removed Envelope" if use_nr_main else "Bandpass Envelope"
         fig.add_trace(
-            go.Scatter(x=plot_time, y=plot_envelope, name="Audio Envelope Bandpass", line=dict(color="#47a5c4")),
+            go.Scatter(x=plot_time, y=plot_envelope, name=main_env_name, line=dict(color="#47a5c4")),
             secondary_y=False,
         )
+
+        bp_pass1 = (pass1_analysis_data or {}).get("bandpass_envelope")
+        if (
+            use_nr_main
+            and bp_pass1 is not None
+            and isinstance(bp_pass1, np.ndarray)
+            and len(bp_pass1) == n
+        ):
+            plot_bp = bp_pass1[::factor] if factor > 1 and n >= factor else bp_pass1
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_time,
+                    y=plot_bp,
+                    name="Bandpass Envelope",
+                    line=dict(color="#3498db", width=1.25, dash="dot"),
+                    visible="legendonly",
+                    hovertemplate="Bandpass Envelope: %{y:.4f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
 
         inv_env = (pass1_analysis_data or {}).get("inverse_band_envelope")
         if inv_env is not None and isinstance(inv_env, np.ndarray) and len(inv_env) == n:
@@ -477,10 +500,30 @@ class Plotter:
                 go.Scatter(
                     x=plot_time,
                     y=plot_inv,
-                    name="Audio Envelope Noise",
+                    name="Noise Envelope",
                     line=dict(color="#b85c9e", width=1.25),
                     visible="legendonly",
-                    hovertemplate="Audio Envelope Noise: %{y:.4f}<extra></extra>",
+                    hovertemplate="Noise Envelope: %{y:.4f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+
+        nr_env = (pass1_analysis_data or {}).get("noise_removed_envelope")
+        if (
+            not use_nr_main
+            and nr_env is not None
+            and isinstance(nr_env, np.ndarray)
+            and len(nr_env) == n
+        ):
+            plot_nr = nr_env[::factor] if factor > 1 and n >= factor else nr_env
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_time,
+                    y=plot_nr,
+                    name="Noise Removed Envelope",
+                    line=dict(color="#e67e22", width=1.25),
+                    visible="legendonly",
+                    hovertemplate="Noise Removed Envelope: %{y:.4f}<extra></extra>",
                 ),
                 secondary_y=False,
             )
@@ -592,6 +635,9 @@ class Plotter:
             plotly_html,
             count=1,
         )
+        self._noise_event_segments = (pass1_analysis_data or {}).get("noise_event_segments") or []
+        self._pass3_state_boundaries = []
+        self._pass3_state_boundaries_before = []
         custom_html = self._generate_custom_html(
             plotly_html, plot_title, base_name, output_options=output_options
         )
@@ -647,7 +693,8 @@ class Plotter:
         if self.fig.data:
             envelope_values = None
             for trace in self.fig.data:
-                if getattr(trace, "name", "") == "Audio Envelope Bandpass" and hasattr(trace, "y"):
+                tname = getattr(trace, "name", "")
+                if tname in ("Bandpass Envelope", "Noise Removed Envelope") and hasattr(trace, "y"):
                     try:
                         envelope_values = np.asarray(trace.y, dtype=float)
                     except Exception:
@@ -720,10 +767,31 @@ class Plotter:
             plot_secs = np.arange(n, dtype=np.float64) / self.sample_rate
             plot_time_axis_dt = _elapsed_seconds_to_plot_datetimes(plot_secs)
 
+        use_nr_main = analysis_data.get("noise_removed_envelope") is not None
+        main_env_name = "Noise Removed Envelope" if use_nr_main else "Bandpass Envelope"
         self.fig.add_trace(
-            go.Scatter(x=plot_time_axis_dt, y=plot_envelope, name="Audio Envelope Bandpass", line=dict(color="#47a5c4")),
+            go.Scatter(x=plot_time_axis_dt, y=plot_envelope, name=main_env_name, line=dict(color="#47a5c4")),
             secondary_y=False,
         )
+        bp_adata = analysis_data.get("bandpass_envelope")
+        if (
+            use_nr_main
+            and bp_adata is not None
+            and isinstance(bp_adata, np.ndarray)
+            and len(bp_adata) == n
+        ):
+            plot_bp = bp_adata[::factor] if factor > 1 and n >= factor else bp_adata
+            self.fig.add_trace(
+                go.Scatter(
+                    x=plot_time_axis_dt,
+                    y=plot_bp,
+                    name="Bandpass Envelope",
+                    line=dict(color="#3498db", width=1.25, dash="dot"),
+                    visible="legendonly",
+                    hovertemplate="Bandpass Envelope: %{y:.4f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
         if (
             plot_noise_floor is not None
             and not plot_noise_floor.empty
@@ -748,10 +816,30 @@ class Plotter:
                 go.Scatter(
                     x=plot_time_axis_dt,
                     y=plot_inv,
-                    name="Audio Envelope Noise",
+                    name="Noise Envelope",
                     line=dict(color="#b85c9e", width=1.25),
                     visible="legendonly",
-                    hovertemplate="Audio Envelope Noise: %{y:.4f}<extra></extra>",
+                    hovertemplate="Noise Envelope: %{y:.4f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+
+        nr_env = analysis_data.get("noise_removed_envelope")
+        if (
+            not use_nr_main
+            and nr_env is not None
+            and isinstance(nr_env, np.ndarray)
+            and len(nr_env) == n
+        ):
+            plot_nr = nr_env[::factor] if factor > 1 and n >= factor else nr_env
+            self.fig.add_trace(
+                go.Scatter(
+                    x=plot_time_axis_dt,
+                    y=plot_nr,
+                    name="Noise Removed Envelope",
+                    line=dict(color="#e67e22", width=1.25),
+                    visible="legendonly",
+                    hovertemplate="Noise Removed Envelope: %{y:.4f}<extra></extra>",
                 ),
                 secondary_y=False,
             )
@@ -1475,11 +1563,9 @@ class Plotter:
         # --- Build audio source <select> ---
         audio_source_options = ['<option value="original">Original Audio</option>']
         if filtered_available:
-            audio_source_options.append('<option value="filtered">Filtered Debug</option>')
+            audio_source_options.append('<option value="filtered">Bandpass Audio</option>')
         if filtered_inverse_available:
-            audio_source_options.append(
-                '<option value="filtered_inverse">Inverse / high-band debug</option>'
-            )
+            audio_source_options.append('<option value="filtered_inverse">Noise Audio</option>')
         audio_source_select_html = (
             '<select id="audio-source-select" class="audio-source-select">'
             + "".join(audio_source_options)
@@ -1507,12 +1593,8 @@ class Plotter:
             },
             "audioLabels": {
                 "original": audio_file_name,
-                "filtered": filtered_debug_file_name if filtered_available else audio_file_name,
-                "filtered_inverse": (
-                    filtered_inverse_debug_file_name
-                    if filtered_inverse_available
-                    else audio_file_name
-                ),
+                "filtered": "Bandpass Audio" if filtered_available else audio_file_name,
+                "filtered_inverse": "Noise Audio" if filtered_inverse_available else audio_file_name,
             },
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
             "htmlS1S2HoverOnByDefault": hover_on_by_default,
@@ -1549,6 +1631,9 @@ class Plotter:
                 config_payload["pass3SegmentsBefore"] = segs_before
             config_payload["pass3SegmentsEncoding"] = getattr(self, "_pass3_state_labels_encoding", {}) or {}
             config_payload["pass3SegmentsDefaultView"] = "after" if segs_after else "before"
+        noise_segs = getattr(self, "_noise_event_segments", None) or []
+        if noise_segs:
+            config_payload["noiseEventSegments"] = noise_segs
         config_json = json.dumps(config_payload)
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))

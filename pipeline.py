@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple, Any, Callable, List
 from scipy.interpolate import interp1d
 
 from audio_preprocessing import preprocess_audio
+from noise_segments import compute_noise_event_segments
 from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
 from plotting import Plotter, prewarm_kaleido_png_export
 from reporting import ReportGenerator
@@ -278,16 +279,41 @@ def analyze_wav_file(
 
     # STAGE 1: Initialization
     _ui("Preprocessing audio...")
-    audio_envelope, sample_rate, noise_floor, troughs, inverse_band_envelope = preprocess_audio(
-        wav_file_path, params, output_directory, output_options
+    (
+        bandpass_envelope,
+        sample_rate,
+        noise_floor,
+        troughs,
+        inverse_band_envelope,
+        noise_removed_envelope,
+    ) = preprocess_audio(wav_file_path, params, output_directory, output_options)
+
+    algorithm_envelope = (
+        noise_removed_envelope
+        if noise_removed_envelope is not None
+        else bandpass_envelope
     )
+
+    noise_event_segments: list = []
+    if inverse_band_envelope is not None:
+        try:
+            noise_event_segments = compute_noise_event_segments(
+                inverse_band_envelope, sample_rate, params
+            )
+        except Exception as e:
+            logging.warning("Noise event segmentation failed: %s", e)
 
     _ui("Pass 1: detecting anchor beats...")
     start_bpm, peak_time, recovery_time, anchor_beats, pass1_bpm, pass1_analysis_data = _run_pass1(
-        audio_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
+        algorithm_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
     )
+    pass1_analysis_data["bandpass_envelope"] = bandpass_envelope
     if inverse_band_envelope is not None:
         pass1_analysis_data["inverse_band_envelope"] = inverse_band_envelope
+    if noise_removed_envelope is not None:
+        pass1_analysis_data["noise_removed_envelope"] = noise_removed_envelope
+    if noise_event_segments:
+        pass1_analysis_data["noise_event_segments"] = noise_event_segments
 
     # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
     _opts = output_options if output_options is not None else DEFAULT_OUTPUT_OPTIONS.copy()
@@ -303,7 +329,7 @@ def analyze_wav_file(
         base_name = output_stem_from_path(original_file_path)
         pass1_html_path = os.path.join(output_directory, f"{base_name}_pass1.html")
         plotter_pass1.plot_pass1_save(
-            audio_envelope,
+            algorithm_envelope,
             anchor_beats,
             _opts,
             pass1_html_path,
@@ -320,7 +346,7 @@ def analyze_wav_file(
         else None
     )
     classifier = PeakClassifier(
-        audio_envelope,
+        algorithm_envelope,
         sample_rate,
         params,
         start_bpm,
@@ -331,8 +357,13 @@ def analyze_wav_file(
         pass1_bpm_prior=pass1_bpm_prior,
     )
     s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
+    analysis_data["bandpass_envelope"] = bandpass_envelope
     if inverse_band_envelope is not None:
         analysis_data["inverse_band_envelope"] = inverse_band_envelope
+    if noise_removed_envelope is not None:
+        analysis_data["noise_removed_envelope"] = noise_removed_envelope
+    if noise_event_segments:
+        analysis_data["noise_event_segments"] = noise_event_segments
 
     # Set default output options if none provided (needed for pass 2/pass 3 plot decisions)
     if output_options is None:
@@ -398,7 +429,7 @@ def analyze_wav_file(
                 source_audio_path=wav_file_path,
             )
             plotter.plot_and_save(
-                audio_envelope,
+                algorithm_envelope,
                 all_raw_peaks,
                 analysis_data,
                 metrics_pass2,
@@ -415,7 +446,7 @@ def analyze_wav_file(
         peaks_after_pass2,
         all_raw_peaks,
         analysis_data,
-        audio_envelope,
+        algorithm_envelope,
         sample_rate,
         params,
         wav_file_path=wav_file_path,
@@ -424,7 +455,7 @@ def analyze_wav_file(
     # Pass 3 continuous emissions (optional, guarded by config).
     if params.get("pass3_generate_emissions", True):
         from emissions import generate_pass3_emissions
-        generate_pass3_emissions(analysis_data, audio_envelope, sample_rate, params, wav_file_path)
+        generate_pass3_emissions(analysis_data, algorithm_envelope, sample_rate, params, wav_file_path)
 
     # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
     peaks_after_pass4 = peaks_after_pass3
@@ -432,7 +463,7 @@ def analyze_wav_file(
         from viterbi import run_pass4_viterbi
         _ui("Pass 4: Viterbi holistic decode...")
         peaks_after_pass4, analysis_data = run_pass4_viterbi(
-            peaks_after_pass3, analysis_data, audio_envelope, sample_rate, params,
+            peaks_after_pass3, analysis_data, algorithm_envelope, sample_rate, params,
         )
 
     # STAGE 6: Metrics from latest pass (peaks_after_pass4 = pass3 when pass4 disabled).
@@ -541,7 +572,7 @@ def analyze_wav_file(
         metrics_after_pass3["peak_bpm_time_sec"] = peak_time
         metrics_after_pass3["recovery_end_time_sec"] = recovery_time
         plotly_figure = plotter.plot_and_save(
-            audio_envelope,
+            algorithm_envelope,
             all_raw_peaks,
             analysis_data,
             metrics_after_pass3,
@@ -571,7 +602,7 @@ def analyze_wav_file(
 
         if output_options.get('debug', True):
             _ui("Writing debug log (Markdown)...")
-            reporter.create_chronological_log(audio_envelope, sample_rate, all_raw_peaks, analysis_data, metrics_after_pass3)
+            reporter.create_chronological_log(algorithm_envelope, sample_rate, all_raw_peaks, analysis_data, metrics_after_pass3)
         else:
             logging.info("Skipping debug log generation as requested.")
     else:
@@ -590,7 +621,7 @@ def analyze_wav_file(
                     wav_file_path,
                     analysis_data.get("peak_classifications", {}),
                     sample_rate,
-                    audio_envelope,
+                    algorithm_envelope,
                     params,
                     target_sr=target_sr,
                 )
@@ -599,7 +630,7 @@ def analyze_wav_file(
                     analysis_data.get("peak_classifications", {}),
                     sample_rate,
                     fft_output_path,
-                    audio_envelope,
+                    algorithm_envelope,
                     params,
                     fft_result=fft_result,
                 )
@@ -609,7 +640,7 @@ def analyze_wav_file(
                     wav_file_path,
                     analysis_data.get("peak_classifications", {}),
                     sample_rate,
-                    audio_envelope,
+                    algorithm_envelope,
                     params,
                 )
                 save_fft_profiles_html(
@@ -617,7 +648,7 @@ def analyze_wav_file(
                     analysis_data.get("peak_classifications", {}),
                     sample_rate,
                     fft_output_path,
-                    audio_envelope,
+                    algorithm_envelope,
                     params,
                     fft_result=fft_result,
                 )

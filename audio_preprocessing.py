@@ -11,7 +11,7 @@ from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
 import numpy as np
 import pandas as pd
 from scipy.io import wavfile
-from scipy.signal import butter, filtfilt, sosfiltfilt, welch, iirnotch, find_peaks, hilbert
+from scipy.signal import butter, filtfilt, firls, sosfiltfilt, welch, iirnotch, find_peaks, hilbert
 import librosa
 
 try:
@@ -19,6 +19,10 @@ try:
 except ImportError:
     logging.warning("Pydub library not found. Install with 'pip install pydub'.")
     AudioSegment = None
+
+# Noise-envelope path only: linear magnitude taper (FIR) — full stop below low edge, ramp to high edge, pass above.
+_NOISE_ENVELOPE_TAPER_LOW_HZ = 300.0
+_NOISE_ENVELOPE_TAPER_HIGH_HZ = 600.0
 
 
 def _write_peak_normalized_debug_wav(
@@ -345,7 +349,7 @@ def _calculate_dynamic_noise_floor(
 
 def preprocess_audio(
     file_path: str, params: Dict, output_directory: str, output_options: Optional[Dict] = None
-) -> Tuple[np.ndarray, int, pd.Series, np.ndarray, Optional[np.ndarray]]:
+) -> Tuple[np.ndarray, int, pd.Series, np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     if output_options is None:
         output_options = DEFAULT_OUTPUT_OPTIONS.copy()
 
@@ -376,10 +380,12 @@ def preprocess_audio(
     inverse_band_envelope: Optional[np.ndarray] = None
     audio_inverse_hp_native: Optional[np.ndarray] = None
     native_sr_int: Optional[int] = None
+    # Noise envelope FIR taper band (for logging / debug); not tied to bandpass highcut.
+    noise_envelope_hp_cut_hz: Optional[float] = None
     smooth_ms = float(params.get("envelope_smooth_window_ms", 50))
 
     if highcut <= 0.0:
-        logging.warning("Inverse-band high-pass skipped: preprocess_bandpass_high_hz must be > 0.")
+        logging.warning("Inverse-band (noise envelope) skipped: preprocess_bandpass_high_hz must be > 0.")
     else:
         try:
             audio_native, native_sr = librosa.load(file_path, sr=None, mono=True)
@@ -392,18 +398,32 @@ def preprocess_audio(
 
         if native_sr_int is not None and audio_native.size > 0:
             nyquist_native = 0.5 * float(native_sr_int)
-            if highcut >= nyquist_native:
+            taper_lo = float(_NOISE_ENVELOPE_TAPER_LOW_HZ)
+            taper_hi = float(_NOISE_ENVELOPE_TAPER_HIGH_HZ)
+            if taper_hi >= nyquist_native:
+                taper_hi = max(taper_lo + 20.0, nyquist_native * 0.999)
+            if taper_lo >= taper_hi - 5.0:
                 logging.warning(
-                    "Inverse-band high-pass skipped: cutoff %.1f Hz >= native Nyquist %.1f Hz.",
-                    highcut,
+                    "Inverse-band (noise taper) skipped: Nyquist %.1f Hz too low for %.0f–%.0f Hz taper.",
                     nyquist_native,
+                    _NOISE_ENVELOPE_TAPER_LOW_HZ,
+                    _NOISE_ENVELOPE_TAPER_HIGH_HZ,
                 )
             else:
+                noise_envelope_hp_cut_hz = taper_hi
                 try:
-                    sos_hp = butter(order, highcut, btype="high", fs=native_sr_int, output="sos")
-                    audio_inverse_hp_native = sosfiltfilt(sos_hp, audio_native)
+                    # Piecewise-linear FIR: 0 → ramp → 1 (firls), zero-phase via filtfilt.
+                    bands = [0.0, taper_lo, taper_lo, taper_hi, taper_hi, nyquist_native]
+                    desired = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+                    width_hz = max(taper_hi - taper_lo, 50.0)
+                    n_est = int(3.5 * float(native_sr_int) / width_hz)
+                    numtaps = max(51, min(801, n_est))
+                    if numtaps % 2 == 0:
+                        numtaps += 1
+                    fir_b = firls(numtaps, bands, desired, fs=float(native_sr_int))
+                    audio_inverse_hp_native = filtfilt(fir_b, 1.0, audio_native)
                 except Exception as e:
-                    logging.warning("Inverse-band high-pass (native rate) failed: %s", e)
+                    logging.warning("Inverse-band FIR taper (native rate) failed: %s", e)
                     audio_inverse_hp_native = None
 
                 if audio_inverse_hp_native is not None and audio_inverse_hp_native.size > 0:
@@ -462,8 +482,9 @@ def preprocess_audio(
                     inv_path, audio_inverse_hp_native, native_sr_int
                 )
                 logging.info(
-                    "Saved inverse-band (high-pass @ %.1f Hz) debug WAV (%s, native %d Hz, int16).",
-                    highcut,
+                    "Saved inverse-band (FIR taper %.0f–%.0f Hz → 1) debug WAV (%s, native %d Hz, int16).",
+                    _NOISE_ENVELOPE_TAPER_LOW_HZ,
+                    _NOISE_ENVELOPE_TAPER_HIGH_HZ,
                     inv_path,
                     native_sr_int,
                 )
@@ -482,5 +503,26 @@ def preprocess_audio(
         window=smooth_window, min_periods=1, center=True
     ).mean().values
 
-    noise_floor, trough_indices = _calculate_dynamic_noise_floor(audio_envelope, new_sample_rate, params)
-    return audio_envelope, new_sample_rate, noise_floor, trough_indices, inverse_band_envelope
+    noise_removed_envelope: Optional[np.ndarray] = None
+    if inverse_band_envelope is not None and len(inverse_band_envelope) == len(audio_envelope):
+        noise_removed_envelope = np.maximum(
+            0.0,
+            audio_envelope.astype(np.float64) - inverse_band_envelope.astype(np.float64),
+        )
+
+    envelope_for_algorithm = (
+        noise_removed_envelope
+        if noise_removed_envelope is not None
+        else audio_envelope
+    )
+    noise_floor, trough_indices = _calculate_dynamic_noise_floor(
+        envelope_for_algorithm, new_sample_rate, params
+    )
+    return (
+        audio_envelope,
+        new_sample_rate,
+        noise_floor,
+        trough_indices,
+        inverse_band_envelope,
+        noise_removed_envelope,
+    )
