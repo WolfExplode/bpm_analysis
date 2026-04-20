@@ -11,7 +11,7 @@ DEFAULT_PARAMS = {
     # Controls the initial loading and filtering of the audio.
     # =================================================================================
     "downsample_factor": 300,     # Factor to reduce sample rate. Higher = faster processing, less detail.
-    "save_filtered_wav": True,    # If True, saves a .wav file of the filtered audio for debugging.
+    "save_filtered_wav": True,    # If True, saves *_filtered_debug.wav and *_filtered_inverse_debug.wav when output_options.filtered_wav is True.
 
     # Main preprocessing: target sample rate and bandpass (single wide band before envelope); typical PCG range for S1/S2.
     "preprocess_target_sample_rate": 600,   # Resample to this Hz for analysis; lower = faster, less detail.
@@ -28,6 +28,11 @@ DEFAULT_PARAMS = {
     "hum_notch_q": 35.0,                  # Q factor, Higher = narrower notch (try 35-40 for sharp hums)
 
     "envelope_smooth_window_ms": 40,      # Rolling window (ms) for smoothing Hilbert envelope after abs(analytic). Matches common PCG practice (e.g. 50 ms).
+
+    # HF noise strip: merge / min-duration only (threshold quantile is hardcoded in noise_segments.py).
+    "noise_segment_merge_gap_ms": 500.0,    # Merge if gap < this before expand_ms and again after (expanded time).
+    "noise_segment_min_duration_ms": 20.0,  # Drop shorter noisy blips after merge.
+    "noise_segment_expand_ms": 70.0,       # Pad each segment start/end by this (quantile gate tends to clip early/late).
 
     # =================================================================================
     # 2. Signal Feature Detection
@@ -223,7 +228,7 @@ DEFAULT_PARAMS = {
     "hrv_global_min_duration_sec": 300.0,    # Only compute global spectrum when recording duration >= this (5 min).
     "plot_amplitude_scale_factor": 250.0,    # Adjusts the default y-axis range of the signal amplitude plot.
     # In plotting.py: avoid dashed lines (dash=...) for line traces--they cause noticeable lag.
-    "plot_downsample_factor": 4,            # Downsample only large traces: Audio Envelope and Dynamic Noise Floor (keep 1 of every N points). Does NOT apply to Average S1/S2 contractility, BPM, HRV, or markers.
+    "plot_downsample_factor": 4,            # Downsample only large traces: Bandpass / Noise Removed / Noise Envelope, Dynamic Noise Floor (keep 1 of every N points). Does NOT apply to Average S1/S2 contractility, BPM, HRV, or markers.
     "pass1_bpm_outlier_window_sec": 10.0,   # Half-window (seconds) for pass 1 BPM outlier removal: keep point if within median ± k*MAD in [t-window, t+window].
     "pass1_bpm_outlier_mad_k": 2.5,         # Number of MADs. Lower = more aggressive outlier removal.
     "pass1_bpm_global_outlier_mad_k": 5.0,    # After local pass: global median ± k*MAD. Higher = less sensitive. Set <= 0 to disable this pass.

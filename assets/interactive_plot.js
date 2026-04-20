@@ -3,10 +3,10 @@
 // This script expects a global configuration object:
 //   window.BPM_ANALYZER_CONFIG = {
 //       totalDuration: number,
-//       spectrogramSources: { original: string, filtered: string },
-//       spectrogramAvailable: { original: boolean, filtered: boolean },
-//       audioSources: { original: string, filtered: string },
-//       audioLabels: { original: string, filtered: string },
+//       spectrogramSources: { original: string, filtered: string, filtered_inverse?: string },
+//       spectrogramAvailable: { original: boolean, filtered: boolean, filtered_inverse?: boolean },
+//       audioSources: { original: string, filtered: string, filtered_inverse?: string },
+//       audioLabels: { original: string, filtered: string, filtered_inverse?: string },
 //       htmlS1S2HoverOnByDefault: boolean  // optional; default false = hover off until user toggles toolbar
 //   };
 
@@ -49,8 +49,18 @@
   const chartContainer = document.getElementById("chart-container");
   const audioFileNameEl = document.getElementById("audio-file-name");
   const audioSourceSelect = document.getElementById("audio-source-select");
-  const stateStripCanvas = document.getElementById("state-strip-plot");
-  const stateStripTooltip = document.getElementById("state-strip-tooltip");
+  const cardiacStateStripCanvas = document.getElementById("cardiac-state-strip-plot");
+  const cardiacStateStripTooltip = document.getElementById("cardiac-state-strip-tooltip");
+  const noiseStateStripCanvas = document.getElementById("noise-state-strip-plot");
+  const noiseStateStripTooltip = document.getElementById("noise-state-strip-tooltip");
+  const _rawNoiseSegs = Array.isArray(cfg.noiseEventSegments) ? cfg.noiseEventSegments : [];
+  const NOISE_EVENT_SEGMENTS = _rawNoiseSegs
+    .slice()
+    .sort((a, b) => {
+      const s0 = typeof a.start === "number" ? a.start : parseFloat(a.start);
+      const s1 = typeof b.start === "number" ? b.start : parseFloat(b.start);
+      return s0 - s1;
+    });
   const axisGridButtons = document.querySelectorAll("[data-grid-axis]");
   const labelTypeSelect = document.getElementById("label-type-select");
   const applyLabelBtn = document.getElementById("apply-label-btn");
@@ -74,9 +84,11 @@
     if (!AUDIO_SOURCES || typeof AUDIO_SOURCES !== "object") return false;
     const orig = AUDIO_SOURCES.original;
     const filt = AUDIO_SOURCES.filtered;
+    const inv = AUDIO_SOURCES.filtered_inverse;
     return (
       (typeof orig === "string" && orig.trim() !== "") ||
-      (typeof filt === "string" && filt.trim() !== "")
+      (typeof filt === "string" && filt.trim() !== "") ||
+      (typeof inv === "string" && inv.trim() !== "")
     );
   }
 
@@ -268,12 +280,13 @@
     if (pass3StripRaf) return;
     pass3StripRaf = window.requestAnimationFrame(() => {
       pass3StripRaf = 0;
-      drawPass3StateStrip();
+      drawNoiseStateStrip();
+      drawPass3CardiacStateStrip();
     });
   }
 
-  function drawPass3StateStrip() {
-    if (!stateStripCanvas || !pass3SegmentsActive || pass3SegmentsActive.length === 0) return;
+  function drawPass3CardiacStateStrip() {
+    if (!cardiacStateStripCanvas || !pass3SegmentsActive || pass3SegmentsActive.length === 0) return;
     if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
     const fl = plotlyGraphDiv._fullLayout;
     const xaxis = fl.xaxis;
@@ -297,14 +310,15 @@
     const stripHeight = 10;
     const top = topPlot + heightPlot - stripHeight - 1;
 
-    stateStripCanvas.style.left = `${left}px`;
-    stateStripCanvas.style.top = `${top}px`;
-    stateStripCanvas.style.width = `${width}px`;
-    stateStripCanvas.style.height = `${stripHeight}px`;
-    stateStripCanvas.width = Math.max(1, width);
-    stateStripCanvas.height = Math.max(1, stripHeight);
+    cardiacStateStripCanvas.style.left = `${left}px`;
+    cardiacStateStripCanvas.style.top = `${top}px`;
+    cardiacStateStripCanvas.style.width = `${width}px`;
+    cardiacStateStripCanvas.style.height = `${stripHeight}px`;
+    cardiacStateStripCanvas.style.display = "";
+    cardiacStateStripCanvas.width = Math.max(1, width);
+    cardiacStateStripCanvas.height = Math.max(1, stripHeight);
 
-    const ctx = stateStripCanvas.getContext("2d");
+    const ctx = cardiacStateStripCanvas.getContext("2d");
     if (!ctx) return;
 
     const colors = {
@@ -342,8 +356,75 @@
     }
   }
 
+  function drawNoiseStateStrip() {
+    if (!noiseStateStripCanvas || !plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
+    if (!NOISE_EVENT_SEGMENTS || NOISE_EVENT_SEGMENTS.length === 0) {
+      noiseStateStripCanvas.style.display = "none";
+      noiseStateStripCanvas.width = 1;
+      noiseStateStripCanvas.height = 1;
+      return;
+    }
+    const fl = plotlyGraphDiv._fullLayout;
+    const xaxis = fl.xaxis;
+    const yaxis = fl.yaxis;
+    if (!xaxis || !yaxis) return;
+    if (!xAxisRange || xAxisRange.length < 2) return;
+
+    const x0ms = new Date(xAxisRange[0]).getTime();
+    const x1ms = new Date(xAxisRange[1]).getTime();
+    if (!Number.isFinite(x0ms) || !Number.isFinite(x1ms) || x1ms <= x0ms) return;
+
+    const left = Math.floor(xaxis._offset || 0);
+    const width = Math.floor(xaxis._length || 0);
+    const topPlot = Math.floor(yaxis._offset || 0);
+    const heightPlot = Math.floor(yaxis._length || 0);
+    if (width <= 1 || heightPlot <= 1) return;
+
+    const stripHeight = 10;
+    const stripGap = 2;
+    const cardiacTop = topPlot + heightPlot - stripHeight - 1;
+    const top = cardiacTop - stripHeight - stripGap;
+
+    noiseStateStripCanvas.style.left = `${left}px`;
+    noiseStateStripCanvas.style.top = `${top}px`;
+    noiseStateStripCanvas.style.width = `${width}px`;
+    noiseStateStripCanvas.style.height = `${stripHeight}px`;
+    noiseStateStripCanvas.style.display = "";
+    noiseStateStripCanvas.width = Math.max(1, width);
+    noiseStateStripCanvas.height = Math.max(1, stripHeight);
+
+    const ctx = noiseStateStripCanvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, width, stripHeight);
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(0, 0, width, stripHeight);
+
+    const span = x1ms - x0ms;
+    const noiseColor = "#c0392b";
+    for (const seg of NOISE_EVENT_SEGMENTS) {
+      if (!seg) continue;
+      const startSec = typeof seg.start === "number" ? seg.start : parseFloat(seg.start);
+      const endSec = typeof seg.end === "number" ? seg.end : parseFloat(seg.end);
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) continue;
+
+      const s0 = secondsToDatetime(startSec).getTime();
+      const s1 = secondsToDatetime(endSec).getTime();
+      if (s1 <= x0ms || s0 >= x1ms) continue;
+      const cl0 = Math.max(x0ms, s0);
+      const cl1 = Math.min(x1ms, s1);
+      const px0 = Math.floor(((cl0 - x0ms) / span) * width);
+      const px1 = Math.ceil(((cl1 - x0ms) / span) * width);
+      const x = Math.max(0, Math.min(width, px0));
+      const xEnd = Math.max(0, Math.min(width, px1));
+      if (xEnd <= x) continue;
+      ctx.fillStyle = noiseColor;
+      ctx.fillRect(x, 0, xEnd - x, stripHeight);
+    }
+  }
+
   // -------------------------------------------------------------------------
-  // State-strip hover tooltip
+  // Cardiac / noise strip hover tooltips
   // -------------------------------------------------------------------------
   function _segmentAtTime(tSec) {
     if (!pass3SegmentsActive || pass3SegmentsActive.length === 0) return null;
@@ -378,38 +459,108 @@
     return lines.join("\n");
   }
 
-  function initStateStripHover() {
-    if (!stateStripCanvas || !stateStripTooltip) return;
+  function _noiseSegmentAtTime(tSec) {
+    if (!NOISE_EVENT_SEGMENTS || NOISE_EVENT_SEGMENTS.length === 0) return null;
+    let lo = 0;
+    let hi = NOISE_EVENT_SEGMENTS.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const seg = NOISE_EVENT_SEGMENTS[mid];
+      const s0 = typeof seg.start === "number" ? seg.start : parseFloat(seg.start);
+      const s1 = typeof seg.end === "number" ? seg.end : parseFloat(seg.end);
+      if (tSec < s0) hi = mid - 1;
+      else if (tSec >= s1) lo = mid + 1;
+      else return seg;
+    }
+    return null;
+  }
 
-    stateStripCanvas.addEventListener("mousemove", (e) => {
-      if (!xAxisRange || xAxisRange.length < 2) return;
-      const rect = stateStripCanvas.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const w = rect.width || 1;
-      const x0ms = new Date(xAxisRange[0]).getTime();
-      const x1ms = new Date(xAxisRange[1]).getTime();
-      const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms)) / 1000;
-      const seg = _segmentAtTime(tSec);
-      const text = _formatTooltip(seg);
-      if (!text) {
-        stateStripTooltip.classList.add("hidden");
-        return;
-      }
-      stateStripTooltip.textContent = text;
-      stateStripTooltip.classList.remove("hidden");
-      // Position tooltip near cursor, keeping it on screen.
-      const ttW = 340, ttH = 90;
-      let tx = e.clientX + 14;
-      let ty = e.clientY - 10;
-      if (tx + ttW > window.innerWidth)  tx = e.clientX - ttW - 14;
-      if (ty + ttH > window.innerHeight) ty = e.clientY - ttH - 4;
-      stateStripTooltip.style.left = `${Math.max(0, tx)}px`;
-      stateStripTooltip.style.top  = `${Math.max(0, ty)}px`;
-    });
+  function _formatNoiseTooltip(seg) {
+    if (!seg) return null;
+    const t0 = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
+    const t1 = typeof seg.end === "number" ? seg.end.toFixed(2) : "?";
+    const dur =
+      seg.duration_ms !== undefined && seg.duration_ms !== null
+        ? String(seg.duration_ms)
+        : "";
+    const peak = seg.peak !== undefined && seg.peak !== null ? String(seg.peak) : "";
+    const mean = seg.mean !== undefined && seg.mean !== null ? String(seg.mean) : "";
+    const lines = [`Noisy segment (HF envelope)`, `${t0}s – ${t1}s`];
+    if (dur) lines.push(`Duration: ${dur} ms`);
+    if (peak) lines.push(`Peak noise env: ${peak}`);
+    if (mean) lines.push(`Mean noise env: ${mean}`);
+    if (seg.threshold !== undefined && seg.threshold !== null)
+      lines.push(`HF env (quantile): ≥ ${seg.threshold}`);
+    if (
+      seg.min_amplitude_gate !== undefined &&
+      seg.min_amplitude_gate !== null
+    )
+      lines.push(`HF env (floor): > ${seg.min_amplitude_gate}`);
+    return lines.join("\n");
+  }
 
-    stateStripCanvas.addEventListener("mouseleave", () => {
-      stateStripTooltip.classList.add("hidden");
-    });
+  function initCardiacAndNoiseStripHovers() {
+    if (cardiacStateStripCanvas && cardiacStateStripTooltip) {
+      cardiacStateStripCanvas.addEventListener("mousemove", (e) => {
+        if (!xAxisRange || xAxisRange.length < 2) return;
+        const rect = cardiacStateStripCanvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const w = rect.width || 1;
+        const x0ms = new Date(xAxisRange[0]).getTime();
+        const x1ms = new Date(xAxisRange[1]).getTime();
+        const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms)) / 1000;
+        const seg = _segmentAtTime(tSec);
+        const text = _formatTooltip(seg);
+        if (!text) {
+          cardiacStateStripTooltip.classList.add("hidden");
+          return;
+        }
+        cardiacStateStripTooltip.textContent = text;
+        cardiacStateStripTooltip.classList.remove("hidden");
+        const ttW = 340;
+        const ttH = 90;
+        let tx = e.clientX + 14;
+        let ty = e.clientY - 10;
+        if (tx + ttW > window.innerWidth) tx = e.clientX - ttW - 14;
+        if (ty + ttH > window.innerHeight) ty = e.clientY - ttH - 4;
+        cardiacStateStripTooltip.style.left = `${Math.max(0, tx)}px`;
+        cardiacStateStripTooltip.style.top = `${Math.max(0, ty)}px`;
+      });
+      cardiacStateStripCanvas.addEventListener("mouseleave", () => {
+        cardiacStateStripTooltip.classList.add("hidden");
+      });
+    }
+
+    if (noiseStateStripCanvas && noiseStateStripTooltip) {
+      noiseStateStripCanvas.addEventListener("mousemove", (e) => {
+        if (!xAxisRange || xAxisRange.length < 2) return;
+        const rect = noiseStateStripCanvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const w = rect.width || 1;
+        const x0ms = new Date(xAxisRange[0]).getTime();
+        const x1ms = new Date(xAxisRange[1]).getTime();
+        const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms)) / 1000;
+        const seg = _noiseSegmentAtTime(tSec);
+        const text = _formatNoiseTooltip(seg);
+        if (!text) {
+          noiseStateStripTooltip.classList.add("hidden");
+          return;
+        }
+        noiseStateStripTooltip.textContent = text;
+        noiseStateStripTooltip.classList.remove("hidden");
+        const ttW = 340;
+        const ttH = 110;
+        let tx = e.clientX + 14;
+        let ty = e.clientY - 10;
+        if (tx + ttW > window.innerWidth) tx = e.clientX - ttW - 14;
+        if (ty + ttH > window.innerHeight) ty = e.clientY - ttH - 4;
+        noiseStateStripTooltip.style.left = `${Math.max(0, tx)}px`;
+        noiseStateStripTooltip.style.top = `${Math.max(0, ty)}px`;
+      });
+      noiseStateStripCanvas.addEventListener("mouseleave", () => {
+        noiseStateStripTooltip.classList.add("hidden");
+      });
+    }
   }
 
   function initPass3StateViewSelector() {
@@ -772,7 +923,9 @@
 
   // --- Legend category filter (Debug vs Analysis Data) ---
   const LEGEND_DEBUG_NAMES = new Set([
-    "Audio Envelope",
+    "Bandpass Envelope",
+    "Noise Envelope",
+    "Noise Removed Envelope",
     "Dynamic Noise Floor",
     "Troughs",
     "S1 Beats",
@@ -902,11 +1055,13 @@
     return null;
   }
 
-  // Sample the "Audio Envelope" trace at an arbitrary time (in seconds).
-  // Returns { xVal, yVal } or null if the envelope trace is missing.
+  // Sample the primary signal envelope trace at an arbitrary time (in seconds).
+  // Prefers "Noise Removed Envelope" when present (algorithm input), else "Bandpass Envelope".
+  // Returns { xVal, yVal } or null if no matching trace exists.
   function getEnvelopePointAtTime(timeSec) {
     if (!plotlyGraphDiv || !plotlyGraphDiv.data) return null;
-    const idx = findTraceIndexByName("Audio Envelope");
+    let idx = findTraceIndexByName("Noise Removed Envelope");
+    if (idx === null) idx = findTraceIndexByName("Bandpass Envelope");
     if (idx === null) return null;
 
     const tr = plotlyGraphDiv.data[idx];
@@ -1162,7 +1317,7 @@
           yVal = getNumericFromArrayLike(baseTrace.y, p.pointIndex) ?? yVal;
         }
 
-        // 3) Fallback: sample from the Audio Envelope trace at this time
+        // 3) Fallback: sample from the Bandpass Envelope trace at this time
         if (yVal === null || typeof yVal === "undefined") {
           const envPt = getEnvelopePointAtTime(p.timeSec);
           if (envPt && typeof envPt.yVal === "number") {
@@ -1344,7 +1499,7 @@
         const baseTrace = plotlyGraphDiv.data[p.traceIndex];
         yPlot = getNumericFromArrayLike(baseTrace.y, p.pointIndex) ?? yPlot;
       } else {
-        // Fallback for robustness: sample from Audio Envelope at this time.
+        // Fallback for robustness: sample from Bandpass Envelope at this time.
         try {
           const envPt = getEnvelopePointAtTime(p.timeSec);
           if (envPt && typeof envPt.yVal === "number") {
@@ -1780,7 +1935,9 @@
   function initSpectrogramControls() {
     if (!spectrogramBtn || !spectrogramOpacity) return;
     const anySpectrogramAvailable =
-      SPECTROGRAM_AVAILABLE.original || SPECTROGRAM_AVAILABLE.filtered;
+      SPECTROGRAM_AVAILABLE.original ||
+      SPECTROGRAM_AVAILABLE.filtered ||
+      SPECTROGRAM_AVAILABLE.filtered_inverse;
     if (!anySpectrogramAvailable) {
       spectrogramBtn.style.opacity = "0.5";
       spectrogramBtn.style.cursor = "not-allowed";
@@ -1793,7 +1950,7 @@
   initTimelineTicks();
   initSpectrogramControls();
   initPass3StateViewSelector();
-  initStateStripHover();
+  initCardiacAndNoiseStripHovers();
   setTimeout(initPlotlyIntegration, 500);
 
   // DEBUG: Check for audio file presence relative to HTML

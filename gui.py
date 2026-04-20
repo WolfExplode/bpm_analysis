@@ -41,7 +41,7 @@ OUTPUT_FILE_OPTIONS = (
     ("csv", "bpm/time Data (.csv)"),
     ("spectrogram", "Spectrogram (.png)"), 
     ("summary", "Summary Report (.md)"),
-    ("filtered_wav", "Filtered Audio (.wav)"),
+    ("filtered_wav", "Bandpass + out-of-band debug WAVs (.wav)"),
     ("working_wav_in_output", "Converted / working WAV in output folder"),
     ("debug", "Debug Report (.md)"),
     ("regression_log", "Regression testing output log (.md)"),

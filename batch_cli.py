@@ -181,14 +181,21 @@ def main(argv: List[str] | None = None) -> int:
     og.add_argument("--no-summary", dest="summary_ex", action="store_const", const=False, default=_SUP, help="Disable summary report.")
     og.add_argument("--debug", dest="debug_ex", action="store_const", const=True, default=_SUP, help="Enable debug markdown report.")
     og.add_argument("--no-debug", dest="debug_ex", action="store_const", const=False, default=_SUP, help="Disable debug report.")
-    og.add_argument("--filtered-wav", dest="filtered_wav_ex", action="store_const", const=True, default=_SUP, help="Save filtered WAV.")
+    og.add_argument(
+        "--filtered-wav",
+        dest="filtered_wav_ex",
+        action="store_const",
+        const=True,
+        default=_SUP,
+        help="Save bandpass and out-of-band (inverse) debug WAVs.",
+    )
     og.add_argument(
         "--no-filtered-wav",
         dest="filtered_wav_ex",
         action="store_const",
         const=False,
         default=_SUP,
-        help="Skip filtered WAV.",
+        help="Skip bandpass / inverse debug WAVs.",
     )
     og.add_argument(
         "--working-wav-in-output",

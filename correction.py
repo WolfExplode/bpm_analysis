@@ -454,6 +454,7 @@ def _build_reasoning_payload(
     sample_rate: float,
     shift_thresh_samp: int,
     snap_s2: bool,
+    noise_repair: bool = False,
 ) -> Dict[str, Any]:
     """Build expected/measured ms + warning notes per state for the HTML overlay (cardiac strip hover)."""
     _exp_s1_ms  = round(ivs.get("s1_nominal",    0.040) * 1000)
@@ -466,6 +467,11 @@ def _build_reasoning_payload(
     _meas_s2_ms  = round((s2_end   - s2_start) / sample_rate * 1000) if s2_end   > s2_start else 0
     _meas_dia_ms = round((s1_next  - s2_end)   / sample_rate * 1000) if s1_next  > s2_end   else 0
 
+    _noise_note = (
+        "\u26a0 Regenerated from noise repair \u2014 original states are inaccurate in noisy regions."
+        if noise_repair else None
+    )
+
     _s1_notes  = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
                   if c.get("type") == "remove_false_s1"]
     _sys_notes = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
@@ -474,6 +480,12 @@ def _build_reasoning_payload(
                   if c.get("type") in ("resnap_s2", "flip_demote_s1", "sensitive_peak", "spectral_s2")]
     _dia_notes = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
                   if c.get("type") in ("insert_s1", "flip_demote_s1")]
+
+    if _noise_note:
+        _s1_notes.insert(0, _noise_note)
+        _sys_notes.insert(0, _noise_note)
+        _s2_notes.insert(0, _noise_note)
+        _dia_notes.insert(0, _noise_note)
 
     if cascade_src:
         if not _sys_notes and before_s2 is not None and abs(before_s2 - s2) > shift_thresh_samp:
@@ -1418,6 +1430,35 @@ def run_pass3_correction(
     s2_min_half = max(1, int(round(float(params.get("s2_min_sec", 0.030)) * 0.5 * sample_rate)))
     s2_max_half = max(1, int(round(float(params.get("s2_max_sec", 0.080)) * 0.5 * sample_rate)))
 
+    snap_s2           = bool(params.get(
+        "pass3_align_s2_to_s2_spectral_profile",
+        params.get("pass3_snap_s2_to_peak", True),
+    ))
+    snap_window_ms    = float(params.get(
+        "pass3_align_s2_window_ms",
+        params.get("pass3_snap_s2_window_ms", 120.0),
+    ))
+    snap_half         = max(1, int(round(0.5 * snap_window_ms * sample_rate / 1000.0)))
+    resnap_window_ms  = float(params.get("pass3_resnap_s2_window_ms",  220.0))
+    resnap_half       = max(1, int(round(0.5 * resnap_window_ms * sample_rate / 1000.0)))
+    systole_slack     = float(params.get("pass3_systole_slack_frac",   0.15))
+    diastole_slack    = float(params.get("pass3_diastole_slack_frac",  0.20))
+
+    max_iters          = int(params.get("pass3_correction_max_iters",        32))
+    enable_insert      = bool(params.get("pass3_enable_insert_missing_s1",  True))
+    rr_too_long_frac   = float(params.get("pass3_rr_too_long_frac",         1.7))
+    max_fill_gap_sec   = float(params.get("pass3_gap_fill_max_duration_sec", 5.0))
+    s1_search_window_ms = float(params.get("pass3_insert_s1_search_window_ms", 180.0))
+    s1_search_half     = max(1, int(round(0.5 * s1_search_window_ms * sample_rate / 1000.0)))
+    min_sep_samples    = int(float(params.get("min_peak_distance_sec", 0.10)) * sample_rate)
+
+    enable_phase_corr    = bool(params.get("pass3_enable_phase_correction",   True))
+    phase_min_score_delta = float(params.get("pass3_phase_min_score_delta",  0.15))
+    local_peak_window_ms  = float(params.get("pass3_local_peak_window_ms",   160.0))
+    local_peak_win_samp   = max(1, int(round(0.5 * local_peak_window_ms * sample_rate / 1000.0)))
+    local_peak_sens       = float(params.get("pass3_local_peak_sensitivity_factor", 0.6))
+
+    pc = analysis_data.get("peak_classifications") or {}
     lt = analysis_data.get("long_term_bpm_series")
 
     fallback_bpm = 80.0
@@ -1436,35 +1477,132 @@ def run_pass3_correction(
     )))
 
     noise_segs_raw = analysis_data.get("noise_event_segments") or []
+    noise_ivs_pass3: List[Tuple[int, int]] = []
     if noise_segs_raw:
         noise_ivs_pass3 = _noise_sample_intervals(noise_segs_raw, sample_rate, n_samples)
         analysis_data["pass3_noise_unreliable_windows_samples"] = [
             {"start_sample": int(lo), "end_sample": int(hi)} for lo, hi in noise_ivs_pass3
         ]
+    # ── Build spectral context (S1 + S2 templates) ───────────────────────────
+    insert_spectrum_ctx: Optional[Dict] = None
+    if bool(params.get("pass3_insert_use_spectrum", True)) and wav_file_path and os.path.isfile(wav_file_path):
+        try:
+            insert_spectrum_ctx = prepare_pass3_s1_insert_context(
+                wav_file_path, pc, sample_rate, audio_envelope, params,
+            )
+            if insert_spectrum_ctx is not None:
+                logging.info(
+                    "Pass 3: spectral context ready "
+                    "(n_s1_template=%s, n_s2_template=%s, sr=%s).",
+                    insert_spectrum_ctx.get("n_s1_template"),
+                    insert_spectrum_ctx.get("n_s2_template"),
+                    insert_spectrum_ctx.get("full_sr"),
+                )
+        except Exception as exc:
+            logging.warning("Pass 3: could not build spectral context: %s", exc)
 
-    # ── Step 1: Generate initial state sequence from Pass 2 S1-S2 pairs ─────
-    s2_events = _seed_s2_from_pass2_pairs(
-        s1_list,
-        analysis_data.get("s1_s2_pairs") or [],
-        lt, fallback_bpm, sample_rate, params, n_samples,
+    # ── BPM series for Pass 3 (mask + interpolate through HF noise when repair is on) ──
+    lt_pass3 = lt
+    _enable_noise_repair = bool(
+        params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True))
     )
+    if _enable_noise_repair and noise_segs_raw:
+        lt_masked = _lt_series_masked_for_noise(lt, noise_segs_raw, fallback_bpm)
+        if lt_masked is not None:
+            lt_pass3 = lt_masked
+
+    # ── S2 placement: Pass 2 pair seed → HF noise repair (if any) → spectral snap ──
+    noise_corrs: List[Dict[str, Any]] = []
+    _pairs = analysis_data.get("s1_s2_pairs") or []
+    s2_seed = _seed_s2_from_pass2_pairs(
+        s1_list, _pairs, lt, fallback_bpm, sample_rate, params, n_samples,
+    )
+    _pair_set = {int(s1) for s1, _ in _pairs}
     logging.info(
-        "Pass 3: seeded s2_events from Pass 2 pairs — %d beats, %d paired.",
+        "Pass 3 Step 1: seeded %d beats from Pass 2 pairs (%d paired, %d BPM fallback).",
         len(s1_list),
-        sum(1 for j in range(len(s1_list) - 1)
-            if any(int(s1) == int(s1_list[j]) for s1, _ in (analysis_data.get("s1_s2_pairs") or []))),
+        sum(1 for s in s1_list if s in _pair_set),
+        sum(1 for s in s1_list if s not in _pair_set),
     )
 
-    # ── Before snapshot for HTML before/after visualization ──────────────────
+    if _enable_noise_repair and noise_segs_raw:
+        s2_seed, noise_corrs, _ = _pass_noise_repair_events(
+            s1_list,
+            s2_seed,
+            noise_segs_raw,
+            lt_pass3,
+            fallback_bpm,
+            sample_rate,
+            params,
+            n_samples,
+        )
+        if noise_corrs:
+            analysis_data["pass3_noise_repairs"] = list(noise_corrs)
+            logging.info(
+                "Pass 3 Step 2a: noise repair modified %d cycle(s).", len(noise_corrs),
+            )
+    s2_events = _rebuild_s2_events(
+        s1_list, lt_pass3, fallback_bpm,
+        sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
+        noise_ivs=noise_ivs_pass3,
+        seed_s2_events=s2_seed,
+    )
+
+    # ── Before-correction snapshot for HTML before/after visualization ────────
     state_boundaries_before = _build_state_boundaries_before_from_cycles(
         s1_list, s2_events, s1_half, s2_half, n_samples,
+        noise_ivs=noise_ivs_pass3 or None,
+        lt_for_bpm=lt_pass3,
+        fallback_bpm=fallback_bpm,
+        params=params,
+        sample_rate=sample_rate,
     )
 
-    # ── Step 2: Correction loop — disabled, will be re-enabled incrementally ─
-    corrections: List[Dict[str, Any]] = []
+    # ── Correction loop ───────────────────────────────────────────────────────
+    corrections: List[Dict[str, Any]] = list(noise_corrs)
     cycle_diagnostics: List[Dict[str, Any]] = []
 
+    for _iter in range(max_iters):
+        # Sync s2_events length with current s1_list.
+        n_cycles = max(0, len(s1_list) - 1)
+        if len(s2_events) != n_cycles:
+            s2_events = s2_events[:n_cycles]
+            while len(s2_events) < n_cycles:
+                s2_events.append(int(s1_list[len(s2_events)]))
+
+        s2_events, corrs_a, cycle_diagnostics, changed_a = _pass_a_resnap_s2(
+            s1_list, s2_events, lt_pass3, fallback_bpm,
+            sample_rate, params, snap_s2, resnap_half, n_samples, insert_spectrum_ctx,
+            systole_slack, diastole_slack, noise_ivs=noise_ivs_pass3,
+        )
+        corrections.extend(corrs_a)
+
+        s1_list, s2_events, corrs_b, changed_b = _pass_b_insert_missing_s1(
+            s1_list, s2_events, all_raw_peaks, pc, lt_pass3, fallback_bpm,
+            audio_envelope, analysis_data, n_samples, sample_rate, params,
+            enable_insert, rr_too_long_frac, max_fill_gap_sec,
+            s1_search_half, s1_search_window_ms, min_sep_samples,
+            snap_s2, snap_half, insert_spectrum_ctx, noise_ivs=noise_ivs_pass3,
+        )
+        corrections.extend(corrs_b)
+
+        s1_list, s2_events, corrs_c, changed_c = _pass_c_phase_correction(
+            s1_list, s2_events, cycle_diagnostics,
+            all_raw_peaks, pc, lt_pass3, fallback_bpm,
+            audio_envelope, analysis_data, n_samples, sample_rate, params,
+            enable_phase_corr, phase_min_score_delta,
+            local_peak_win_samp, local_peak_window_ms, local_peak_sens,
+            s1_search_half, min_sep_samples,
+            snap_s2, snap_half, insert_spectrum_ctx, noise_ivs=noise_ivs_pass3,
+        )
+        corrections.extend(corrs_c)
+
+        if not (changed_a or changed_b or changed_c):
+            break
+
     peaks_out = np.asarray(s1_list, dtype=np.int64)
+
+    noise_ivs_final: List[Tuple[int, int]] = list(noise_ivs_pass3)
 
     # ── Debug lookup tables for reasoning payload ─────────────────────────────
     _sr_f = float(sample_rate)
@@ -1563,6 +1701,7 @@ def run_pass3_correction(
             s1, s1_start, s1_end, s2, s2_start, s2_end, s1_next,
             _ivs_r, _direct, _cascade, _bef_s2, _bef_s1nxt,
             _sr_f, _SHIFT_THRESH_SAMP, snap_reason,
+            noise_repair=noise_cycle,
         )
 
         if s1_end > s1_start:
