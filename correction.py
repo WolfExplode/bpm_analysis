@@ -763,9 +763,59 @@ def _pass3_noise_rebuild_reasoning(
         "expected_ms": exp_ms,
         "measured_ms": meas_ms,
         "notes": [
-            "Regenerated in noisy region from BPM",
+            "Regenerated in noisy region (noise repair).",
         ],
     }
+
+
+def _pass3_measured_systole_series_from_boundaries(
+    state_boundaries: List[Tuple],
+    sample_rate: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build (times_sec, durations_sec) for *measured systole* from the current state boundaries.
+
+    "Measured systole" matches the Pass 3 hover debug's systole measured value:
+      measured_ms = (s2_start - s1_end) / sr * 1000
+
+    Here we use the midpoint of each systole segment as the sample time.
+    """
+    sr = float(sample_rate)
+    t_list: List[float] = []
+    d_list: List[float] = []
+    for s0, s1, st, _meta in (state_boundaries or []):
+        if st != "systole":
+            continue
+        a0 = float(s0); a1 = float(s1)
+        if not np.isfinite(a0) or not np.isfinite(a1) or a1 <= a0:
+            continue
+        t_mid = (a0 + a1) / 2.0 / sr
+        dur   = (a1 - a0) / sr
+        if not np.isfinite(t_mid) or not np.isfinite(dur) or dur <= 0:
+            continue
+        t_list.append(float(t_mid))
+        d_list.append(float(dur))
+    if not t_list:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+    t = np.asarray(t_list, dtype=np.float64)
+    d = np.asarray(d_list, dtype=np.float64)
+    order = np.argsort(t)
+    return t[order], d[order]
+
+
+def _interp_piecewise_linear(
+    t_query: float,
+    t: np.ndarray,
+    y: np.ndarray,
+) -> Optional[float]:
+    """1D linear interpolation with constant edge extrapolation; returns None if empty."""
+    if t is None or y is None or len(t) < 2 or len(t) != len(y):
+        return None
+    tq = float(t_query)
+    val = float(np.interp(tq, t, y, left=float(y[0]), right=float(y[-1])))
+    if not np.isfinite(val):
+        return None
+    return val
 
 
 def _pass3_rebuild_unknown_runs(
@@ -776,6 +826,8 @@ def _pass3_rebuild_unknown_runs(
     fallback_bpm: float,
     sample_rate: int,
     params: Dict,
+    measured_systole_t: Optional[np.ndarray] = None,
+    measured_systole_dur: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
     Fill every STATE_UNKNOWN run in *state_labels* with a scaled cardiac sequence.
@@ -792,8 +844,7 @@ def _pass3_rebuild_unknown_runs(
       - For trailing gaps (gap_hi >= n_samples), fill forward with nominal
         cycle duration (best-effort, no right anchor).
 
-    Phase widths (S1, S2) use the same half-window constants as normal
-    painting.  Rebuilt segments carry ``"noise_rebuild": True`` in metadata.
+    Rebuilt segments carry ``"noise_rebuild": True`` in metadata.
     If the gap is smaller than one minimum feasible cardiac cycle it is left
     as STATE_UNKNOWN.
     """
@@ -824,7 +875,6 @@ def _pass3_rebuild_unknown_runs(
         ivs    = calculate_bpm_intervals(bpm, params)
 
         rr_sec        = 60.0 / bpm
-        s1_s2_nom_sec = float(ivs.get("s1_s2_nominal", 0.30))
         nominal_cycle = rr_sec * SR  # samples
 
         # Skip gaps that are too small to hold even one cardiac cycle
@@ -864,10 +914,19 @@ def _pass3_rebuild_unknown_runs(
         # Scale factor applied uniformly to all four phase durations.
         scale = actual_cycle / nominal_cycle
 
-        # Scaled phase durations in samples (all four from ivs, same scale applied).
-        p_s1  = max(1, int(round(float(ivs.get("s1_nominal",    0.040)) * SR * scale)))
-        p_sys = max(1, int(round(float(ivs.get("s1_s2_nominal", 0.300)) * SR * scale)))
-        p_s2  = max(1, int(round(float(ivs.get("s2_nominal",    0.030)) * SR * scale)))
+        # Scaled phase durations in samples.
+        # S1/S2 event widths come from ivs nominal acoustic durations; systole comes from
+        # *measured systole* interpolation when available, else falls back to BPM-expected.
+        p_s1  = max(1, int(round(float(ivs.get("s1_nominal", 0.040)) * SR * scale)))
+        p_s2  = max(1, int(round(float(ivs.get("s2_nominal", 0.030)) * SR * scale)))
+
+        # Use the midpoint of the gap as a stable query time for this gap's systole.
+        # (Per-cycle querying is possible too, but this keeps behavior smooth and simple.)
+        sys_meas_sec = _interp_piecewise_linear(t_mid, measured_systole_t, measured_systole_dur)
+        if sys_meas_sec is None:
+            sys_meas_sec = float(ivs.get("s1_s2_nominal", 0.300))
+        p_sys = max(1, int(round(float(sys_meas_sec) * SR * scale)))
+
         # Diastole fills whatever remains in the cycle so rounding errors don't accumulate.
         p_dia = max(1, int(actual_cycle) - p_s1 - p_sys - p_s2)
         if p_dia < 1:
@@ -1839,6 +1898,7 @@ def run_pass3_correction(
         params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True)),
     )
     if _noise_repair_on and noise_ivs_final:
+        _ms_t, _ms_d = _pass3_measured_systole_series_from_boundaries(state_boundaries, sample_rate)
         state_labels, state_boundaries = _pass3_clear_states_in_hf_noise(
             state_labels, state_boundaries, noise_ivs_final, n_samples, peaks_out,
         )
@@ -1850,6 +1910,8 @@ def run_pass3_correction(
         state_labels, state_boundaries = _pass3_rebuild_unknown_runs(
             state_labels, state_boundaries, n_samples,
             lt_pass3, fallback_bpm, sample_rate, params,
+            measured_systole_t=_ms_t,
+            measured_systole_dur=_ms_d,
         )
         _n_rebuilt = sum(
             1 for seg in state_boundaries

@@ -122,14 +122,14 @@ def _compute_systolic_interval_data(
     return observed_times, observed_intervals, expected_times, expected_intervals
 
 
-def _compute_actual_systole_from_state_boundaries(
+def _compute_measured_systole_from_state_boundaries(
     analysis_data: Dict,
     sample_rate: int,
     *,
     prefer: str = "after",
 ) -> Tuple[List[float], List[float]]:
     """
-    Compute actual systole durations from Pass 3 dense state boundaries.
+    Compute measured systole durations from Pass 3 dense state boundaries.
     Returns (times, durations) in seconds, where time is the segment midpoint.
     """
     if prefer == "before":
@@ -139,8 +139,8 @@ def _compute_actual_systole_from_state_boundaries(
         if not boundaries:
             boundaries = analysis_data.get("pass3_state_boundaries_before") or []
 
-    actual_times: List[float] = []
-    actual_durations: List[float] = []
+    measured_times: List[float] = []
+    measured_durations: List[float] = []
     for s0, s1, state_name, _meta in (boundaries or []):
         try:
             if str(state_name).lower() != "systole":
@@ -153,12 +153,71 @@ def _compute_actual_systole_from_state_boundaries(
             dur = (s1i - s0i) / float(sample_rate)
             if not np.isfinite(t_mid) or not np.isfinite(dur):
                 continue
-            actual_times.append(float(t_mid))
-            actual_durations.append(float(dur))
+            measured_times.append(float(t_mid))
+            measured_durations.append(float(dur))
         except Exception:
             continue
 
-    return actual_times, actual_durations
+    return measured_times, measured_durations
+
+
+def _compute_measured_diastole_from_state_boundaries(
+    analysis_data: Dict,
+    sample_rate: int,
+    *,
+    prefer: str = "after",
+) -> Tuple[List[float], List[float]]:
+    """
+    Compute measured diastole durations from Pass 3 dense state boundaries.
+    Returns (times, durations) in seconds, where time is the segment midpoint.
+    """
+    if prefer == "before":
+        boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+    else:
+        boundaries = analysis_data.get("pass3_state_boundaries") or []
+        if not boundaries:
+            boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+
+    measured_times: List[float] = []
+    measured_durations: List[float] = []
+    for s0, s1, state_name, _meta in (boundaries or []):
+        try:
+            if str(state_name).lower() != "diastole":
+                continue
+            s0i = int(s0)
+            s1i = int(s1)
+            if s1i <= s0i:
+                continue
+            t_mid = (s0i + s1i) / 2.0 / float(sample_rate)
+            dur = (s1i - s0i) / float(sample_rate)
+            if not np.isfinite(t_mid) or not np.isfinite(dur):
+                continue
+            measured_times.append(float(t_mid))
+            measured_durations.append(float(dur))
+        except Exception:
+            continue
+
+    return measured_times, measured_durations
+
+
+def _compute_expected_diastole_from_bpm(
+    pass_metrics: Dict,
+    params: Dict,
+) -> Tuple[List[float], List[float]]:
+    """
+    Compute expected diastole (S2→next S1) from BPM over time.
+    Returns (times, durations) in seconds.
+    """
+    smoothed_bpm = pass_metrics.get("smoothed_bpm")
+    bpm_times = pass_metrics.get("bpm_times")
+    expected_times: List[float] = []
+    expected_durations: List[float] = []
+    if smoothed_bpm is not None and bpm_times is not None:
+        for t, bpm in zip(bpm_times, smoothed_bpm.values):
+            intervals = calculate_bpm_intervals(float(bpm), params)
+            expected_times.append(float(t))
+            expected_durations.append(float(intervals["s2_s1_nominal"]))
+    return expected_times, expected_durations
 
 
 def _compute_systolic_shift(
@@ -765,7 +824,7 @@ class Plotter:
         if getattr(self, "_has_systolic_traces", False):
             self.fig.update_layout(
                 yaxis3=dict(
-                    title="Systolic Interval (s)",
+                    title="Phase Interval (s)",
                     overlaying="y",
                     anchor="free",
                     side="right",
@@ -1299,9 +1358,13 @@ class Plotter:
         obs_t, obs_iv, exp_t, exp_iv = _compute_systolic_interval_data(
             analysis_data, pass_metrics, self.sample_rate, self.params
         )
-        actual_t, actual_iv = _compute_actual_systole_from_state_boundaries(
+        measured_timeline_t, measured_timeline_iv = _compute_measured_systole_from_state_boundaries(
             analysis_data, self.sample_rate, prefer="after"
         )
+        measured_diastole_t, measured_diastole_iv = _compute_measured_diastole_from_state_boundaries(
+            analysis_data, self.sample_rate, prefer="after"
+        )
+        exp_dia_t, exp_dia_iv = _compute_expected_diastole_from_bpm(pass_metrics, self.params)
         if not exp_t and not obs_t:
             return
         to_dt = lambda seq: _elapsed_seconds_to_plot_datetimes(np.asarray(seq, dtype=np.float64))
@@ -1323,14 +1386,37 @@ class Plotter:
                     visible="legendonly",
                 ),
             )
-        if actual_t:
+        if exp_dia_t:
             self.fig.add_trace(
                 go.Scatter(
-                    x=to_dt(actual_t),
-                    y=actual_iv,
-                    name="Actual systole (state timeline)",
+                    x=to_dt(exp_dia_t),
+                    y=exp_dia_iv,
+                    name="Expected diastole from BPM",
+                    line=dict(color="#66d9ff", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if measured_timeline_t:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(measured_timeline_t),
+                    y=measured_timeline_iv,
+                    name="Measured systole",
                     mode="markers",
                     marker=dict(size=5, color="#b07cff", symbol="diamond"),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if measured_diastole_t:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(measured_diastole_t),
+                    y=measured_diastole_iv,
+                    name="Measured diastole",
+                    mode="markers",
+                    marker=dict(size=5, color="#55d68d", symbol="triangle-up"),
                     yaxis="y3",
                     visible="legendonly",
                 ),
