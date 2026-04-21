@@ -4,6 +4,8 @@ from scipy.signal import find_peaks
 import logging
 from typing import List, Dict, Tuple, Optional, Any, Callable
 
+from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
+
 from confidence_engine import (
     AnalysisState,
     PairingEngine,
@@ -328,7 +330,15 @@ class PeakClassifier:
         self.state.analysis_data["s1_s2_pairs"] = self._build_s1_s2_pairs()
         if self.state.long_term_bpm_history:
             lt_bpm_times, lt_bpm_values = zip(*self.state.long_term_bpm_history)
-            self.state.analysis_data["long_term_bpm_series"] = pd.Series(lt_bpm_values, index=lt_bpm_times)
+            # Canonical Pass 2 belief BPM representation: dense raster (dt=0.05s).
+            t = np.asarray(lt_bpm_times, dtype=np.float64)
+            y = np.asarray(lt_bpm_values, dtype=np.float64)
+            dur = float(final_peaks[-1] / self.sample_rate) if len(final_peaks) else (float(np.max(t)) if len(t) else 0.0)
+            t_grid = dense_time_grid(dur, STANDARD_DT_SEC)
+            fb = float(y[0]) if len(y) and np.isfinite(y[0]) and y[0] > 0 else 80.0
+            bpm_grid = rasterize_timeseries_linear(t, y, t_grid, fallback=fb)
+            self.state.analysis_data["pass2_lt_bpm_times"] = t_grid
+            self.state.analysis_data["pass2_lt_bpm"] = bpm_grid
         return final_peaks, self.state.all_peaks, self.state.analysis_data
 
     def _find_raw_peaks(self, height_threshold: np.ndarray) -> np.ndarray:

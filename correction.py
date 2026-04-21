@@ -56,18 +56,40 @@ STATE_LABELS_ENCODING: Dict[str, int] = {
 
 def _bpm_at_time(
     t_sec: float,
-    lt_series: Optional[pd.Series],
+    lt_source: Any,
     fallback_bpm: float,
 ) -> float:
-    """Interpolate BPM from the long-term belief series at time t_sec."""
-    if lt_series is None or getattr(lt_series, "empty", True):
+    """
+    Interpolate BPM at time t_sec from a raster-backed source.
+
+    Accepts:
+    - (times, bpm) tuple/list of arrays
+    - dict with {"times": ..., "bpm": ...}
+    - pd.Series indexed by time (legacy; allowed for now)
+    """
+    if lt_source is None:
         return fallback_bpm
     try:
-        times = np.asarray(lt_series.index.values, dtype=np.float64)
-        values = np.asarray(lt_series.values, dtype=np.float64)
+        times = None
+        values = None
+        if isinstance(lt_source, (tuple, list)) and len(lt_source) == 2:
+            times, values = lt_source
+        elif isinstance(lt_source, dict):
+            times = lt_source.get("times")
+            values = lt_source.get("bpm")
+        elif isinstance(lt_source, pd.Series):
+            if getattr(lt_source, "empty", True):
+                return fallback_bpm
+            times = lt_source.index.values
+            values = lt_source.values
+        else:
+            return fallback_bpm
+
+        times = np.asarray(times, dtype=np.float64)
+        values = np.asarray(values, dtype=np.float64)
         if len(times) < 2 or len(times) != len(values):
             return fallback_bpm
-        bpm = float(np.interp(float(t_sec), times, values, left=values[0], right=values[-1]))
+        bpm = float(np.interp(float(t_sec), times, values, left=float(values[0]), right=float(values[-1])))
         if not np.isfinite(bpm) or bpm <= 0:
             return fallback_bpm
         return bpm
@@ -617,6 +639,110 @@ def _span_intersects_merged_noise(
         if _half_open_intervals_intersect(lo, hi, nlo, nhi):
             return True
     return False
+
+
+def _build_lt_bpm_series_from_clean_rr(
+    s1_peaks: np.ndarray,
+    noise_ivs: List[Tuple[int, int]],
+    sample_rate: int,
+    n_samples: int,
+    params: Optional[Dict] = None,
+) -> Optional[pd.Series]:
+    """
+    Build a time-indexed BPM series from S1→S1 intervals that do NOT intersect HF-noise.
+
+    Each retained interval contributes one (t_mid, bpm) point:
+      t_mid = midpoint time of the RR interval, bpm = 60 / RR_sec.
+
+    Applies the same light cleaning used for measured systole/diastole curves:
+      - local MAD outlier removal in a rolling time window
+      - small Gaussian-weighted rolling mean smoothing
+
+    Returns None if there are not enough clean intervals to interpolate (need >=2).
+    """
+    if sample_rate <= 0:
+        return None
+    peaks = np.asarray(s1_peaks, dtype=np.int64)
+    if len(peaks) < 2:
+        return None
+    merged = _merge_sorted_intervals(noise_ivs or [])
+    if merged and int(merged[0][0]) == 0:
+        # Mirror _pass3_clear_states_in_hf_noise: ignore the first noise span at file start.
+        merged = merged[1:]
+
+    t_list: List[float] = []
+    bpm_list: List[float] = []
+    sr = float(sample_rate)
+    for i in range(len(peaks) - 1):
+        a = int(peaks[i])
+        b = int(peaks[i + 1])
+        if b <= a:
+            continue
+        if merged and _span_intersects_merged_noise(a, b, merged, n_samples):
+            continue
+        rr_sec = (b - a) / sr
+        if not np.isfinite(rr_sec) or rr_sec <= 0:
+            continue
+        bpm = 60.0 / rr_sec
+        if not np.isfinite(bpm) or bpm <= 0:
+            continue
+        t_mid = 0.5 * (a + b) / sr
+        t_list.append(float(t_mid))
+        bpm_list.append(float(bpm))
+
+    if len(t_list) < 2:
+        return None
+    t = np.asarray(t_list, dtype=np.float64)
+    y = np.asarray(bpm_list, dtype=np.float64)
+    order = np.argsort(t)
+    t = t[order]
+    y = y[order]
+
+    # Reuse the measured-phase cleaner (MAD + light Gaussian smoothing).
+    # We pass noise_ivs=None because RR intervals were already excluded by intersection tests.
+    t2, y2 = _pass3_clean_duration_series(t, y, noise_ivs=None, sample_rate=sample_rate, params=(params or {}))
+    if len(t2) < 2:
+        return None
+    return pd.Series(y2, index=t2, dtype=float)
+
+
+def _dense_bpm_raster_from_series(
+    lt_series: Optional[pd.Series],
+    n_samples: int,
+    sample_rate: int,
+    fallback_bpm: float,
+    dt_sec: float = 0.05,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build a dense BPM raster (times, bpm_values) sampled every dt_sec across the file.
+
+    This makes the BPM prior explicit and continuous-in-time for later consumers.
+    Values are obtained by linear interpolation of lt_series with constant edge extrapolation.
+    """
+    sr = float(sample_rate)
+    if sr <= 0 or n_samples <= 0:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+    dur_sec = float(n_samples) / sr
+    if not np.isfinite(dur_sec) or dur_sec <= 0:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+    dt = float(dt_sec)
+    if not np.isfinite(dt) or dt <= 0:
+        dt = 0.05
+
+    t_grid = np.arange(0.0, dur_sec + 1e-12, dt, dtype=np.float64)
+    if lt_series is None or getattr(lt_series, "empty", True):
+        return t_grid, np.full_like(t_grid, float(fallback_bpm), dtype=np.float64)
+    try:
+        times = np.asarray(lt_series.index.values, dtype=np.float64)
+        values = np.asarray(lt_series.values, dtype=np.float64)
+        if len(times) < 2 or len(times) != len(values):
+            return t_grid, np.full_like(t_grid, float(fallback_bpm), dtype=np.float64)
+        bpm_grid = np.interp(t_grid, times, values, left=float(values[0]), right=float(values[-1])).astype(np.float64)
+        bpm_grid[~np.isfinite(bpm_grid)] = float(fallback_bpm)
+        bpm_grid[bpm_grid <= 0] = float(fallback_bpm)
+        return t_grid, bpm_grid
+    except Exception:
+        return t_grid, np.full_like(t_grid, float(fallback_bpm), dtype=np.float64)
 
 
 def _pass3_clear_states_in_hf_noise(
@@ -1715,7 +1841,7 @@ def run_pass3_correction(
     Mutates and returns analysis_data with keys:
       pass3_state_labels, pass3_state_labels_encoding,
       pass3_state_boundaries, pass3_state_boundaries_before,
-      pass3_s2_events, pass3_corrections, pass3_cycle_diagnostics,
+      pass3_corrections, pass3_cycle_diagnostics,
       pass3_spectral_context  (template arrays only; bandpass_audio not stored).
       pass3_noise_unreliable_windows_samples  (when noise_event_segments exist: HF intervals as sample indices for HTML).
       When pass3_enable_noise_repair: labels in those windows are set to unknown (encoding includes "unknown").
@@ -1750,11 +1876,11 @@ def run_pass3_correction(
 
     snap_s2           = bool(params.get(
         "pass3_align_s2_to_s2_spectral_profile",
-        params.get("pass3_snap_s2_to_peak", True),
+        params.get("pass3_snap_s2_to_peak", True),  # legacy key (back-compat)
     ))
     snap_window_ms    = float(params.get(
         "pass3_align_s2_window_ms",
-        params.get("pass3_snap_s2_window_ms", 120.0),
+        params.get("pass3_snap_s2_window_ms", 120.0),  # legacy key (back-compat)
     ))
     snap_half         = max(1, int(round(0.5 * snap_window_ms * sample_rate / 1000.0)))
     resnap_window_ms  = float(params.get("pass3_resnap_s2_window_ms",  220.0))
@@ -1777,7 +1903,6 @@ def run_pass3_correction(
     local_peak_sens       = float(params.get("pass3_local_peak_sensitivity_factor", 0.6))
 
     pc = analysis_data.get("peak_classifications") or {}
-    lt = analysis_data.get("long_term_bpm_series")
 
     fallback_bpm = 80.0
     try:
@@ -1819,12 +1944,20 @@ def run_pass3_correction(
         except Exception as exc:
             logging.warning("Pass 3: could not build spectral context: %s", exc)
 
-    lt_pass3 = lt
+    # Build the BPM prior from clean RR intervals (exclude any S1→S1 that intersects HF noise).
+    # If we can't build it (too few clean intervals), Pass 3 falls back to fallback_bpm.
+    lt_pass3 = _build_lt_bpm_series_from_clean_rr(
+        peaks_out,
+        noise_ivs_pass3,
+        sample_rate,
+        n_samples,
+        params=params,
+    )
 
     # ── S2 placement: Pass 2 pair seed → spectral snap (_rebuild_s2_events) ────
     _pairs = analysis_data.get("s1_s2_pairs") or []
     s2_seed = _seed_s2_from_pass2_pairs(
-        s1_list, _pairs, lt, fallback_bpm, sample_rate, params, n_samples,
+        s1_list, _pairs, lt_pass3, fallback_bpm, sample_rate, params, n_samples,
     )
     _pair_set = {int(s1) for s1, _ in _pairs}
     logging.info(
@@ -1925,7 +2058,8 @@ def run_pass3_correction(
     # ── Paint final state timeline ────────────────────────────────────────────
     state_labels[:] = STATE_DIASTOLE
     state_boundaries: List[Tuple] = []
-    s2_events_final: List[int] = []
+    # NOTE: we intentionally do not persist per-beat S2 indices; the state sequence
+    # (labels + boundaries) is the canonical Pass 3 output.
 
     for i in range(len(peaks_out) - 1):
         s1     = int(peaks_out[i])
@@ -1955,8 +2089,6 @@ def run_pass3_correction(
             min_s2_half=s2_min_half, max_s2_half=s2_max_half,
             use_transient_detection=True,
         )
-
-        s2_events_final.append(int(s2))
 
         _t_s1_r = s1 / _sr_f
         _bpm_r = _bpm_at_time(_t_s1_r, lt_pass3, fallback_bpm)
@@ -2035,6 +2167,18 @@ def run_pass3_correction(
         _md_t, _md_d = _pass3_measured_diastole_series_from_boundaries(
             state_boundaries, sample_rate, noise_ivs=noise_ivs_final, params=params,
         )
+        # Build a BPM prior from clean RR intervals only (exclude any S1→S1 that intersects noise).
+        # This avoids using possibly-corrupted BPM belief inside the noisy spans.
+        _lt_clean = _build_lt_bpm_series_from_clean_rr(
+            peaks_out, noise_ivs_final, sample_rate, n_samples, params=params,
+        )
+        # Store a dense raster for plotting/debug + use it as the rebuild prior.
+        _lt_for_raster = _lt_clean if _lt_clean is not None else lt_pass3
+        _bpm_prior_t, _bpm_prior = _dense_bpm_raster_from_series(
+            _lt_for_raster, n_samples, sample_rate, fallback_bpm, dt_sec=0.05,
+        )
+        analysis_data["pass3_bpm_prior_times"] = _bpm_prior_t
+        analysis_data["pass3_bpm_prior"] = _bpm_prior
         state_labels, state_boundaries = _pass3_clear_states_in_hf_noise(
             state_labels, state_boundaries, noise_ivs_final, n_samples, peaks_out,
         )
@@ -2045,7 +2189,8 @@ def run_pass3_correction(
         )
         state_labels, state_boundaries = _pass3_rebuild_unknown_runs(
             state_labels, state_boundaries, n_samples,
-            lt_pass3, fallback_bpm, sample_rate, params,
+            (_bpm_prior_t, _bpm_prior),
+            fallback_bpm, sample_rate, params,
             measured_systole_t=_ms_t,
             measured_systole_dur=_ms_d,
             measured_diastole_t=_md_t,
@@ -2077,7 +2222,6 @@ def run_pass3_correction(
     analysis_data["pass3_state_labels_encoding"] = dict(STATE_LABELS_ENCODING)
     analysis_data["pass3_state_boundaries"]        = state_boundaries
     analysis_data["pass3_state_boundaries_before"] = state_boundaries_before
-    analysis_data["pass3_s2_events"]      = np.asarray(s2_events_final, dtype=np.int64)
     analysis_data["pass3_corrections"]    = corrections
     analysis_data["pass3_cycle_diagnostics"] = cycle_diagnostics
 

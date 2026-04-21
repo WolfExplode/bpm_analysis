@@ -35,7 +35,7 @@ class AnalysisState:
             otherwise the initial start_bpm and not updated.
         analysis_data: Bag of analysis artifacts that downstream plotting/reporting
             relies on (e.g., `dynamic_noise_floor_series`, `trough_indices`,
-            `deviation_series`, `peak_classifications`, `long_term_bpm_series`).
+            `deviation_series`, `peak_classifications`, `pass2_lt_bpm_times`, `pass2_lt_bpm`).
         candidate_beats: Sample indices of peaks that have been accepted as S1 heartbeats
             (either paired S1 or validated Lone S1) during the main loop.
         peak_classifications: Mapping from raw peak index to a structured record

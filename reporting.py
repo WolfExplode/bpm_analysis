@@ -90,11 +90,17 @@ class ReportGenerator:
         master_df = pd.DataFrame(index=np.arange(len(audio_envelope)) / sample_rate)
         if "dynamic_noise_floor_series" in analysis_data:
             master_df["noise_floor"] = analysis_data["dynamic_noise_floor_series"].values
-        if smoothed_bpm is not None and not smoothed_bpm.empty:
-            smoothed_bpm_sec_index = pd.Series(data=smoothed_bpm.values, index=bpm_times).groupby(level=0).mean()
+        if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm) and len(bpm_times) > 0:
+            smoothed_bpm_sec_index = pd.Series(data=np.asarray(smoothed_bpm, dtype=float), index=np.asarray(bpm_times, dtype=float)).groupby(level=0).mean()
             master_df["smoothed_bpm"] = smoothed_bpm_sec_index
-        if "long_term_bpm_series" in analysis_data and not analysis_data["long_term_bpm_series"].empty:
-            master_df["lt_bpm"] = analysis_data["long_term_bpm_series"].groupby(level=0).mean()
+        if "pass2_lt_bpm_times" in analysis_data and "pass2_lt_bpm" in analysis_data:
+            try:
+                lt_t = np.asarray(analysis_data["pass2_lt_bpm_times"], dtype=float)
+                lt_b = np.asarray(analysis_data["pass2_lt_bpm"], dtype=float)
+                if len(lt_t) == len(lt_b) and len(lt_t) > 0:
+                    master_df["lt_bpm"] = pd.Series(data=lt_b, index=lt_t).groupby(level=0).mean()
+            except Exception:
+                pass
 
         master_df.ffill(inplace=True)
 
@@ -222,8 +228,8 @@ class ReportGenerator:
     def _write_heartbeat_data_table(self, f, smoothed_bpm, bpm_times):
         """Writes the final time-series BPM data to a markdown table in the report file."""
         f.write("## Heartbeat Data (BPM over Time)\n\n| Time (s) | Average BPM |\n|:---:|:---:|\n")
-        if smoothed_bpm is not None and not smoothed_bpm.empty and bpm_times is not None:
-            for t, bpm in zip(bpm_times, smoothed_bpm.values):
+        if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm) and len(bpm_times) > 0:
+            for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
                 if not np.isnan(bpm):
                     f.write(f"| {t:.2f} | {bpm:.1f} |\n")
         else:

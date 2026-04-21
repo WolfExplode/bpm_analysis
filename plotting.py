@@ -113,8 +113,8 @@ def _compute_systolic_interval_data(
     bpm_times = pass_metrics.get("bpm_times")
     expected_times: List[float] = []
     expected_intervals: List[float] = []
-    if smoothed_bpm is not None and bpm_times is not None:
-        for t, bpm in zip(bpm_times, smoothed_bpm.values):
+    if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm):
+        for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
             intervals = calculate_bpm_intervals(float(bpm), params)
             expected_times.append(float(t))
             expected_intervals.append(intervals["s1_s2_nominal"])
@@ -212,8 +212,8 @@ def _compute_expected_diastole_from_bpm(
     bpm_times = pass_metrics.get("bpm_times")
     expected_times: List[float] = []
     expected_durations: List[float] = []
-    if smoothed_bpm is not None and bpm_times is not None:
-        for t, bpm in zip(bpm_times, smoothed_bpm.values):
+    if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm):
+        for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
             intervals = calculate_bpm_intervals(float(bpm), params)
             expected_times.append(float(t))
             expected_durations.append(float(intervals["s2_s1_nominal"]))
@@ -416,6 +416,7 @@ class Plotter:
             pass_metrics.get("peak_exertion_stats"),
         )
         self._add_annotations_and_summary(
+            pass_metrics.get("bpm_times"),
             pass_metrics.get("smoothed_bpm"),
             pass_metrics.get("hrv_summary"),
             pass_metrics.get("hrr_stats"),
@@ -504,7 +505,7 @@ class Plotter:
         if output_options is None or output_options.get("csv", True):
             smoothed_bpm = pass_metrics.get("smoothed_bpm")
             bpm_times = pass_metrics.get("bpm_times")
-            if smoothed_bpm is not None and not smoothed_bpm.empty and bpm_times is not None:
+            if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm) and len(bpm_times) > 0:
                 csv_path = os.path.join(self.output_directory, f"{base_name}{file_suffix}.csv")
                 csv_bpm_header = (
                     "BPM (Pass 2)"
@@ -517,7 +518,7 @@ class Plotter:
                     with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
                         writer = csv.writer(csvfile)
                         writer.writerow(["Time (s)", csv_bpm_header])
-                        for t, bpm in zip(bpm_times, smoothed_bpm.values):
+                        for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
                             if not np.isnan(bpm):
                                 writer.writerow([f"{t:.3f}", f"{bpm:.3f}"])
                     logging.info(f"BPM plot data saved to {csv_path}")
@@ -539,7 +540,7 @@ class Plotter:
     ):
         """
         Builds and saves the pass 1 plot: envelope, anchor beats, BPM scatter + curve (canonical, same as algorithm), and BPM Trend (Belief).
-        pass1_bpm_data: dict from compute_pass1_bpm_curve: raw_scatter_* (instant BPM), scatter_* (outlier-filtered), curve_* (LOESS on filtered).
+        pass1_bpm_data: dict from compute_pass1_bpm_curve: raw_scatter_* (instant BPM), scatter_* (outlier-filtered), curve_* (Gaussian smoothing on filtered).
         """
         self.time_axis_sec = np.arange(len(audio_envelope), dtype=float) / self.sample_rate
         self.audio_duration_sec = float(self.time_axis_sec[-1]) if len(self.time_axis_sec) > 0 else 0.0
@@ -700,14 +701,16 @@ class Plotter:
         if not has_pass1_bpm_markers:
             self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
 
-        # BPM Trend (Belief) from pass 1 (EMA from accepted beats during that run)
-        if pass1_analysis_data and "long_term_bpm_series" in pass1_analysis_data and not pass1_analysis_data["long_term_bpm_series"].empty:
-            lt_series = pass1_analysis_data["long_term_bpm_series"]
-            lt_times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(lt_series.index, dtype=np.float64))
+        # BPM Trend (Belief) (canonical: dense raster at STANDARD_DT_SEC).
+        if pass1_analysis_data and "pass2_lt_bpm_times" in pass1_analysis_data and "pass2_lt_bpm" in pass1_analysis_data:
+            lt_times = np.asarray(pass1_analysis_data["pass2_lt_bpm_times"], dtype=np.float64)
+            lt_vals = np.asarray(pass1_analysis_data["pass2_lt_bpm"], dtype=np.float64)
+            if len(lt_times) >= 2 and len(lt_times) == len(lt_vals):
+                lt_times_dt = _elapsed_seconds_to_plot_datetimes(lt_times)
             fig.add_trace(
                 go.Scatter(
                     x=lt_times_dt,
-                    y=lt_series.values,
+                    y=lt_vals,
                     name="BPM Trend (Belief)",
                     mode="lines",
                     line=dict(color="orange", width=2),
@@ -750,8 +753,8 @@ class Plotter:
         hrv_summary = pass_metrics.get("hrv_summary") or {}
         avg_bpm = hrv_summary.get("avg_bpm")
         smoothed_bpm = pass_metrics.get("smoothed_bpm")
-        if avg_bpm is None and smoothed_bpm is not None and not smoothed_bpm.empty:
-            avg_bpm = float(smoothed_bpm.mean())
+        if avg_bpm is None and smoothed_bpm is not None and len(smoothed_bpm) > 0:
+            avg_bpm = float(np.nanmean(np.asarray(smoothed_bpm, dtype=float)))
         if avg_bpm is None:
             avg_bpm = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
         self.bpm_axis_center = float(avg_bpm)
@@ -1225,10 +1228,14 @@ class Plotter:
             bpm_trace_name = "BPM (Pass 3)"
         else:
             bpm_trace_name = "Average BPM"
-        if smoothed_bpm is not None and not smoothed_bpm.empty:
+        if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm) and len(bpm_times) > 0:
+            bpm_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times, dtype=np.float64))
             self.fig.add_trace(
                 go.Scatter(
-                    x=smoothed_bpm.index, y=smoothed_bpm.values, name=bpm_trace_name, line=dict(color="#4a4a4a", width=3)
+                    x=bpm_dt,
+                    y=np.asarray(smoothed_bpm, dtype=np.float64),
+                    name=bpm_trace_name,
+                    line=dict(color="#4a4a4a", width=3),
                 ),
                 secondary_y=True,
             )
@@ -1296,7 +1303,7 @@ class Plotter:
         # Prior BPM curve: pass 1 on pass 2 plot, pass 2 on pass 3 plot
         if (
             pass1_bpm_series is not None
-            and not pass1_bpm_series.empty
+            and len(pass1_bpm_series) > 0
             and pass1_bpm_times is not None
             and len(pass1_bpm_times) == len(pass1_bpm_series)
         ):
@@ -1305,7 +1312,7 @@ class Plotter:
             self.fig.add_trace(
                 go.Scatter(
                     x=pass1_times_dt,
-                    y=pass1_bpm_series.values,
+                    y=np.asarray(pass1_bpm_series, dtype=np.float64),
                     name=prior_curve_name,
                     line=dict(color="orange", width=2),
                     visible="legendonly",
@@ -1449,7 +1456,7 @@ class Plotter:
                 ),
             )
         if obs_t:
-            # Outlier removal + LOESS best-fit curve (reuses pass1 BPM pattern)
+            # Outlier removal + Gaussian-smoothed curve (reuses pass1 BPM pattern)
             fit_data = compute_systole_interval_curve(
                 np.array(obs_t), np.array(obs_iv), self.params
             )
@@ -1494,13 +1501,20 @@ class Plotter:
                 )
         self._has_systolic_traces = True
 
-    def _add_annotations_and_summary(self, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats):
+    def _add_annotations_and_summary(self, bpm_times, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats):
         """Adds min/max BPM annotations on the plot and builds plain-text summary for the HTML Analysis Summary modal."""
-        if smoothed_bpm is not None and not smoothed_bpm.empty:
-            max_bpm_val = smoothed_bpm.max()
-            min_bpm_val = smoothed_bpm.min()
-            max_bpm_time = smoothed_bpm.idxmax()
-            min_bpm_time = smoothed_bpm.idxmin()
+        # smoothed_bpm is stored as a dense raster (array) in pass_metrics.
+        if bpm_times is not None and smoothed_bpm is not None and len(bpm_times) > 0 and len(bpm_times) == len(smoothed_bpm):
+            arr = np.asarray(smoothed_bpm, dtype=np.float64)
+            if not np.any(np.isfinite(arr)):
+                return
+            max_bpm_val = float(np.nanmax(arr))
+            min_bpm_val = float(np.nanmin(arr))
+            t = np.asarray(bpm_times, dtype=np.float64)
+            max_i = int(np.nanargmax(arr))
+            min_i = int(np.nanargmin(arr))
+            max_bpm_time = _elapsed_seconds_to_plot_datetimes(np.asarray([t[max_i]], dtype=np.float64))[0]
+            min_bpm_time = _elapsed_seconds_to_plot_datetimes(np.asarray([t[min_i]], dtype=np.float64))[0]
 
             self.fig.add_annotation(
                 x=max_bpm_time,
@@ -1513,7 +1527,6 @@ class Plotter:
                 font=dict(color="#e36f6f"),
                 yref="y2",
             )
-
             self.fig.add_annotation(
                 x=min_bpm_time,
                 y=min_bpm_val,

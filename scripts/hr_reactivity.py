@@ -129,7 +129,14 @@ def compute_derivative(df, derivative_window=3):
         # convert seconds-window to number of samples by nearest integer average sample spacing
         avg_dt = np.median(dt) if len(dt) > 0 else 1.0
         window_samples = max(1, int(round(derivative_window / avg_dt)))
-        df['dbpm_dt'] = df['dbpm_dt_raw'].rolling(window=window_samples, center=True, min_periods=1).mean()
+        # Light Gaussian smoothing (closer to core pipeline smoothing than boxcar mean)
+        try:
+            from scipy.ndimage import gaussian_filter1d
+            # window_samples ≈ 6σ → σ ≈ window/6
+            sigma = max(1.0, float(window_samples) / 6.0)
+            df['dbpm_dt'] = gaussian_filter1d(df['dbpm_dt_raw'].to_numpy(dtype=float), sigma=sigma, mode="nearest")
+        except Exception:
+            df['dbpm_dt'] = df['dbpm_dt_raw'].rolling(window=window_samples, center=True, min_periods=1).mean()
     return df
 
 def merge_bool_runs(times, mask, allowed_gap=5.0):
