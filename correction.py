@@ -803,6 +803,42 @@ def _pass3_measured_systole_series_from_boundaries(
     return t[order], d[order]
 
 
+def _pass3_measured_diastole_series_from_boundaries(
+    state_boundaries: List[Tuple],
+    sample_rate: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build (times_sec, durations_sec) for *measured diastole* from the current state boundaries.
+
+    "Measured diastole" matches the Pass 3 hover debug's diastole measured value:
+      measured_ms = (s1_next - s2_end) / sr * 1000
+
+    In the current boundary representation, each diastole segment is stored as [s2_end, s1_next).
+    We use the midpoint of each diastole segment as the sample time.
+    """
+    sr = float(sample_rate)
+    t_list: List[float] = []
+    d_list: List[float] = []
+    for s0, s1, st, _meta in (state_boundaries or []):
+        if st != "diastole":
+            continue
+        a0 = float(s0); a1 = float(s1)
+        if not np.isfinite(a0) or not np.isfinite(a1) or a1 <= a0:
+            continue
+        t_mid = (a0 + a1) / 2.0 / sr
+        dur   = (a1 - a0) / sr
+        if not np.isfinite(t_mid) or not np.isfinite(dur) or dur <= 0:
+            continue
+        t_list.append(float(t_mid))
+        d_list.append(float(dur))
+    if not t_list:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+    t = np.asarray(t_list, dtype=np.float64)
+    d = np.asarray(d_list, dtype=np.float64)
+    order = np.argsort(t)
+    return t[order], d[order]
+
+
 def _interp_piecewise_linear(
     t_query: float,
     t: np.ndarray,
@@ -828,6 +864,8 @@ def _pass3_rebuild_unknown_runs(
     params: Dict,
     measured_systole_t: Optional[np.ndarray] = None,
     measured_systole_dur: Optional[np.ndarray] = None,
+    measured_diastole_t: Optional[np.ndarray] = None,
+    measured_diastole_dur: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
     Fill every STATE_UNKNOWN run in *state_labels* with a scaled cardiac sequence.
@@ -915,28 +953,65 @@ def _pass3_rebuild_unknown_runs(
         scale = actual_cycle / nominal_cycle
 
         # Scaled phase durations in samples.
-        # S1/S2 event widths come from ivs nominal acoustic durations; systole comes from
-        # *measured systole* interpolation when available, else falls back to BPM-expected.
-        p_s1  = max(1, int(round(float(ivs.get("s1_nominal", 0.040)) * SR * scale)))
-        p_s2  = max(1, int(round(float(ivs.get("s2_nominal", 0.030)) * SR * scale)))
+        # S1/S2 event widths come from ivs nominal acoustic durations; systole/diastole come from
+        # measured interpolation when available, else fall back to BPM-expected.
+        #
+        # To avoid treating any state as a "remainder bucket", we:
+        #   - build float targets for all 4 phases
+        #   - round with "largest remainder" so the sum exactly matches the cycle length
+        L = max(4, int(round(actual_cycle)))
+        s1_sec = float(ivs.get("s1_nominal", 0.040))
+        s2_sec = float(ivs.get("s2_nominal", 0.030))
 
-        # Use the midpoint of the gap as a stable query time for this gap's systole.
-        # (Per-cycle querying is possible too, but this keeps behavior smooth and simple.)
         sys_meas_sec = _interp_piecewise_linear(t_mid, measured_systole_t, measured_systole_dur)
         if sys_meas_sec is None:
             sys_meas_sec = float(ivs.get("s1_s2_nominal", 0.300))
-        p_sys = max(1, int(round(float(sys_meas_sec) * SR * scale)))
 
-        # Diastole fills whatever remains in the cycle so rounding errors don't accumulate.
-        p_dia = max(1, int(actual_cycle) - p_s1 - p_sys - p_s2)
-        if p_dia < 1:
-            # Redistribute: shrink phases proportionally until diastole is at least 1 sample.
-            total_others = p_s1 + p_sys + p_s2
-            shrink = (int(actual_cycle) - 1) / max(1, total_others)
-            p_s1  = max(1, int(p_s1  * shrink))
-            p_sys = max(1, int(p_sys * shrink))
-            p_s2  = max(1, int(p_s2  * shrink))
-            p_dia = max(1, int(actual_cycle) - p_s1 - p_sys - p_s2)
+        dia_meas_sec = _interp_piecewise_linear(t_mid, measured_diastole_t, measured_diastole_dur)
+        if dia_meas_sec is None:
+            dia_meas_sec = float(ivs.get("s2_s1_nominal", max(0.0, rr_sec - float(sys_meas_sec))))
+
+        targets = [
+            float(s1_sec) * SR * scale,
+            float(sys_meas_sec) * SR * scale,
+            float(s2_sec) * SR * scale,
+            float(dia_meas_sec) * SR * scale,
+        ]
+        base = [max(1, int(math.floor(x))) for x in targets]
+        frac = [float(x) - float(b) for x, b in zip(targets, base)]
+        missing = L - int(sum(base))
+        if missing > 0:
+            for idx in np.argsort(np.asarray(frac, dtype=np.float64))[::-1][:missing]:
+                base[int(idx)] += 1
+        elif missing < 0:
+            # Remove from smallest fractional parts first, but never below 1.
+            need = -missing
+            for idx in np.argsort(np.asarray(frac, dtype=np.float64)):
+                if need <= 0:
+                    break
+                ii = int(idx)
+                if base[ii] > 1:
+                    base[ii] -= 1
+                    need -= 1
+        p_s1, p_sys, p_s2, p_dia = (int(x) for x in base)
+
+        # If the sample immediately before the gap is already STATE_S1 the clear step
+        # kept the S1 but cleared systole..diastole (diastole-only noise case).  We must
+        # NOT generate another S1 for the first cycle — start from systole instead.
+        # Also look up the preceding S1's peak index from boundaries so s1_pk is correct.
+        pre_is_s1 = (gap_lo > 0 and int(state_labels[gap_lo - 1]) == STATE_S1)
+        pre_s1_pk: Optional[int] = None
+        if pre_is_s1:
+            for _seg in reversed(state_boundaries):
+                if _seg[2] == "S1" and int(_seg[1]) == gap_lo and isinstance(_seg[3], dict):
+                    pre_s1_pk = int(_seg[3]["s1"])
+                    break
+            if pre_s1_pk is None:
+                # Fallback: scan for any S1 boundary that ends at or just before gap_lo
+                for _seg in reversed(state_boundaries):
+                    if _seg[2] == "S1" and int(_seg[1]) <= gap_lo and isinstance(_seg[3], dict):
+                        pre_s1_pk = int(_seg[3]["s1"])
+                        break
 
         cursor = gap_lo  # tracks right edge of previous cycle — prevents any overlap
 
@@ -955,31 +1030,50 @@ def _pass3_rebuild_unknown_runs(
                 cursor = c_end
                 continue
 
-            # Paint four contiguous blocks using scaled expected durations.
+            # First cycle of a diastole-only-noise gap: the preceding kept S1 is the
+            # anchor — skip the S1 block and paint systole→S2→diastole only.
+            skip_s1 = (ci == 0 and pre_is_s1)
+            if skip_s1:
+                s1_pk = pre_s1_pk if pre_s1_pk is not None else cyc_start
+                paint_start = cyc_start  # systole starts right at the gap edge
+            else:
+                s1_pk = cyc_start
+                paint_start = cyc_start
+
+            # Paint contiguous blocks using scaled expected durations.
             # Each boundary is clamped to [cyc_start, c_end] so nothing overflows.
-            s1_pk = cyc_start  # S1 peak = start of cycle block
+            if skip_s1:
+                # No S1 block — systole starts at paint_start.
+                sys_e = min(c_end, paint_start + p_sys)
+                s2_pk = sys_e
+                s2_e  = min(c_end, sys_e + p_s2)
+                dia_e = c_end
+            else:
+                s1_s  = paint_start
+                s1_e  = min(c_end, s1_s + p_s1)
+                sys_e = min(c_end, s1_e + p_sys)
+                s2_pk = sys_e
+                s2_e  = min(c_end, sys_e + p_s2)
+                dia_e = c_end
 
-            s1_s  = cyc_start
-            s1_e  = min(c_end, s1_s  + p_s1)
-            sys_e = min(c_end, s1_e  + p_sys)
-            s2_pk = sys_e  # S2 peak = start of S2 block
-            s2_e  = min(c_end, sys_e + p_s2)
-            dia_e = c_end  # diastole always fills to cycle end
-
-            if s1_e > s1_s:
+            if not skip_s1 and s1_e > s1_s:
                 state_labels[s1_s:s1_e] = STATE_S1
                 new_segs.append((s1_s, s1_e, "S1", {
                     "s1": s1_pk,
                     "noise_rebuild": True,
                     "reasoning": _pass3_noise_rebuild_reasoning("S1", ivs, sample_rate, s1_s, s1_e),
                 }))
-            if sys_e > s1_e:
-                state_labels[s1_e:sys_e] = STATE_SYSTOLE
-                new_segs.append((s1_e, sys_e, "systole", {
+                sys_start = s1_e
+            else:
+                sys_start = paint_start
+
+            if sys_e > sys_start:
+                state_labels[sys_start:sys_e] = STATE_SYSTOLE
+                new_segs.append((sys_start, sys_e, "systole", {
                     "s1": s1_pk,
                     "s2": s2_pk,
                     "noise_rebuild": True,
-                    "reasoning": _pass3_noise_rebuild_reasoning("systole", ivs, sample_rate, s1_e, sys_e),
+                    "reasoning": _pass3_noise_rebuild_reasoning("systole", ivs, sample_rate, sys_start, sys_e),
                 }))
             if s2_e > sys_e:
                 state_labels[sys_e:s2_e] = STATE_S2
@@ -1899,6 +1993,7 @@ def run_pass3_correction(
     )
     if _noise_repair_on and noise_ivs_final:
         _ms_t, _ms_d = _pass3_measured_systole_series_from_boundaries(state_boundaries, sample_rate)
+        _md_t, _md_d = _pass3_measured_diastole_series_from_boundaries(state_boundaries, sample_rate)
         state_labels, state_boundaries = _pass3_clear_states_in_hf_noise(
             state_labels, state_boundaries, noise_ivs_final, n_samples, peaks_out,
         )
@@ -1912,6 +2007,8 @@ def run_pass3_correction(
             lt_pass3, fallback_bpm, sample_rate, params,
             measured_systole_t=_ms_t,
             measured_systole_dur=_ms_d,
+            measured_diastole_t=_md_t,
+            measured_diastole_dur=_md_d,
         )
         _n_rebuilt = sum(
             1 for seg in state_boundaries
