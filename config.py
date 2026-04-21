@@ -171,22 +171,23 @@ DEFAULT_PARAMS = {
     # 6. Pass 3 — Correction + dense state timeline (bridge to Pass 4)
     # =================================================================================
     # pass3's job is to generate the state sequence based on data from pass2. then correct that sequence.
-    #
 
-    # --- 6.1 S2 spectral-profile alignment (global; not “outside the loop” only — also Pass A, B/C rebuilds, final paint) ---
+    # --- 6.1 S2 spectral-profile alignment (used while generating the initial state timeline) ---
+    # This affects: initial S2 rebuild, any later per-cycle rebuilds, and final paint.
     "pass3_align_s2_to_s2_spectral_profile": False,  # If True, slide FFT vs S2 spectral template to refine S2 time; if False, nominal ejection-time index only. HF-noise beats still skip alignment per cycle.
     "pass3_align_s2_window_ms": 120.0,          # FFT search width for initial rebuild / Pass B–C rebuild / final paint (ms), ±half around nominal S2.
 
-    # --- 6.2 rebuild state sequence during noisy segments ---
-    "pass3_enable_noise_repair": True,  # If True and noise_event_segments exist: samples in those times → unknown; strip gaps.
-
-    # --- 6.3 Correction loop (A→B→C) — iteration cap + Pass A–only search width (pass3_align_s2_to_s2_spectral_profile still applies in Pass A) ---
+    # --- 6.2 Correction loop (A→B→C) — iteration cap + Pass A–only search width ---
     "pass3_correction_max_iters": 0,          # Max rounds of A→B→C; use 0 to skip the loop entirely. Higher fixes more disjoint issues; risks over-correction.
     "pass3_resnap_s2_window_ms": 220.0,         # Pass A only: FFT search width when re-snapping S2 for implausible systole (wider = search farther).
     "pass3_systole_slack_frac": 0.15,           # Pass A: tolerate systole this much shorter/longer vs BPM bounds before calling it “bad” (higher = fewer resnaps).
     "pass3_diastole_slack_frac": 0.20,          # Pass A diagnostics + Pass C: diastole “too short” threshold slack (higher = fewer flip/demote triggers).
 
-    # --- 6.4 Step 3 — insert missing states in large gaps (state-level) ---
+    # --- 6.3 Noise repair (global modifier after the initial timeline exists) ---
+    # If enabled and HF-noise windows exist: clear state labels inside those spans and rebuild the full S1→systole→S2→diastole sequence.
+    "pass3_enable_noise_repair": True,
+
+    # --- 6.4 Insert missing states in large gaps (state-level) ---
     "pass3_enable_gap_state_insert": True,  # If True, long single-state spans get surplus tail regenerated via the same logic as noise rebuild.
 
     # --- 6.5 Pass C — phase / sequence fixes (false S1, S1↔S2 flip, faint S2) ---
@@ -197,7 +198,7 @@ DEFAULT_PARAMS = {
     "pass3_local_peak_sensitivity_factor": 0.6, # vs dynamic noise floor; lower = more sensitive peaks, more false positives.
     "pass3_s2_spectral_min_templates": 3,      # Min paired S2 templates before any spectral S2 path runs (insert context).
 
-    # --- 6.6 Final state timeline — envelope boundary paint (after loop; also caps the “before” snapshot half-windows) ---
+    # --- 6.6 Final state timeline — envelope boundary paint ---
     "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.
     "pass3_state_s2_window_ms": 120.0,          # Same for S2.
     "pass3_state_edge_alpha": 0.03,             # Transient edge threshold as a fraction of weighted peak height (lower → wider S1/S2 regions).

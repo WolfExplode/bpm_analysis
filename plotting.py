@@ -1169,8 +1169,10 @@ class Plotter:
             """
             Pass 2 debug: plot per-peak label_scores (S1/S2/noise) as percentage traces (0–100)
             on the same axis as BPM (secondary_y=True).
+
+            Also included on the Pass 3 plot since Pass 3 consumes these scores.
             """
-            if output_suffix != "_pass2":
+            if output_suffix not in ("_pass2", "_pass3"):
                 return
             debug_info = (analysis_data or {}).get("peak_classifications") or {}
             if not isinstance(debug_info, dict) or not debug_info:

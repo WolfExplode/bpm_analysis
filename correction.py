@@ -462,6 +462,101 @@ def _paint_state_boundaries(
     return s1_start, s1_end, s2_start, s2_end
 
 
+def _envelope_align_duration_note(phase: str, before_ms: int, after_ms: int) -> str:
+    """Hover line: fixed ±window duration vs envelope-aligned duration (Pass 3 final paint)."""
+    label = {"S1": "S1", "S2": "S2", "systole": "Systole", "diastole": "Diastole"}.get(phase, phase)
+    if before_ms == after_ms:
+        return (
+            f"\u2139 {label}: duration unchanged at {after_ms}ms "
+            f"(envelope bounds matched the fixed \u00b1window span)."
+        )
+    return (
+        f"\u2139 {label}: duration altered to align with envelope bounds "
+        f"(from {before_ms}ms to {after_ms}ms)."
+    )
+
+
+def _s2_index_hover_note(
+    s1: int,
+    s2: int,
+    s1_next: int,
+    s1_s2_pairs: Optional[List[Tuple[int, int]]],
+    ivs: Dict,
+    sample_rate: float,
+    snap_s2_effective: bool,
+    noise_ivs: Optional[List[Tuple[int, int]]],
+    direct_corrections: Optional[List[Dict]] = None,
+) -> str:
+    """How the S2 *sample index* was chosen for this cycle (Pass 2 pair vs nominal vs spectral), for hover."""
+    pair_map = {int(a): int(b) for a, b in (s1_s2_pairs or [])}
+    s2_p2 = pair_map.get(int(s1))
+    in_w = s2_p2 is not None and s1 < int(s2_p2) < s1_next
+    s1_s2_nom = float(ivs.get("s1_s2_nominal", 0.30))
+    sr = float(sample_rate)
+    s2_pred = int(round(s1 + s1_s2_nom * sr))
+    s2_nom = int(max(s1 + 1, min(s2_pred, s1_next - 1)))
+    thresh = max(2, int(0.010 * sr))
+    niv = noise_ivs or []
+    hf = _hf_noise_disables_s2_snap(int(s1), int(s1_next), niv, s2_check=int(s2))
+    s2i = int(s2)
+
+    parts: List[str] = []
+    if in_w and s2i == int(s2_p2):
+        parts.append(
+            "\u2139 S2 index: uses the Pass 2 labeled S2 for this S1."
+        )
+    elif in_w:
+        ct = {str(c.get("type", "")) for c in (direct_corrections or [])}
+        explain: List[str] = []
+        if "resnap_s2" in ct:
+            explain.append("Pass A re-snapped S2 for systole timing")
+        if "flip_demote_s1" in ct:
+            explain.append("Pass C flipped a mistaken S1 boundary")
+        if "remove_false_s1" in ct:
+            explain.append("Pass C removed a false S1 (S1 list rebuilt)")
+        if "sensitive_peak" in ct or "spectral_s2" in ct:
+            explain.append("Pass C faint-S2 placement")
+        if snap_s2_effective and abs(s2i - s2_nom) > thresh and "resnap_s2" not in ct:
+            explain.append("spectral S2 alignment on initial rebuild or paint")
+
+        if explain:
+            parts.append(
+                f"\u2139 S2 index: Pass 2 had S2 at sample {int(s2_p2)} in-window, but the timeline uses {s2i} "
+                f"({'; '.join(explain)})."
+            )
+        else:
+            if snap_s2_effective:
+                parts.append(
+                    f"\u2139 S2 index: Pass 2 had S2 at sample {int(s2_p2)} in-window, but the timeline uses {s2i}. "
+                    "No Pass A/C correction is logged on this beat; with spectral S2 alignment on, "
+                    "the rebuild step can replace the Pass 2 sample with the template-based pick."
+                )
+            else:
+                parts.append(
+                    f"\u2139 S2 index: Pass 2 had S2 at sample {int(s2_p2)} in-window, but the timeline uses {s2i}. "
+                    "Pass A resnap and Pass C edits are not logged for this beat, and spectral S2 snap is off—"
+                    "so those steps did not move S2 away from Pass 2."
+                )
+    else:
+        parts.append(
+            "\u2139 S2 index: no Pass 2 S2 pair usable inside this RR window (or pair outside the interval)—"
+            f"placed from BPM nominal s1_s2 ({s1_s2_nom:.3f}s via calculate_bpm_intervals), then Pass 3 rules."
+        )
+
+    if hf and (not snap_s2_effective):
+        parts.append("HF-noise window: spectral S2 snap is disabled; index follows the nominal path above.")
+    elif snap_s2_effective and abs(s2i - s2_nom) > thresh:
+        if not (in_w and s2i == int(s2_p2)):
+            d_ms = round(abs(s2i - s2_nom) / sr * 1000)
+            parts.append(f"S2 spectral template alignment moved the index ~{d_ms} ms vs the nominal clamp.")
+    elif snap_s2_effective and not (in_w and s2i == int(s2_p2)) and abs(s2i - s2_nom) <= thresh:
+        parts.append(
+            "Spectral snap is on; the final index matches the nominal ejection-time clamp (no large shift)."
+        )
+
+    return " ".join(parts)
+
+
 def _build_reasoning_payload(
     s1: int,
     s1_start: int,
@@ -478,6 +573,13 @@ def _build_reasoning_payload(
     sample_rate: float,
     shift_thresh_samp: int,
     snap_s2: bool,
+    *,
+    hover_debug_geometry: bool = False,
+    hover_s1_s2_pairs: Optional[List[Tuple[int, int]]] = None,
+    hover_noise_ivs: Optional[List[Tuple[int, int]]] = None,
+    hover_s1_half: int = 0,
+    hover_s2_half: int = 0,
+    hover_n_samples: int = 0,
 ) -> Dict[str, Any]:
     """Build expected/measured ms + warning notes per state for the HTML overlay (cardiac strip hover)."""
     _exp_s1_ms  = round(ivs.get("s1_nominal",    0.040) * 1000)
@@ -509,7 +611,7 @@ def _build_reasoning_payload(
 
     # Initial S2 placement uses FFT template matching when pass3_align_s2_to_s2_spectral_profile is on.
     # There is no per-beat correction dict for that path — explain when S2 still differs from the nominal index.
-    if snap_s2 and not _s2_notes:
+    if snap_s2 and not _s2_notes and not hover_debug_geometry:
         s2_pred_nom = int(round(s1 + float(ivs.get("s1_s2_nominal", 0.30)) * sample_rate))
         s2_nom_idx = int(max(s1 + 1, min(s2_pred_nom, s1_next - 1)))
         if abs(s2 - s2_nom_idx) > shift_thresh_samp:
@@ -517,6 +619,46 @@ def _build_reasoning_payload(
             _s2_notes.append(
                 f"\u2139 S2 placed by S2 spectral template match ({d_ms} ms from nominal ejection time)."
             )
+
+    if hover_debug_geometry:
+        if hover_n_samples > 0 and hover_s1_half >= 1 and hover_s2_half >= 1:
+            fs1s, fs1e, fs2s, fs2e = _paint_state_boundaries(
+                s1, s2, s1_next, hover_s1_half, hover_s2_half, hover_n_samples,
+                use_transient_detection=False,
+            )
+            bf_s1 = round((fs1e - fs1s) / sample_rate * 1000) if fs1e > fs1s else 0
+            bf_s2 = round((fs2e - fs2s) / sample_rate * 1000) if fs2e > fs2s else 0
+            bf_sys = round((fs2s - fs1e) / sample_rate * 1000) if fs2s > fs1e else 0
+            bf_dia = round((s1_next - fs2e) / sample_rate * 1000) if s1_next > fs2e else 0
+            _s1_notes = [_envelope_align_duration_note("S1", bf_s1, _meas_s1_ms)] + _s1_notes
+            _sys_notes = [_envelope_align_duration_note("systole", bf_sys, _meas_sys_ms)] + _sys_notes
+            _s2_notes = (
+                [_envelope_align_duration_note("S2", bf_s2, _meas_s2_ms)]
+                + [_s2_index_hover_note(
+                    s1, s2, s1_next, hover_s1_s2_pairs, ivs, sample_rate, snap_s2, hover_noise_ivs,
+                    direct_corrections=direct_corrections,
+                )]
+                + _s2_notes
+            )
+            _dia_notes = [_envelope_align_duration_note("diastole", bf_dia, _meas_dia_ms)] + _dia_notes
+        else:
+            _s1_notes = [
+                f"\u2139 S1: duration {_meas_s1_ms}ms (envelope-aligned; fixed-window baseline unavailable).",
+            ] + _s1_notes
+            _sys_notes = [
+                f"\u2139 Systole: duration {_meas_sys_ms}ms (gap after envelope paint).",
+            ] + _sys_notes
+            _s2_notes = (
+                [f"\u2139 S2: duration {_meas_s2_ms}ms (envelope-aligned; fixed-window baseline unavailable)."]
+                + [_s2_index_hover_note(
+                    s1, s2, s1_next, hover_s1_s2_pairs, ivs, sample_rate, snap_s2, hover_noise_ivs,
+                    direct_corrections=direct_corrections,
+                )]
+                + _s2_notes
+            )
+            _dia_notes = [
+                f"\u2139 Diastole: duration {_meas_dia_ms}ms (gap after envelope paint).",
+            ] + _dia_notes
 
     return {
         "S1":       {"expected_ms": _exp_s1_ms,  "measured_ms": _meas_s1_ms,  "notes": _s1_notes},
@@ -572,6 +714,14 @@ def _rebuild_s2_events(
         s1_s2_nominal_a = float(ivs_a.get("s1_s2_nominal", 0.30))
         s2_pred_a = int(round(a + s1_s2_nominal_a * sample_rate))
         snap_here = _effective_snap_s2(snap_s2, a, b, niv, s2_check=None)
+        # When spectral S2 alignment is off, keep the Pass-2 / nominal seed from
+        # _seed_s2_from_pass2_pairs instead of re-deriving only the BPM clamp (which
+        # can disagree with an in-window labeled S2).
+        if seed is not None and j < len(seed) and (not snap_here):
+            sj = int(seed[j])
+            if a < sj < b:
+                s2_events.append(int(max(a + 1, min(sj, b - 1))))
+                continue
         s2_a = _choose_s2_near(
             a, b, s2_pred_a, snap_half,
             snap_here, insert_spectrum_ctx, sample_rate, n_samples, params, ivs_a,
@@ -2239,6 +2389,12 @@ def run_pass3_correction(
             s1, s1_start, s1_end, s2, s2_start, s2_end, s1_next,
             _ivs_r, _direct, _cascade, _bef_s2, _bef_s1nxt,
             _sr_f, _SHIFT_THRESH_SAMP, snap_reason,
+            hover_debug_geometry=True,
+            hover_s1_s2_pairs=_pairs,
+            hover_noise_ivs=noise_ivs_final,
+            hover_s1_half=s1_half,
+            hover_s2_half=s2_half,
+            hover_n_samples=n_samples,
         )
 
         if s1_end > s1_start:
