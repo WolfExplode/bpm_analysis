@@ -351,6 +351,8 @@
       const x = Math.max(0, Math.min(width, px0));
       const xEnd = Math.max(0, Math.min(width, px1));
       if (xEnd <= x) continue;
+      // Gaps: Python clips segments so nothing is drawn over HF-noise times; unknown is unused in segments.
+      if (state === "unknown" || state === "gap") continue;
       ctx.fillStyle = colors[state] || "#555555";
       ctx.fillRect(x, 0, xEnd - x, stripHeight);
     }

@@ -38,14 +38,16 @@ STATE_S1 = 0
 STATE_SYSTOLE = 1
 STATE_S2 = 2
 STATE_DIASTOLE = 3
+# Samples inside HF-noise windows when pass3_enable_noise_repair clears untrusted labels.
+STATE_UNKNOWN = 4
 
 STATE_LABELS_ENCODING: Dict[str, int] = {
     "S1": STATE_S1,
     "systole": STATE_SYSTOLE,
     "S2": STATE_S2,
     "diastole": STATE_DIASTOLE,
+    "unknown": STATE_UNKNOWN,
 }
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level helpers  (formerly closures inside _refine_and_correct_peaks)
@@ -454,7 +456,6 @@ def _build_reasoning_payload(
     sample_rate: float,
     shift_thresh_samp: int,
     snap_s2: bool,
-    noise_repair: bool = False,
 ) -> Dict[str, Any]:
     """Build expected/measured ms + warning notes per state for the HTML overlay (cardiac strip hover)."""
     _exp_s1_ms  = round(ivs.get("s1_nominal",    0.040) * 1000)
@@ -467,11 +468,6 @@ def _build_reasoning_payload(
     _meas_s2_ms  = round((s2_end   - s2_start) / sample_rate * 1000) if s2_end   > s2_start else 0
     _meas_dia_ms = round((s1_next  - s2_end)   / sample_rate * 1000) if s1_next  > s2_end   else 0
 
-    _noise_note = (
-        "\u26a0 Regenerated from noise repair \u2014 original states are inaccurate in noisy regions."
-        if noise_repair else None
-    )
-
     _s1_notes  = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
                   if c.get("type") == "remove_false_s1"]
     _sys_notes = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
@@ -480,12 +476,6 @@ def _build_reasoning_payload(
                   if c.get("type") in ("resnap_s2", "flip_demote_s1", "sensitive_peak", "spectral_s2")]
     _dia_notes = [_fmt_corr_note(c, sample_rate) for c in direct_corrections
                   if c.get("type") in ("insert_s1", "flip_demote_s1")]
-
-    if _noise_note:
-        _s1_notes.insert(0, _noise_note)
-        _sys_notes.insert(0, _noise_note)
-        _s2_notes.insert(0, _noise_note)
-        _dia_notes.insert(0, _noise_note)
 
     if cascade_src:
         if not _sys_notes and before_s2 is not None and abs(before_s2 - s2) > shift_thresh_samp:
@@ -533,9 +523,8 @@ def _rebuild_s2_events(
 ) -> List[int]:
     """Rebuild s2_events from scratch given the current s1_list.
 
-    When ``seed_s2_events`` is set (e.g. after HF noise repair), cycles that still
-    overlap HF-noise keep ``seed_s2_events[j]`` so spectral snap cannot override
-    BPM-based S2 placement for those beats.
+    When ``seed_s2_events`` is set and a cycle overlaps HF-noise, keep that seed
+    index so pass3_align_s2_to_s2_spectral_profile does not run on bad audio.
     """
     niv = noise_ivs or []
     seed = seed_s2_events
@@ -596,19 +585,371 @@ def _noise_sample_intervals(
     return out
 
 
-def _cycle_needs_noise_repair(
-    s1: int,
-    s1_next: int,
-    s2: int,
-    noise_ivs: List[Tuple[int, int]],
+def _merge_sorted_intervals(ivs: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    if not ivs:
+        return []
+    s = sorted(ivs, key=lambda t: (t[0], t[1]))
+    out: List[Tuple[int, int]] = [s[0]]
+    for a, b in s[1:]:
+        la, lb = out[-1]
+        if a <= lb:
+            out[-1] = (la, max(lb, b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _half_open_intervals_intersect(a0: int, a1: int, b0: int, b1: int) -> bool:
+    """True iff [a0, a1) and [b0, b1) overlap (half-open)."""
+    return int(b0) < int(a1) and int(b1) > int(a0)
+
+
+def _span_intersects_merged_noise(
+    lo: int, hi: int, merged: List[Tuple[int, int]], n_samples: int,
 ) -> bool:
-    """True if the RR window or current S2 index intersects HF-noise intervals."""
-    for lo, hi in noise_ivs:
-        if lo < s1_next and hi > s1:
-            return True
-        if lo <= s2 < hi:
+    """True if [lo, hi) overlaps any merged HF-noise interval."""
+    for nlo, nhi in merged:
+        nlo = max(0, int(nlo))
+        nhi = min(n_samples, int(nhi))
+        if nhi <= nlo:
+            continue
+        if _half_open_intervals_intersect(lo, hi, nlo, nhi):
             return True
     return False
+
+
+def _pass3_clear_states_in_hf_noise(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    noise_ivs: List[Tuple[int, int]],
+    n_samples: int,
+    s1_peaks: np.ndarray,
+) -> Tuple[np.ndarray, List[Tuple]]:
+    """
+    HF noise repair (merged preprocessing windows):
+
+    - If the **S1** phase of a beat intersects noise, clear dense labels from painted S1 start
+      through the next S1 peak and drop all four boundary segments for that beat.
+
+    - If **diastole** intersects noise **and S1 does not**, clear only **after** that beat's
+      own S1 phase through the next S1 peak ``[s1_end, s1_next)``, keep the **S1** segment,
+      and drop systole / S2 / diastole segments for that beat only (anchor = this beat's S1).
+
+    The **first merged** HF-noise interval **starting at sample 0** is ignored for this
+    repair only: clearing there would remove early S1 runs and Pass 3 state-timeline BPM would
+    have no points for the start of the file. Later noise windows still trigger clearing.
+    """
+    merged = _merge_sorted_intervals(noise_ivs)
+    if not merged:
+        return state_labels, state_boundaries
+    if int(merged[0][0]) == 0:
+        merged = merged[1:]
+    if not merged:
+        return state_labels, state_boundaries
+
+    peaks = np.asarray(s1_peaks, dtype=np.int64)
+    n_cyc = max(0, len(peaks) - 1)
+
+    # One pass over boundaries: O(n) maps for cycle lookups (avoids re-scanning per beat).
+    s1_span: Dict[int, Tuple[int, int]] = {}
+    dia_span: Dict[int, Tuple[int, int]] = {}
+    for seg in state_boundaries:
+        st = seg[2]
+        if st not in ("S1", "diastole"):
+            continue
+        bm = seg[3] if isinstance(seg[3], dict) else {}
+        pk = bm.get("s1")
+        if pk is None:
+            continue
+        pk_i = int(pk)
+        a0 = max(0, min(int(seg[0]), n_samples))
+        a1 = max(0, min(int(seg[1]), n_samples))
+        if a1 <= a0:
+            continue
+        if st == "S1":
+            s1_span[pk_i] = (a0, a1)
+        else:
+            dia_span[pk_i] = (a0, a1)
+
+    s1_touch: set = set()
+    dia_touch: set = set()
+    for i in range(n_cyc):
+        pk = int(peaks[i])
+        s1_next = int(peaks[i + 1])
+        if s1_next <= pk:
+            continue
+        se = s1_span.get(pk)
+        if se is None:
+            continue
+        s0, e0 = se
+        if _span_intersects_merged_noise(s0, e0, merged, n_samples):
+            s1_touch.add(pk)
+        de = dia_span.get(pk)
+        if de is not None:
+            d0, d1 = de
+            if _span_intersects_merged_noise(d0, d1, merged, n_samples):
+                dia_touch.add(pk)
+
+    # Full beat only when S1 touches noise; diastole-only → clear states after the S1 for that beat.
+    dia_only = dia_touch - s1_touch
+    if not s1_touch and not dia_only:
+        return state_labels, state_boundaries
+
+    # Dense: S1 noise → clear [S1 start .. next peak)
+    for i in range(n_cyc):
+        pk = int(peaks[i])
+        if pk not in s1_touch:
+            continue
+        s1_next = int(peaks[i + 1])
+        se = s1_span.get(pk)
+        if se is None or s1_next <= se[0]:
+            continue
+        lo_clr = max(0, se[0])
+        hi_clr = min(n_samples, s1_next)
+        if hi_clr > lo_clr:
+            state_labels[lo_clr:hi_clr] = STATE_UNKNOWN
+
+    # Dense: diastole noise only (S1 clean) → clear [s1_end .. next peak), keep S1 labels
+    for i in range(n_cyc):
+        pk = int(peaks[i])
+        if pk not in dia_only:
+            continue
+        s1_next = int(peaks[i + 1])
+        se = s1_span.get(pk)
+        if se is None:
+            continue
+        _, s1_end = se
+        if s1_next <= s1_end:
+            continue
+        lo_p = max(0, s1_end)
+        hi_p = min(n_samples, s1_next)
+        if hi_p > lo_p:
+            state_labels[lo_p:hi_p] = STATE_UNKNOWN
+
+    new_bd: List[Tuple] = []
+    for seg in state_boundaries:
+        st_name = seg[2]
+        meta = seg[3] if isinstance(seg[3], dict) else {}
+        s1_key = meta.get("s1")
+        if s1_key is not None:
+            sk = int(s1_key)
+            if sk in s1_touch:
+                continue
+            if sk in dia_only and st_name in ("systole", "S2", "diastole"):
+                continue
+        new_bd.append(seg)
+    return state_labels, new_bd
+
+
+def _pass3_noise_rebuild_reasoning(
+    phase: str,
+    ivs: Dict,
+    sample_rate: int,
+    lo: int,
+    hi: int,
+) -> Dict[str, Any]:
+    """Per-phase hover payload for segments filled by _pass3_rebuild_unknown_runs (matches cardiac strip tooltip)."""
+    sr = float(sample_rate)
+    meas_ms = int(round((hi - lo) / sr * 1000.0)) if hi > lo else 0
+    if phase == "S1":
+        exp_ms = int(round(float(ivs.get("s1_nominal", 0.040)) * 1000.0))
+    elif phase == "systole":
+        exp_ms = int(round(float(ivs.get("s1_s2_nominal", 0.300)) * 1000.0))
+    elif phase == "S2":
+        exp_ms = int(round(float(ivs.get("s2_nominal", 0.030)) * 1000.0))
+    else:
+        exp_ms = int(round(float(ivs.get("s2_s1_nominal", 0.400)) * 1000.0))
+    return {
+        "expected_ms": exp_ms,
+        "measured_ms": meas_ms,
+        "notes": [
+            "Regenerated in noisy region from BPM",
+        ],
+    }
+
+
+def _pass3_rebuild_unknown_runs(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    n_samples: int,
+    lt_series: Optional[pd.Series],
+    fallback_bpm: float,
+    sample_rate: int,
+    params: Dict,
+) -> Tuple[np.ndarray, List[Tuple]]:
+    """
+    Fill every STATE_UNKNOWN run in *state_labels* with a scaled cardiac sequence.
+
+    Strategy
+    --------
+    For each gap [gap_lo, gap_hi):
+      - Estimate BPM at the midpoint of the gap from the long-term series.
+      - Compute how many cycles (N) fit within ±30 % of nominal.
+        Try floor(gap_width / nominal_cycle) and ceil; pick whichever has
+        smaller |scale|.  If both exceed ±30 %, warn and use the closer one.
+      - Anchor cycles to *gap_hi* (the next clean-state boundary) so the
+        rebuilt sequence lines up with what follows.
+      - For trailing gaps (gap_hi >= n_samples), fill forward with nominal
+        cycle duration (best-effort, no right anchor).
+
+    Phase widths (S1, S2) use the same half-window constants as normal
+    painting.  Rebuilt segments carry ``"noise_rebuild": True`` in metadata.
+    If the gap is smaller than one minimum feasible cardiac cycle it is left
+    as STATE_UNKNOWN.
+    """
+    MAX_SCALE = 0.30
+    SR = float(sample_rate)
+
+    unknown_mask = (state_labels == STATE_UNKNOWN)
+    if not np.any(unknown_mask):
+        return state_labels, state_boundaries
+
+    # Fast numpy run-length encoding
+    padded = np.concatenate([[False], unknown_mask, [False]])
+    diff   = np.diff(padded.astype(np.int8))
+    starts = np.where(diff ==  1)[0]
+    ends   = np.where(diff == -1)[0]
+    gaps   = list(zip(starts.tolist(), ends.tolist()))
+
+    new_segs: List[Tuple] = []
+
+    for gap_lo, gap_hi in gaps:
+        gap_width = gap_hi - gap_lo
+        if gap_width <= 0:
+            continue
+
+        is_trailing = (gap_hi >= n_samples)
+        t_mid  = (gap_lo + gap_hi) / 2.0 / SR
+        bpm    = _bpm_at_time(t_mid, lt_series, fallback_bpm)
+        ivs    = calculate_bpm_intervals(bpm, params)
+
+        rr_sec        = 60.0 / bpm
+        s1_s2_nom_sec = float(ivs.get("s1_s2_nominal", 0.30))
+        nominal_cycle = rr_sec * SR  # samples
+
+        # Skip gaps that are too small to hold even one cardiac cycle
+        min_feas_samp = int(round(float(ivs.get("min_feasible_cycle", 0.3)) * SR))
+        if gap_width < min_feas_samp:
+            logging.debug(
+                "Pass 3 rebuild: gap [%d, %d) too small (%d samp < %d min feasible); skipping.",
+                gap_lo, gap_hi, gap_width, min_feas_samp,
+            )
+            continue
+
+        if is_trailing:
+            N            = max(1, int(gap_width / nominal_cycle))
+            actual_cycle = nominal_cycle  # fill forward, truncate at EOF
+        else:
+            N_lo     = max(1, int(gap_width / nominal_cycle))
+            N_hi     = N_lo + 1
+            scale_lo = gap_width / (N_lo * nominal_cycle) - 1.0
+            scale_hi = gap_width / (N_hi * nominal_cycle) - 1.0
+            lo_ok    = abs(scale_lo) <= MAX_SCALE
+            hi_ok    = abs(scale_hi) <= MAX_SCALE
+            if lo_ok and hi_ok:
+                N = N_lo if abs(scale_lo) <= abs(scale_hi) else N_hi
+            elif lo_ok:
+                N = N_lo
+            elif hi_ok:
+                N = N_hi
+            else:
+                N = N_lo if abs(scale_lo) <= abs(scale_hi) else N_hi
+                logging.warning(
+                    "Pass 3 rebuild: gap [%d, %d) cannot fit within ±30%% "
+                    "(scale_lo=%.1f%%, scale_hi=%.1f%%); using N=%d.",
+                    gap_lo, gap_hi, scale_lo * 100, scale_hi * 100, N,
+                )
+            actual_cycle = gap_width / N
+
+        # Scale factor applied uniformly to all four phase durations.
+        scale = actual_cycle / nominal_cycle
+
+        # Scaled phase durations in samples (all four from ivs, same scale applied).
+        p_s1  = max(1, int(round(float(ivs.get("s1_nominal",    0.040)) * SR * scale)))
+        p_sys = max(1, int(round(float(ivs.get("s1_s2_nominal", 0.300)) * SR * scale)))
+        p_s2  = max(1, int(round(float(ivs.get("s2_nominal",    0.030)) * SR * scale)))
+        # Diastole fills whatever remains in the cycle so rounding errors don't accumulate.
+        p_dia = max(1, int(actual_cycle) - p_s1 - p_sys - p_s2)
+        if p_dia < 1:
+            # Redistribute: shrink phases proportionally until diastole is at least 1 sample.
+            total_others = p_s1 + p_sys + p_s2
+            shrink = (int(actual_cycle) - 1) / max(1, total_others)
+            p_s1  = max(1, int(p_s1  * shrink))
+            p_sys = max(1, int(p_sys * shrink))
+            p_s2  = max(1, int(p_s2  * shrink))
+            p_dia = max(1, int(actual_cycle) - p_s1 - p_sys - p_s2)
+
+        cursor = gap_lo  # tracks right edge of previous cycle — prevents any overlap
+
+        for ci in range(N):
+            if is_trailing:
+                cyc_start = int(round(gap_lo + ci * actual_cycle))
+                c_end     = int(round(gap_lo + (ci + 1) * actual_cycle))
+            else:
+                # Anchor last cycle's end to gap_hi for right-side alignment.
+                cyc_start = int(round(gap_hi - (N - ci) * actual_cycle))
+                c_end     = int(round(gap_hi - (N - ci - 1) * actual_cycle))
+
+            c_end = min(c_end, gap_hi, n_samples)  # never bleed outside the gap
+            cyc_start = max(cyc_start, cursor)
+            if cyc_start >= c_end:
+                cursor = c_end
+                continue
+
+            # Paint four contiguous blocks using scaled expected durations.
+            # Each boundary is clamped to [cyc_start, c_end] so nothing overflows.
+            s1_pk = cyc_start  # S1 peak = start of cycle block
+
+            s1_s  = cyc_start
+            s1_e  = min(c_end, s1_s  + p_s1)
+            sys_e = min(c_end, s1_e  + p_sys)
+            s2_pk = sys_e  # S2 peak = start of S2 block
+            s2_e  = min(c_end, sys_e + p_s2)
+            dia_e = c_end  # diastole always fills to cycle end
+
+            if s1_e > s1_s:
+                state_labels[s1_s:s1_e] = STATE_S1
+                new_segs.append((s1_s, s1_e, "S1", {
+                    "s1": s1_pk,
+                    "noise_rebuild": True,
+                    "reasoning": _pass3_noise_rebuild_reasoning("S1", ivs, sample_rate, s1_s, s1_e),
+                }))
+            if sys_e > s1_e:
+                state_labels[s1_e:sys_e] = STATE_SYSTOLE
+                new_segs.append((s1_e, sys_e, "systole", {
+                    "s1": s1_pk,
+                    "s2": s2_pk,
+                    "noise_rebuild": True,
+                    "reasoning": _pass3_noise_rebuild_reasoning("systole", ivs, sample_rate, s1_e, sys_e),
+                }))
+            if s2_e > sys_e:
+                state_labels[sys_e:s2_e] = STATE_S2
+                new_segs.append((sys_e, s2_e, "S2", {
+                    "s1": s1_pk,
+                    "s2": s2_pk,
+                    "noise_rebuild": True,
+                    "reasoning": _pass3_noise_rebuild_reasoning("S2", ivs, sample_rate, sys_e, s2_e),
+                }))
+            if dia_e > s2_e:
+                state_labels[s2_e:dia_e] = STATE_DIASTOLE
+                new_segs.append((s2_e, dia_e, "diastole", {
+                    "s1": s1_pk,
+                    "s2": s2_pk,
+                    "s1_next": dia_e,
+                    "noise_rebuild": True,
+                    "reasoning": _pass3_noise_rebuild_reasoning(
+                        "diastole", ivs, sample_rate, s2_e, dia_e,
+                    ),
+                }))
+
+            cursor = c_end  # advance so next cycle can't reach back
+
+    if not new_segs:
+        return state_labels, state_boundaries
+
+    combined = state_boundaries + new_segs
+    combined.sort(key=lambda t: t[0])
+    return state_labels, combined
 
 
 def _hf_noise_disables_s2_snap(
@@ -642,132 +983,6 @@ def _effective_snap_s2(
     if not snap_s2:
         return False
     return not _hf_noise_disables_s2_snap(s1, s1_next, noise_ivs, s2_check)
-
-
-def _lt_series_masked_for_noise(
-    lt_series: Optional[pd.Series],
-    noise_event_segments: List[Dict[str, Any]],
-    fallback_bpm: float,
-) -> Optional[pd.Series]:
-    """
-    NaN-out long_term_bpm_series samples whose time index falls inside noise segments,
-    then linearly interpolate so BPM-at-time is smooth through artifacts.
-    """
-    if lt_series is None or getattr(lt_series, "empty", True) or not noise_event_segments:
-        return lt_series
-    try:
-        s = lt_series.astype(float).copy()
-        idx = np.asarray(s.index.values, dtype=np.float64)
-        vals = np.asarray(s.values, dtype=np.float64).copy()
-        for seg in noise_event_segments:
-            if not isinstance(seg, dict):
-                continue
-            try:
-                t0 = float(seg.get("start", float("nan")))
-                t1 = float(seg.get("end", float("nan")))
-            except (TypeError, ValueError):
-                continue
-            if not (math.isfinite(t0) and math.isfinite(t1)) or t1 <= t0:
-                continue
-            mask = (idx >= t0) & (idx <= t1)
-            vals[mask] = np.nan
-        s = pd.Series(vals, index=s.index, dtype=float)
-        s = s.interpolate(method="linear", limit_direction="both")
-        s = s.fillna(float(fallback_bpm))
-        return s
-    except Exception:
-        return lt_series
-
-
-def _noise_full_phase_boundaries(
-    s1: int,
-    s1_next: int,
-    bpm: float,
-    sample_rate: int,
-    params: Dict,
-    n_samples: int,
-) -> Tuple[int, int, int, int, int]:
-    """
-    Build S1 / systole / S2 / diastole sample boundaries from interpolated BPM only.
-
-    Scales nominal phase durations (s1 + systole + s2 + diastole) from
-    calculate_bpm_intervals so their integer sample counts sum to the actual RR
-    (s1_next - s1). Partitions [s1, s1_next): S1 begins at the S1 peak index; S2 peak
-    is the midpoint of the S2 segment. Returns (s1_start, s1_end, s2_start, s2_end, s2_peak).
-    """
-    _ = sample_rate  # kept for API symmetry with other boundary helpers
-    s1_i = int(s1)
-    s1n_i = int(s1_next)
-    rr_samp = s1n_i - s1_i
-    if rr_samp < 4:
-        mid = (s1_i + s1n_i) // 2
-        mid = max(s1_i + 1, min(mid, s1n_i - 1))
-        return s1_i, min(s1_i + 1, s1n_i - 1), mid - 1, mid + 1, mid
-
-    ivs = calculate_bpm_intervals(bpm, params)
-    w1 = float(ivs.get("s1_nominal", 0.040))
-    w2 = float(ivs.get("s1_s2_nominal", 0.30))
-    w3 = float(ivs.get("s2_nominal", 0.030))
-    w4 = float(ivs.get("s2_s1_nominal", 0.40))
-    W = w1 + w2 + w3 + w4
-    if W <= 1e-12:
-        q = max(1, rr_samp // 4)
-        w1 = w2 = w3 = w4 = float(q)
-        W = w1 + w2 + w3 + w4
-
-    n1 = max(1, int(round(rr_samp * w1 / W)))
-    n2 = max(1, int(round(rr_samp * w2 / W)))
-    n3 = max(1, int(round(rr_samp * w3 / W)))
-    n4 = rr_samp - n1 - n2 - n3
-    guard = 0
-    while n4 < 1 and guard < rr_samp:
-        if n2 >= n3 and n2 > 1:
-            n2 -= 1
-        elif n3 > 1:
-            n3 -= 1
-        elif n1 > 1:
-            n1 -= 1
-        else:
-            break
-        n4 = rr_samp - n1 - n2 - n3
-        guard += 1
-    if n4 < 1:
-        n4 = 1
-        n2 = max(1, n2 - 1)
-        n4 = rr_samp - n1 - n2 - n3
-
-    # Contiguous partition of [s1_i, s1n_i): S1 | systole | S2 | diastole
-    s1_start = s1_i
-    s1_end = s1_start + n1
-    s2_start = s1_end + n2
-    s2_end = s2_start + n3
-    if s2_end > s1n_i:
-        overflow = s2_end - s1n_i
-        take = min(overflow, max(0, n2 - 1))
-        n2 -= take
-        s2_start = s1_end + n2
-        s2_end = s2_start + n3
-        if s2_end > s1n_i:
-            take = min(s2_end - s1n_i, max(0, n3 - 1))
-            n3 -= take
-            s2_end = s2_start + n3
-        if s2_end > s1n_i:
-            s2_end = s1n_i - 1
-            s2_start = max(s1_end + 1, s2_end - max(1, n3))
-
-    n4 = s1n_i - s2_end
-    if n4 < 1:
-        s2_end = s1n_i - 1
-        s2_start = max(s1_end + 1, s2_end - max(1, n3))
-
-    s1_start, s1_end, s2_start, s2_end = _resolve_boundary_overlap(
-        s1_start, s1_end, s2_start, s2_end, s1n_i,
-    )
-    s1_start = max(0, s1_start)
-    s2_end = min(s2_end, n_samples, s1n_i)
-    s2_peak = int((s2_start + s2_end) // 2)
-    s2_peak = int(max(s1_i + 1, min(s2_peak, s1n_i - 1)))
-    return s1_start, s1_end, s2_start, s2_end, s2_peak
 
 
 def _seed_s2_from_pass2_pairs(
@@ -806,87 +1021,14 @@ def _seed_s2_from_pass2_pairs(
     return s2_events
 
 
-def _pass_noise_repair_events(
-    s1_list: List[int],
-    s2_events: List[int],
-    noise_event_segments: List[Dict[str, Any]],
-    lt_for_bpm: Optional[pd.Series],
-    fallback_bpm: float,
-    sample_rate: int,
-    params: Dict,
-    n_samples: int,
-) -> Tuple[List[int], List[Dict[str, Any]], bool]:
-    """
-    For cycles overlapping HF-noise, rebuild the full S1/systole/S2/diastole timing from
-    interpolated BPM (proportional phase durations). Updates s2_events to the new S2 peak.
-    """
-    noise_ivs = _noise_sample_intervals(noise_event_segments, sample_rate, n_samples)
-    if not noise_ivs:
-        return s2_events, [], False
-
-    n_cyc = max(0, len(s1_list) - 1)
-    new_s2: List[int] = list(s2_events[:n_cyc])
-    while len(new_s2) < n_cyc:
-        new_s2.append(int(s1_list[len(new_s2)]))
-
-    corrs: List[Dict[str, Any]] = []
-    changed = False
-
-    for i in range(n_cyc):
-        s1 = int(s1_list[i])
-        s1_next = int(s1_list[i + 1])
-        if s1_next <= s1:
-            continue
-        s2_old = int(new_s2[i])
-        s2_old = max(s1 + 1, min(s2_old, s1_next - 1))
-        if not _cycle_needs_noise_repair(s1, s1_next, s2_old, noise_ivs):
-            continue
-        t_mid = 0.5 * float(s1 + s1_next) / float(sample_rate)
-        bpm = _bpm_at_time(t_mid, lt_for_bpm, fallback_bpm)
-        _ss1, _se1, _ss2, _se2, s2_new = _noise_full_phase_boundaries(
-            s1, s1_next, bpm, sample_rate, params, n_samples,
-        )
-        if s2_new != s2_old:
-            new_s2[i] = int(s2_new)
-            changed = True
-            corrs.append({
-                "type": "noise_repair_cycle",
-                "cycle": int(i),
-                "s1": int(s1),
-                "s1_next": int(s1_next),
-                "old_s2": int(s2_old),
-                "new_s2": int(s2_new),
-                "bpm": float(bpm),
-                "s1_start": int(_ss1),
-                "s1_end": int(_se1),
-                "s2_start": int(_ss2),
-                "s2_end": int(_se2),
-            })
-
-    if changed:
-        logging.info(
-            "Pass 3 noise repair: %d cycle(s) — full four-phase BPM partition (HF noise).",
-            len(corrs),
-        )
-    return new_s2, corrs, changed
-
-
 def _build_state_boundaries_before_from_cycles(
     s1_list: List[int],
     s2_events: List[int],
     s1_half: int,
     s2_half: int,
     n_samples: int,
-    *,
-    noise_ivs: Optional[List[Tuple[int, int]]] = None,
-    lt_for_bpm: Optional[pd.Series] = None,
-    fallback_bpm: float = 80.0,
-    params: Optional[Dict] = None,
-    sample_rate: int = 600,
 ) -> List[Tuple]:
     """Initial S1/systole/S2/diastole boundary list (no transient edge detection)."""
-    niv = noise_ivs or []
-    pr = params or {}
     state_boundaries_before: List[Tuple] = []
     for i in range(len(s1_list) - 1):
         s1 = int(s1_list[i])
@@ -897,32 +1039,18 @@ def _build_state_boundaries_before_from_cycles(
             int(s2_events[i]) if i < len(s2_events) else s1,
             s1_next - 1,
         )))
-        use_bpm_phases = bool(niv) and _cycle_needs_noise_repair(s1, s1_next, s2, niv)
-        if use_bpm_phases:
-            t_mid = 0.5 * float(s1 + s1_next) / float(sample_rate)
-            bpm = _bpm_at_time(t_mid, lt_for_bpm, fallback_bpm)
-            s1_start, s1_end, s2_start, s2_end, s2 = _noise_full_phase_boundaries(
-                s1, s1_next, bpm, sample_rate, pr, n_samples,
-            )
-            meta_extra = {"noise_bpm_partition": True, "bpm": float(bpm)}
-        else:
-            s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
-                s1, s2, s1_next, s1_half, s2_half, n_samples,
-                use_transient_detection=False,
-            )
-            meta_extra = {}
+        s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
+            s1, s2, s1_next, s1_half, s2_half, n_samples,
+            use_transient_detection=False,
+        )
         if s1_end > s1_start:
-            m = {"s1": s1, **meta_extra}
-            state_boundaries_before.append((s1_start, s1_end, "S1", m))
+            state_boundaries_before.append((s1_start, s1_end, "S1", {"s1": s1}))
         if s2_start > s1_end:
-            m = {"s1": s1, "s2": s2, **meta_extra}
-            state_boundaries_before.append((s1_end, s2_start, "systole", m))
+            state_boundaries_before.append((s1_end, s2_start, "systole", {"s1": s1, "s2": s2}))
         if s2_end > s2_start:
-            m = {"s2": s2, **meta_extra}
-            state_boundaries_before.append((s2_start, s2_end, "S2", m))
+            state_boundaries_before.append((s2_start, s2_end, "S2", {"s2": s2}))
         if s1_next > s2_end:
-            m = {"s2": s2, "s1_next": s1_next, **meta_extra}
-            state_boundaries_before.append((s2_end, s1_next, "diastole", m))
+            state_boundaries_before.append((s2_end, s1_next, "diastole", {"s2": s2, "s1_next": s1_next}))
     return state_boundaries_before
 
 
@@ -1399,8 +1527,8 @@ def run_pass3_correction(
       pass3_state_boundaries, pass3_state_boundaries_before,
       pass3_s2_events, pass3_corrections, pass3_cycle_diagnostics,
       pass3_spectral_context  (template arrays only; bandpass_audio not stored).
-      pass3_noise_repairs  (optional list when HF noise triggers full four-phase BPM partition before Pass A).
-      pass3_noise_unreliable_windows_samples  (optional list of {start_sample,end_sample} for HF noise intervals).
+      pass3_noise_unreliable_windows_samples  (when noise_event_segments exist: HF intervals as sample indices for HTML).
+      When pass3_enable_noise_repair: labels in those windows are set to unknown (encoding includes "unknown").
     """
     if "peak_classifications" not in analysis_data or analysis_data["peak_classifications"] is None:
         analysis_data["peak_classifications"] = {}
@@ -1501,18 +1629,9 @@ def run_pass3_correction(
         except Exception as exc:
             logging.warning("Pass 3: could not build spectral context: %s", exc)
 
-    # ── BPM series for Pass 3 (mask + interpolate through HF noise when repair is on) ──
     lt_pass3 = lt
-    _enable_noise_repair = bool(
-        params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True))
-    )
-    if _enable_noise_repair and noise_segs_raw:
-        lt_masked = _lt_series_masked_for_noise(lt, noise_segs_raw, fallback_bpm)
-        if lt_masked is not None:
-            lt_pass3 = lt_masked
 
-    # ── S2 placement: Pass 2 pair seed → HF noise repair (if any) → spectral snap ──
-    noise_corrs: List[Dict[str, Any]] = []
+    # ── S2 placement: Pass 2 pair seed → spectral snap (_rebuild_s2_events) ────
     _pairs = analysis_data.get("s1_s2_pairs") or []
     s2_seed = _seed_s2_from_pass2_pairs(
         s1_list, _pairs, lt, fallback_bpm, sample_rate, params, n_samples,
@@ -1525,22 +1644,6 @@ def run_pass3_correction(
         sum(1 for s in s1_list if s not in _pair_set),
     )
 
-    if _enable_noise_repair and noise_segs_raw:
-        s2_seed, noise_corrs, _ = _pass_noise_repair_events(
-            s1_list,
-            s2_seed,
-            noise_segs_raw,
-            lt_pass3,
-            fallback_bpm,
-            sample_rate,
-            params,
-            n_samples,
-        )
-        if noise_corrs:
-            analysis_data["pass3_noise_repairs"] = list(noise_corrs)
-            logging.info(
-                "Pass 3 Step 2a: noise repair modified %d cycle(s).", len(noise_corrs),
-            )
     s2_events = _rebuild_s2_events(
         s1_list, lt_pass3, fallback_bpm,
         sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
@@ -1551,15 +1654,10 @@ def run_pass3_correction(
     # ── Before-correction snapshot for HTML before/after visualization ────────
     state_boundaries_before = _build_state_boundaries_before_from_cycles(
         s1_list, s2_events, s1_half, s2_half, n_samples,
-        noise_ivs=noise_ivs_pass3 or None,
-        lt_for_bpm=lt_pass3,
-        fallback_bpm=fallback_bpm,
-        params=params,
-        sample_rate=sample_rate,
     )
 
     # ── Correction loop ───────────────────────────────────────────────────────
-    corrections: List[Dict[str, Any]] = list(noise_corrs)
+    corrections: List[Dict[str, Any]] = []
     cycle_diagnostics: List[Dict[str, Any]] = []
 
     for _iter in range(max_iters):
@@ -1659,32 +1757,19 @@ def run_pass3_correction(
             )
         s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
 
-        noise_cycle = bool(noise_ivs_final) and _cycle_needs_noise_repair(
-            s1, s1_next, s2, noise_ivs_final,
+        s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
+            s1, s2, s1_next, s1_half, s2_half, n_samples,
+            audio_envelope=audio_envelope,
+            edge_alpha=edge_alpha, edge_n_exp=edge_n_exp,
+            min_s1_half=s1_min_half, max_s1_half=s1_max_half,
+            min_s2_half=s2_min_half, max_s2_half=s2_max_half,
+            use_transient_detection=True,
         )
-        if noise_cycle:
-            t_mid_bpm = 0.5 * float(s1 + s1_next) / _sr_f
-            bpm_n = _bpm_at_time(t_mid_bpm, lt_pass3, fallback_bpm)
-            s1_start, s1_end, s2_start, s2_end, s2 = _noise_full_phase_boundaries(
-                s1, s1_next, bpm_n, sample_rate, params, n_samples,
-            )
-        else:
-            s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
-                s1, s2, s1_next, s1_half, s2_half, n_samples,
-                audio_envelope=audio_envelope,
-                edge_alpha=edge_alpha, edge_n_exp=edge_n_exp,
-                min_s1_half=s1_min_half, max_s1_half=s1_max_half,
-                min_s2_half=s2_min_half, max_s2_half=s2_max_half,
-                use_transient_detection=True,
-            )
 
         s2_events_final.append(int(s2))
 
         _t_s1_r = s1 / _sr_f
-        if noise_cycle:
-            _bpm_r = _bpm_at_time(0.5 * float(s1 + s1_next) / _sr_f, lt_pass3, fallback_bpm)
-        else:
-            _bpm_r = _bpm_at_time(_t_s1_r, lt_pass3, fallback_bpm)
+        _bpm_r = _bpm_at_time(_t_s1_r, lt_pass3, fallback_bpm)
         _ivs_r  = calculate_bpm_intervals(_bpm_r, params)
         _bef_s2    = _before_s2_by_s1.get(s1)
         _bef_s1nxt = _before_s1next_by_s1.get(s1)
@@ -1701,23 +1786,30 @@ def run_pass3_correction(
             s1, s1_start, s1_end, s2, s2_start, s2_end, s1_next,
             _ivs_r, _direct, _cascade, _bef_s2, _bef_s1nxt,
             _sr_f, _SHIFT_THRESH_SAMP, snap_reason,
-            noise_repair=noise_cycle,
         )
 
         if s1_end > s1_start:
             state_labels[s1_start:s1_end] = STATE_S1
-            state_boundaries.append((s1_start, s1_end, "S1", {"s1": s1, "reasoning": _reasoning["S1"]}))
+            state_boundaries.append(
+                (s1_start, s1_end, "S1", {"s1": s1, "reasoning": _reasoning["S1"]}),
+            )
         if s2_start > s1_end:
             state_labels[s1_end:s2_start] = STATE_SYSTOLE
-            state_boundaries.append((s1_end, s2_start, "systole",
-                                      {"s1": s1, "s2": s2, "reasoning": _reasoning["systole"]}))
+            state_boundaries.append(
+                (s1_end, s2_start, "systole", {"s1": s1, "s2": s2, "reasoning": _reasoning["systole"]}),
+            )
         if s2_end > s2_start:
             state_labels[s2_start:s2_end] = STATE_S2
-            state_boundaries.append((s2_start, s2_end, "S2", {"s2": s2, "reasoning": _reasoning["S2"]}))
+            state_boundaries.append(
+                (s2_start, s2_end, "S2", {"s1": s1, "s2": s2, "reasoning": _reasoning["S2"]}),
+            )
         if s1_next > s2_end:
             state_labels[s2_end:s1_next] = STATE_DIASTOLE
-            state_boundaries.append((s2_end, s1_next, "diastole",
-                                      {"s2": s2, "s1_next": s1_next, "reasoning": _reasoning["diastole"]}))
+            state_boundaries.append(
+                (s2_end, s1_next, "diastole", {
+                    "s1": s1, "s2": s2, "s1_next": s1_next, "reasoning": _reasoning["diastole"],
+                }),
+            )
 
     # ── Trim diastole ends so boundary list is a strict non-overlapping partition ──
     # Each diastole was appended ending at s1_next (the next peak index), but the next
@@ -1741,6 +1833,38 @@ def run_pass3_correction(
         else:
             _trimmed.append(_seg)
     state_boundaries = _trimmed
+
+    # ── HF noise: clear then rebuild cardiac labels in unreliable audio ─────────
+    _noise_repair_on = bool(
+        params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True)),
+    )
+    if _noise_repair_on and noise_ivs_final:
+        state_labels, state_boundaries = _pass3_clear_states_in_hf_noise(
+            state_labels, state_boundaries, noise_ivs_final, n_samples, peaks_out,
+        )
+        logging.info(
+            "Pass 3 noise repair: S1 noise → full beat clear; diastole-only noise → post-S1 clear "
+            "for that beat; %d merged HF-noise window(s).",
+            len(_merge_sorted_intervals(list(noise_ivs_final))),
+        )
+        state_labels, state_boundaries = _pass3_rebuild_unknown_runs(
+            state_labels, state_boundaries, n_samples,
+            lt_pass3, fallback_bpm, sample_rate, params,
+        )
+        _n_rebuilt = sum(
+            1 for seg in state_boundaries
+            if seg[2] == "S1" and isinstance(seg[3], dict) and seg[3].get("noise_rebuild")
+        )
+        logging.info("Pass 3 rebuild: %d rebuilt beat(s) in noise gap(s).", _n_rebuilt)
+
+    # ── Derive peaks_out from state sequence (canonical source of truth) ──────
+    _s1_from_states = sorted({
+        int(seg[3]["s1"])
+        for seg in state_boundaries
+        if seg[2] == "S1" and isinstance(seg[3], dict) and "s1" in seg[3]
+    })
+    if _s1_from_states:
+        peaks_out = np.asarray(_s1_from_states, dtype=np.int64)
 
     # ── Store results ─────────────────────────────────────────────────────────
     analysis_data["pass3_state_labels"]          = state_labels

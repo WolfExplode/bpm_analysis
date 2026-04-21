@@ -32,7 +32,7 @@ DEFAULT_PARAMS = {
     # HF noise strip: merge / min-duration only (threshold quantile is hardcoded in noise_segments.py).
     "noise_segment_merge_gap_ms": 500.0,    # Merge if gap < this before expand_ms and again after (expanded time).
     "noise_segment_min_duration_ms": 20.0,  # Drop shorter noisy blips after merge.
-    "noise_segment_expand_ms": 70.0,       # Pad each segment start/end by this (quantile gate tends to clip early/late).
+    "noise_segment_expand_ms": 100.0,       # Pad each segment start/end by this (quantile gate tends to clip early/late).
 
     # =================================================================================
     # 2. Signal Feature Detection
@@ -177,8 +177,8 @@ DEFAULT_PARAMS = {
     "pass3_align_s2_to_s2_spectral_profile": False,  # If True, slide FFT vs S2 spectral template to refine S2 time; if False, nominal ejection-time index only. HF-noise beats still skip alignment per cycle.
     "pass3_align_s2_window_ms": 120.0,          # FFT search width for initial rebuild / Pass B–C rebuild / final paint (ms), ±half around nominal S2.
 
-    # --- 6.2 HF-noise — four-phase cardiac layout from interpolated BPM (noise_event_segments) ---
-    "pass3_enable_noise_repair": True,          # If True and noise_event_segments exist, BPM-based partition for affected cycles before spectral alignment; LT BPM masked in noise then interpolated.
+    # --- 6.2 rebuild state sequence during noisy segments ---
+    "pass3_enable_noise_repair": True,  # If True and noise_event_segments exist: samples in those times → unknown; strip gaps.
 
     # --- 6.3 Correction loop (A→B→C) — iteration cap + Pass A–only search width (pass3_align_s2_to_s2_spectral_profile still applies in Pass A) ---
     "pass3_correction_max_iters": 200,          # Max rounds of A→B→C; use 0 to skip the loop entirely. Higher fixes more disjoint issues; risks over-correction.
