@@ -677,13 +677,17 @@ def calculate_hrr(smoothed_bpm_series: pd.Series, interval_sec: int = 60) -> Opt
             'interval_sec': interval_sec}
 
 
-def find_recovery_phase(bpm_series: pd.Series, bpm_times_sec: np.ndarray, params: Dict) -> Tuple[Optional[float], Optional[float]]:
+def find_recovery_phase(bpm_values: np.ndarray, bpm_times_sec: np.ndarray, params: Dict) -> Tuple[Optional[float], Optional[float]]:
     """Analyzes a pass 1 BPM series to find the peak heart rate and define the subsequent recovery phase window.
     Returns (None, None) if BPM stays low (no exertion/recovery), so recovery-phase adjust is not applied."""
     if bpm_times_sec is None or len(bpm_times_sec) < 2:
         logging.warning("Not enough pass 1 beats to determine a recovery phase.")
         return None, None
-    bpm_values = bpm_series.to_numpy()
+    bpm_values = np.asarray(bpm_values, dtype=np.float64)
+    bpm_times_sec = np.asarray(bpm_times_sec, dtype=np.float64)
+    if len(bpm_values) < 2 or len(bpm_values) != len(bpm_times_sec):
+        logging.warning("Pass 1 BPM curve has inconsistent lengths; cannot determine recovery phase.")
+        return None, None
     peak_idx = np.argmax(bpm_values)
     peak_bpm = float(bpm_values[peak_idx])
     min_peak_bpm = params.get("recovery_phase_min_peak_bpm", 95.0)

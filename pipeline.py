@@ -97,24 +97,31 @@ def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
     # Canonical pass 1 BPM curve (outlier filter + light Gaussian smoothing) — same data used for prior and all plots
     pass1_bpm = compute_pass1_bpm_curve(anchor_beats, sample_rate, params)
     if pass1_bpm is not None:
-        curve_series = pd.Series(pass1_bpm["curve_bpm"])
-        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(curve_series, pass1_bpm["curve_times"], params)
+        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(
+            np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
+            np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
+            params,
+        )
     else:
         pass1_fallback_series, pass1_fallback_times, _ = calculate_bpm_series(anchor_beats, sample_rate, params)
-        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(pass1_fallback_series, pass1_fallback_times, params)
+        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(
+            np.asarray(pass1_fallback_series.values, dtype=np.float64),
+            np.asarray(pass1_fallback_times, dtype=np.float64),
+            params,
+        )
 
     return start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, pass1_bpm, pass1_analysis_data
 
 
 def _build_pass1_bpm_prior(
     pass1_bpm_times: np.ndarray,
-    pass1_bpm_series: pd.Series,
+    pass1_bpm_values: np.ndarray,
 ) -> Optional[Callable[[float], float]]:
     """Build a time -> BPM callable from the pass 1 BPM curve for use as a time-varying prior. Returns None if insufficient data."""
-    if pass1_bpm_times is None or pass1_bpm_series is None or len(pass1_bpm_times) < 2 or pass1_bpm_series.empty:
+    if pass1_bpm_times is None or pass1_bpm_values is None or len(pass1_bpm_times) < 2 or len(pass1_bpm_values) < 2:
         return None
     times = np.asarray(pass1_bpm_times, dtype=float)
-    values = np.asarray(pass1_bpm_series.values, dtype=float)
+    values = np.asarray(pass1_bpm_values, dtype=float)
     if len(times) != len(values) or len(times) < 2:
         return None
     try:
@@ -366,7 +373,10 @@ def analyze_wav_file(
     logging.info("--- STAGE 3: Pass 2 — main analysis ---")
     _ui("Pass 2: classifying peaks...")
     pass1_bpm_prior = (
-        _build_pass1_bpm_prior(pass1_bpm["curve_times"], pd.Series(pass1_bpm["curve_bpm"]))
+        _build_pass1_bpm_prior(
+            np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
+            np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
+        )
         if pass1_bpm is not None
         else None
     )
@@ -460,8 +470,8 @@ def analyze_wav_file(
                 metrics_pass2,
                 output_options,
                 output_suffix="_pass2",
-                pass1_bpm_series=pd.Series(pass1_bpm["curve_bpm"]) if pass1_bpm is not None else None,
-                pass1_bpm_times=pass1_bpm["curve_times"] if pass1_bpm is not None else None,
+                pass1_bpm_series=np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64) if pass1_bpm is not None else None,
+                pass1_bpm_times=np.asarray(pass1_bpm["curve_times"], dtype=np.float64) if pass1_bpm is not None else None,
             )
 
     # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
@@ -591,8 +601,8 @@ def analyze_wav_file(
             prior_bpm_series = metrics_pass2["smoothed_bpm"]
             prior_bpm_times = metrics_pass2.get("bpm_times")
         if prior_bpm_series is None and pass1_bpm is not None:
-            prior_bpm_series = pd.Series(pass1_bpm["curve_bpm"])
-            prior_bpm_times = pass1_bpm["curve_times"]
+            prior_bpm_series = np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64)
+            prior_bpm_times = np.asarray(pass1_bpm["curve_times"], dtype=np.float64)
         # Pass 3 plot: include peak/recovery times for systolic shift (exertion vs all-time averaging)
         metrics_after_pass3["peak_bpm_time_sec"] = peak_time
         metrics_after_pass3["recovery_end_time_sec"] = recovery_time

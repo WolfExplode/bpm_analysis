@@ -1876,11 +1876,11 @@ def run_pass3_correction(
 
     snap_s2           = bool(params.get(
         "pass3_align_s2_to_s2_spectral_profile",
-        params.get("pass3_snap_s2_to_peak", True),  # legacy key (back-compat)
+        True,
     ))
     snap_window_ms    = float(params.get(
         "pass3_align_s2_window_ms",
-        params.get("pass3_snap_s2_window_ms", 120.0),  # legacy key (back-compat)
+        120.0,
     ))
     snap_half         = max(1, int(round(0.5 * snap_window_ms * sample_rate / 1000.0)))
     resnap_window_ms  = float(params.get("pass3_resnap_s2_window_ms",  220.0))
