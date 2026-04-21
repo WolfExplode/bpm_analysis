@@ -745,6 +745,43 @@ def _dense_bpm_raster_from_series(
         return t_grid, np.full_like(t_grid, float(fallback_bpm), dtype=np.float64)
 
 
+def _dense_raster_from_points(
+    t_points: np.ndarray,
+    y_points: np.ndarray,
+    n_samples: int,
+    sample_rate: int,
+    *,
+    dt_sec: float = 0.05,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build a dense raster (times, values) sampled every dt_sec across the file from sparse points.
+
+    Uses linear interpolation with constant edge extrapolation (np.interp).
+    Returns empty arrays when there are not enough points to interpolate (need >=2).
+    """
+    sr = float(sample_rate)
+    if sr <= 0 or n_samples <= 0:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+    dur_sec = float(n_samples) / sr
+    if not np.isfinite(dur_sec) or dur_sec <= 0:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+    dt = float(dt_sec)
+    if not np.isfinite(dt) or dt <= 0:
+        dt = 0.05
+
+    t_points = np.asarray(t_points, dtype=np.float64)
+    y_points = np.asarray(y_points, dtype=np.float64)
+    if len(t_points) < 2 or len(t_points) != len(y_points):
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+
+    t_grid = np.arange(0.0, dur_sec + 1e-12, dt, dtype=np.float64)
+    order = np.argsort(t_points)
+    t_points = t_points[order]
+    y_points = y_points[order]
+    y_grid = np.interp(t_grid, t_points, y_points, left=float(y_points[0]), right=float(y_points[-1])).astype(np.float64)
+    return t_grid, y_grid
+
+
 def _pass3_clear_states_in_hf_noise(
     state_labels: np.ndarray,
     state_boundaries: List[Tuple],
@@ -2167,6 +2204,17 @@ def run_pass3_correction(
         _md_t, _md_d = _pass3_measured_diastole_series_from_boundaries(
             state_boundaries, sample_rate, noise_ivs=noise_ivs_final, params=params,
         )
+        # Make measured phase-duration curves continuous-in-time (dense rasters) like the BPM prior.
+        _ms_t_r, _ms_d_r = _dense_raster_from_points(
+            _ms_t, _ms_d, n_samples, sample_rate, dt_sec=0.05,
+        )
+        _md_t_r, _md_d_r = _dense_raster_from_points(
+            _md_t, _md_d, n_samples, sample_rate, dt_sec=0.05,
+        )
+        analysis_data["pass3_measured_systole_times"] = _ms_t_r
+        analysis_data["pass3_measured_systole"] = _ms_d_r
+        analysis_data["pass3_measured_diastole_times"] = _md_t_r
+        analysis_data["pass3_measured_diastole"] = _md_d_r
         # Build a BPM prior from clean RR intervals only (exclude any S1→S1 that intersects noise).
         # This avoids using possibly-corrupted BPM belief inside the noisy spans.
         _lt_clean = _build_lt_bpm_series_from_clean_rr(
@@ -2191,10 +2239,10 @@ def run_pass3_correction(
             state_labels, state_boundaries, n_samples,
             (_bpm_prior_t, _bpm_prior),
             fallback_bpm, sample_rate, params,
-            measured_systole_t=_ms_t,
-            measured_systole_dur=_ms_d,
-            measured_diastole_t=_md_t,
-            measured_diastole_dur=_md_d,
+            measured_systole_t=_ms_t_r,
+            measured_systole_dur=_ms_d_r,
+            measured_diastole_t=_md_t_r,
+            measured_diastole_dur=_md_d_r,
         )
         _n_rebuilt = sum(
             1 for seg in state_boundaries
@@ -2203,6 +2251,12 @@ def run_pass3_correction(
         logging.info("Pass 3 rebuild: %d rebuilt beat(s) in noise gap(s).", _n_rebuilt)
 
     # ── Derive peaks_out from state sequence (canonical source of truth) ──────
+    # Intent: Pass 3 treats the *state sequence* (pass3_state_labels / pass3_state_boundaries)
+    # as the authoritative representation of cardiac timing. When HF-noise repair runs, it
+    # may *regenerate* (“synthetic”) states inside unreliable/low-confidence audio windows
+    # (see metadata: noise_rebuild=True). Those regenerated states are not just for display:
+    # they are promoted into the canonical sequence and therefore replace the corresponding
+    # noisy region for all downstream consumers (metrics, plots, Pass 4, etc.).
     _s1_from_states = sorted({
         int(seg[3]["s1"])
         for seg in state_boundaries
