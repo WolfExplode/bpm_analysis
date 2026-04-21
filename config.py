@@ -181,21 +181,13 @@ DEFAULT_PARAMS = {
     "pass3_enable_noise_repair": True,  # If True and noise_event_segments exist: samples in those times → unknown; strip gaps.
 
     # --- 6.3 Correction loop (A→B→C) — iteration cap + Pass A–only search width (pass3_align_s2_to_s2_spectral_profile still applies in Pass A) ---
-    "pass3_correction_max_iters": 200,          # Max rounds of A→B→C; use 0 to skip the loop entirely. Higher fixes more disjoint issues; risks over-correction.
+    "pass3_correction_max_iters": 0,          # Max rounds of A→B→C; use 0 to skip the loop entirely. Higher fixes more disjoint issues; risks over-correction.
     "pass3_resnap_s2_window_ms": 220.0,         # Pass A only: FFT search width when re-snapping S2 for implausible systole (wider = search farther).
     "pass3_systole_slack_frac": 0.15,           # Pass A: tolerate systole this much shorter/longer vs BPM bounds before calling it “bad” (higher = fewer resnaps).
     "pass3_diastole_slack_frac": 0.20,          # Pass A diagnostics + Pass C: diastole “too short” threshold slack (higher = fewer flip/demote triggers).
 
-    # --- 6.4 Pass B — insert missing S1 in long RR ---
-    "pass3_enable_insert_missing_s1": False,      # True = may add S1 in obvious gap spans (recall vs false-insert risk).
-    "pass3_rr_too_long_frac": 1.7,              # RR must exceed this × expected RR to consider an insert (lower = insert more aggressively).
-    "pass3_gap_fill_max_duration_sec": 10.0,    # Skip insert logic when RR exceeds this (likely dropout, not missed beat).
-    "pass3_insert_s1_search_window_ms": 180.0,  # Total width (ms); ±half around expected beat for raw-peak insert search.
-    "pass3_insert_use_spectrum": False,         # If True, allow S1 template search when no raw peak in window.
-    "pass3_insert_spectrum_stride_ms": 5.0,     # Template search step (ms); smaller = finer, slower.
-    "pass3_insert_spectrum_min_margin": 0.15,   # Min best-vs-second score gap to accept spectral insert.
-    "pass3_insert_spectrum_envelope_margin": 1.05,  # Require envelope ≥ this × dynamic noise floor at candidate; ≤0 disables.
-    "pass3_insert_spectrum_target_sr": None,     # None = WAV native SR for insert template; or set e.g. 32000 to match fft_aggregate_sr.
+    # --- 6.4 Step 3 — insert missing states in large gaps (state-level) ---
+    "pass3_enable_gap_state_insert": True,  # If True, long single-state spans get surplus tail regenerated via the same logic as noise rebuild.
 
     # --- 6.5 Pass C — phase / sequence fixes (false S1, S1↔S2 flip, faint S2) ---
     "pass3_enable_phase_correction": False,     # Master switch for Pass C.

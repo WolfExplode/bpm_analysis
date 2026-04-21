@@ -379,6 +379,7 @@ class Plotter:
         self._pass3_state_boundaries_before = analysis_data.get("pass3_state_boundaries_before") or []
         self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
         self._noise_event_segments = analysis_data.get("noise_event_segments") or []
+        self._pass3_large_gap_windows_samples = analysis_data.get("pass3_large_gap_windows_samples") or []
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
@@ -1814,6 +1815,34 @@ class Plotter:
         noise_segs = getattr(self, "_noise_event_segments", None) or []
         if noise_segs:
             config_payload["noiseEventSegments"] = noise_segs
+
+        # Pass 3: debug windows for "large gap" state insert (sample indices → seconds)
+        gap_wins = getattr(self, "_pass3_large_gap_windows_samples", None) or []
+        if gap_wins and isinstance(gap_wins, list):
+            out_gap = []
+            try:
+                sr = float(self.sample_rate) if self.sample_rate else None
+            except Exception:
+                sr = None
+            if sr and sr > 0:
+                for w in gap_wins:
+                    if not isinstance(w, dict):
+                        continue
+                    try:
+                        a = int(w.get("start_sample", -1))
+                        b = int(w.get("end_sample", -1))
+                    except Exception:
+                        continue
+                    if a < 0 or b <= a:
+                        continue
+                    d = {"start": float(a) / sr, "end": float(b) / sr}
+                    # Optional extra debug fields for tooltip
+                    for k in ("source_state", "trigger", "bpm_at_mid", "expected_phase_samples", "cycle0_samples", "segment_samples"):
+                        if k in w:
+                            d[k] = w[k]
+                    out_gap.append(d)
+            if out_gap:
+                config_payload["pass3LargeGapSegments"] = out_gap
         config_json = json.dumps(config_payload)
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))

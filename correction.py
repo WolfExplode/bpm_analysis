@@ -9,8 +9,7 @@ Structure
   Boundary geometry     (_resolve_boundary_overlap, _paint_state_boundaries,
                          _build_reasoning_payload)
   S2-events rebuild     (_rebuild_s2_events — shared by multiple passes)
-  Correction passes     (_pass_a_resnap_s2, _pass_b_insert_missing_s1,
-                         _pass_c_phase_correction)
+  Correction passes     (_pass_a_resnap_s2, _pass_c_phase_correction)
   Main entry point      (run_pass3_correction)
 """
 
@@ -905,14 +904,15 @@ def _pass3_clear_states_in_hf_noise(
     return state_labels, new_bd
 
 
-def _pass3_noise_rebuild_reasoning(
+def _pass3_rebuild_reasoning(
     phase: str,
     ivs: Dict,
     sample_rate: int,
     lo: int,
     hi: int,
+    note: str,
 ) -> Dict[str, Any]:
-    """Per-phase hover payload for segments filled by _pass3_rebuild_unknown_runs (matches cardiac strip tooltip)."""
+    """Per-phase hover payload for segments filled by state rebuild (matches cardiac strip tooltip)."""
     sr = float(sample_rate)
     meas_ms = int(round((hi - lo) / sr * 1000.0)) if hi > lo else 0
     if phase == "S1":
@@ -927,9 +927,35 @@ def _pass3_noise_rebuild_reasoning(
         "expected_ms": exp_ms,
         "measured_ms": meas_ms,
         "notes": [
-            "Regenerated in noisy region (noise repair).",
+            str(note),
         ],
     }
+
+
+def _pass3_noise_rebuild_reasoning(
+    phase: str,
+    ivs: Dict,
+    sample_rate: int,
+    lo: int,
+    hi: int,
+) -> Dict[str, Any]:
+    return _pass3_rebuild_reasoning(
+        phase, ivs, sample_rate, lo, hi,
+        "Regenerated in noisy region (noise repair).",
+    )
+
+
+def _pass3_gap_insert_rebuild_reasoning(
+    phase: str,
+    ivs: Dict,
+    sample_rate: int,
+    lo: int,
+    hi: int,
+) -> Dict[str, Any]:
+    return _pass3_rebuild_reasoning(
+        phase, ivs, sample_rate, lo, hi,
+        "Inserted missing cardiac cycle(s) in a large gap (gap repair).",
+    )
 
 
 def _pass3_clean_duration_series(
@@ -1099,6 +1125,8 @@ def _pass3_rebuild_unknown_runs(
     measured_systole_dur: Optional[np.ndarray] = None,
     measured_diastole_t: Optional[np.ndarray] = None,
     measured_diastole_dur: Optional[np.ndarray] = None,
+    *,
+    rebuild_source: str = "noise_repair",
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
     Fill every STATE_UNKNOWN run in *state_labels* with a scaled cardiac sequence.
@@ -1113,7 +1141,8 @@ def _pass3_rebuild_unknown_runs(
       - Choose how many full cycles to pack into the gap and apply a single scale factor
         (±30% preferred) so the generated sequence exactly fills the gap.
 
-    Rebuilt segments carry ``"noise_rebuild": True`` in metadata.
+    Rebuilt segments carry ``rebuild_source`` metadata so the UI can distinguish
+    noise repair vs gap repair on hover (and other downstream debug consumers).
     If the gap is smaller than one minimum feasible cardiac cycle it is left
     as STATE_UNKNOWN.
     """
@@ -1236,6 +1265,7 @@ def _pass3_rebuild_unknown_runs(
         # If we start after a kept S1, generate the remainder of that cycle:
         # systole → S2 → diastole, then continue with full cycles.
         current_s1_pk = anchor_s1_pk if anchor_s1_pk is not None else cursor
+        _reason = _pass3_noise_rebuild_reasoning if rebuild_source == "noise_repair" else _pass3_gap_insert_rebuild_reasoning
         if start_after_s1 and cursor < end:
             sys0 = cursor
             sys1 = min(end, sys0 + p_sys)
@@ -1244,21 +1274,21 @@ def _pass3_rebuild_unknown_runs(
             _emit(sys0, sys1, "systole", {
                 "s1": int(current_s1_pk),
                 "s2": int(sys1),
-                "noise_rebuild": True,
-                "reasoning": _pass3_noise_rebuild_reasoning("systole", ivs, sample_rate, sys0, sys1),
+                "rebuild_source": str(rebuild_source),
+                "reasoning": _reason("systole", ivs, sample_rate, sys0, sys1),
             })
             _emit(sys1, s2_1, "S2", {
                 "s1": int(current_s1_pk),
                 "s2": int(sys1),
-                "noise_rebuild": True,
-                "reasoning": _pass3_noise_rebuild_reasoning("S2", ivs, sample_rate, sys1, s2_1),
+                "rebuild_source": str(rebuild_source),
+                "reasoning": _reason("S2", ivs, sample_rate, sys1, s2_1),
             })
             _emit(s2_1, dia1, "diastole", {
                 "s1": int(current_s1_pk),
                 "s2": int(sys1),
                 "s1_next": int(dia1),
-                "noise_rebuild": True,
-                "reasoning": _pass3_noise_rebuild_reasoning("diastole", ivs, sample_rate, s2_1, dia1),
+                "rebuild_source": str(rebuild_source),
+                "reasoning": _reason("diastole", ivs, sample_rate, s2_1, dia1),
             })
             cursor = dia1
 
@@ -1273,27 +1303,27 @@ def _pass3_rebuild_unknown_runs(
 
             _emit(cursor, s1_end, "S1", {
                 "s1": int(s1_pk),
-                "noise_rebuild": True,
-                "reasoning": _pass3_noise_rebuild_reasoning("S1", ivs, sample_rate, cursor, s1_end),
+                "rebuild_source": str(rebuild_source),
+                "reasoning": _reason("S1", ivs, sample_rate, cursor, s1_end),
             })
             _emit(s1_end, sys_end, "systole", {
                 "s1": int(s1_pk),
                 "s2": int(sys_end),
-                "noise_rebuild": True,
-                "reasoning": _pass3_noise_rebuild_reasoning("systole", ivs, sample_rate, s1_end, sys_end),
+                "rebuild_source": str(rebuild_source),
+                "reasoning": _reason("systole", ivs, sample_rate, s1_end, sys_end),
             })
             _emit(sys_end, s2_end, "S2", {
                 "s1": int(s1_pk),
                 "s2": int(sys_end),
-                "noise_rebuild": True,
-                "reasoning": _pass3_noise_rebuild_reasoning("S2", ivs, sample_rate, sys_end, s2_end),
+                "rebuild_source": str(rebuild_source),
+                "reasoning": _reason("S2", ivs, sample_rate, sys_end, s2_end),
             })
             _emit(s2_end, dia_end, "diastole", {
                 "s1": int(s1_pk),
                 "s2": int(sys_end),
                 "s1_next": int(dia_end),
-                "noise_rebuild": True,
-                "reasoning": _pass3_noise_rebuild_reasoning("diastole", ivs, sample_rate, s2_end, dia_end),
+                "rebuild_source": str(rebuild_source),
+                "reasoning": _reason("diastole", ivs, sample_rate, s2_end, dia_end),
             })
             cursor = dia_end
 
@@ -1303,6 +1333,186 @@ def _pass3_rebuild_unknown_runs(
     combined = state_boundaries + new_segs
     combined.sort(key=lambda t: t[0])
     return state_labels, combined
+
+
+def _pass3_insert_missing_states_in_large_gaps(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    n_samples: int,
+    bpm_prior_raster: Tuple[np.ndarray, np.ndarray],
+    fallback_bpm: float,
+    sample_rate: int,
+    params: Dict,
+    *,
+    measured_systole_t: Optional[np.ndarray] = None,
+    measured_systole_dur: Optional[np.ndarray] = None,
+    measured_diastole_t: Optional[np.ndarray] = None,
+    measured_diastole_dur: Optional[np.ndarray] = None,
+    debug_windows_out: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[np.ndarray, List[Tuple]]:
+    """
+    Pass 3 Step 3 — Insert missing *states* in large gaps.
+
+    This replaces the older "insert missing S1 in long RR" event-level logic.
+    We operate on the already-generated *state sequence*: if any single state segment is
+    long enough to plausibly contain an additional full cardiac cycle (per the same model
+    used by _pass3_rebuild_unknown_runs), we mark the surplus tail as STATE_UNKNOWN and
+    reuse _pass3_rebuild_unknown_runs to pack in full cycles using the same cursoring.
+
+    Side notes:
+      - This runs after HF-noise repair. In practice, "lack of sound" gaps tend to coincide
+        with regions already cleared by noise repair, so the two usually do not overlap.
+      - Although we do not target any specific phase, the only segment that should commonly
+        be able to absorb extra cycles is diastole (the leftover) if upstream timing is sane.
+    """
+    if n_samples <= 0 or sample_rate <= 0:
+        return state_labels, state_boundaries
+
+    t_r, bpm_r = bpm_prior_raster
+    t_r = np.asarray(t_r, dtype=np.float64)
+    bpm_r = np.asarray(bpm_r, dtype=np.float64)
+    if len(t_r) < 2 or len(t_r) != len(bpm_r):
+        return state_labels, state_boundaries
+
+    SR = float(sample_rate)
+    MAX_SCALE = 0.30  # must match _pass3_rebuild_unknown_runs
+
+    def _bpm_at_sample(ix: int) -> float:
+        t = float(ix) / SR
+        v = _interp_piecewise_linear(t, t_r, bpm_r)
+        if v is None:
+            return float(fallback_bpm)
+        if not np.isfinite(v) or v <= 0:
+            return float(fallback_bpm)
+        return float(v)
+
+    def _expected_phase_samples(phase: str, t_mid: float, ivs: Dict) -> int:
+        if phase == "S1":
+            sec = float(ivs.get("s1_nominal", 0.040))
+        elif phase == "S2":
+            sec = float(ivs.get("s2_nominal", 0.030))
+        elif phase == "systole":
+            sec = _interp_piecewise_linear(t_mid, measured_systole_t, measured_systole_dur)
+            if sec is None:
+                sec = float(ivs.get("s1_s2_nominal", 0.300))
+        else:  # diastole
+            sec = _interp_piecewise_linear(t_mid, measured_diastole_t, measured_diastole_dur)
+            if sec is None:
+                bpm_here = float(ivs.get("bpm", 0.0)) if isinstance(ivs, dict) else 0.0
+                rr = 60.0 / float(bpm_here) if bpm_here and bpm_here > 0 else 0.75
+                sec = float(ivs.get("s2_s1_nominal", rr - float(ivs.get("s1_s2_nominal", 0.300))))
+        return max(1, int(round(float(sec) * SR)))
+
+    changed = False
+    new_bd: List[Tuple] = []
+
+    for seg in state_boundaries:
+        a0, a1, name, meta = seg
+        a0 = int(max(0, min(int(a0), n_samples)))
+        a1 = int(max(0, min(int(a1), n_samples)))
+        if a1 <= a0:
+            continue
+        if name not in ("S1", "systole", "S2", "diastole"):
+            new_bd.append(seg)
+            continue
+
+        width = a1 - a0
+        t_mid = 0.5 * (a0 + a1) / SR
+        bpm = _bpm_at_sample(int((a0 + a1) // 2))
+        ivs = calculate_bpm_intervals(bpm, params)
+        # stash bpm for _expected_phase_samples diastole fallback
+        try:
+            ivs = dict(ivs)
+            ivs["bpm"] = float(bpm)
+        except Exception:
+            pass
+
+        # Compute nominal cycle length (unscaled) the same way rebuild does.
+        s1_sec = float(ivs.get("s1_nominal", 0.040))
+        s2_sec = float(ivs.get("s2_nominal", 0.030))
+        sys_sec = _interp_piecewise_linear(t_mid, measured_systole_t, measured_systole_dur)
+        if sys_sec is None:
+            sys_sec = float(ivs.get("s1_s2_nominal", 0.300))
+        dia_sec = _interp_piecewise_linear(t_mid, measured_diastole_t, measured_diastole_dur)
+        if dia_sec is None:
+            rr_sec = 60.0 / bpm if bpm > 0 else 0.75
+            dia_sec = float(ivs.get("s2_s1_nominal", max(0.0, rr_sec - float(sys_sec))))
+        cyc0 = (
+            max(1, int(round(s1_sec * SR)))
+            + max(1, int(round(sys_sec * SR)))
+            + max(1, int(round(s2_sec * SR)))
+            + max(1, int(round(dia_sec * SR)))
+        )
+
+        exp_phase = _expected_phase_samples(name, t_mid, ivs)
+        # "Can fit another cycle" allowing rebuild's ±30% scaling.
+        min_extra = int(round((1.0 - MAX_SCALE) * float(max(1, cyc0))))
+        if width < exp_phase + max(4, min_extra):
+            new_bd.append(seg)
+            continue
+
+        # Mark the surplus tail as unknown; keep the expected head of the segment.
+        tail_lo = a0 + exp_phase
+        tail_hi = a1
+        if tail_hi - tail_lo < 4:
+            new_bd.append(seg)
+            continue
+
+        changed = True
+        state_labels[tail_lo:tail_hi] = STATE_UNKNOWN
+        if debug_windows_out is not None:
+            try:
+                debug_windows_out.append({
+                    "start_sample": int(tail_lo),
+                    "end_sample": int(tail_hi),
+                    "source_state": str(name),
+                    "trigger": "can_fit_extra_cycle",
+                    "bpm_at_mid": float(bpm),
+                    "expected_phase_samples": int(exp_phase),
+                    "cycle0_samples": int(cyc0),
+                    "segment_samples": int(width),
+                })
+            except Exception:
+                pass
+
+        # Keep the truncated original segment.
+        kept = (a0, tail_lo, name, meta)
+        new_bd.append(kept)
+
+    if not changed:
+        return state_labels, state_boundaries
+
+    # Drop any segments that overlap unknown tails (they may have been truncated above).
+    # Since we only mark tails inside existing segments, a simple filter on label identity
+    # is enough to remove any stale overlaps.
+    filtered: List[Tuple] = []
+    for seg in new_bd:
+        a0, a1, name, meta = seg
+        a0 = int(max(0, min(int(a0), n_samples)))
+        a1 = int(max(0, min(int(a1), n_samples)))
+        if a1 <= a0:
+            continue
+        if np.any(state_labels[a0:a1] == STATE_UNKNOWN):
+            continue
+        filtered.append(seg)
+    filtered.sort(key=lambda t: int(t[0]))
+
+    # Reuse the same rebuild logic + cursoring to fill unknown tails.
+    state_labels, rebuilt = _pass3_rebuild_unknown_runs(
+        state_labels,
+        filtered,
+        n_samples,
+        lt_series=pd.Series(bpm_r, index=t_r, dtype=float),
+        fallback_bpm=fallback_bpm,
+        sample_rate=sample_rate,
+        params=params,
+        measured_systole_t=measured_systole_t,
+        measured_systole_dur=measured_systole_dur,
+        measured_diastole_t=measured_diastole_t,
+        measured_diastole_dur=measured_diastole_dur,
+        rebuild_source="gap_insert",
+    )
+    return state_labels, rebuilt
 
 
 def _hf_noise_disables_s2_snap(
@@ -1517,123 +1727,6 @@ def _pass_a_resnap_s2(
                 changed = True
 
     return new_s2_events, new_corrections, cycle_diagnostics, changed
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pass B — insert missing S1 beats
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _pass_b_insert_missing_s1(
-    s1_list: List[int],
-    s2_events: List[int],
-    all_raw_peaks: np.ndarray,
-    pc: Dict,
-    lt_series: Optional[pd.Series],
-    fallback_bpm: float,
-    audio_envelope: np.ndarray,
-    analysis_data: Dict,
-    n_samples: int,
-    sample_rate: int,
-    params: Dict,
-    enable_insert: bool,
-    rr_too_long_frac: float,
-    max_fill_gap_sec: float,
-    s1_search_half: int,
-    s1_search_window_ms: float,
-    min_sep_samples: int,
-    snap_s2: bool,
-    snap_half: int,
-    insert_spectrum_ctx: Optional[Dict],
-    noise_ivs: Optional[List[Tuple[int, int]]] = None,
-) -> Tuple[List[int], List[int], List[Dict[str, Any]], bool]:
-    """
-    Insert missing S1 beats when RR is implausibly long vs the BPM prior.
-    Inserts at most one beat per call; the outer max_iters loop handles multiples.
-
-    Returns (new_s1_list, new_s2_events, new_corrections, changed).
-    """
-    if not enable_insert or len(s1_list) < 2:
-        return s1_list, s2_events, [], False
-
-    new_s1_list = list(s1_list)
-    can_use_peaks = len(all_raw_peaks) > 0
-
-    for i in range(len(new_s1_list) - 1):
-        s1     = int(new_s1_list[i])
-        s1_next = int(new_s1_list[i + 1])
-        rr = (s1_next - s1) / float(sample_rate)
-        if rr <= 0 or rr > max_fill_gap_sec:
-            continue
-        t_s1 = s1 / float(sample_rate)
-        bpm = _bpm_at_time(t_s1, lt_series, fallback_bpm)
-        intervals = calculate_bpm_intervals(bpm, params)
-        expected_rr = float(intervals.get("rr_interval", 60.0 / bpm if bpm > 0 else 0.75))
-        if expected_rr <= 0 or rr <= rr_too_long_frac * expected_rr:
-            continue
-
-        n_missing = max(0, int(round(rr / expected_rr) - 1))
-        if n_missing < 1:
-            continue
-
-        t_expected = (s1 / float(sample_rate)) + (rr / (n_missing + 1))
-        cand: Optional[int] = None
-        insert_method = "raw_peak"
-        spectrum_score: Optional[float] = None
-
-        if can_use_peaks:
-            cand = _choose_s1_near(
-                t_expected, s1_search_half, min_sep_samples,
-                all_raw_peaks, pc, n_samples, sample_rate,
-            )
-        if cand is None and insert_spectrum_ctx is not None:
-            half_sec = s1_search_window_ms / 2000.0
-            sp = spectrum_template_search_envelope_index(
-                insert_spectrum_ctx["bandpass_audio"],
-                int(insert_spectrum_ctx["full_sr"]),
-                t_expected,
-                half_sec,
-                insert_spectrum_ctx["mu_s1_db"],
-                insert_spectrum_ctx["freqs"],
-                int(insert_spectrum_ctx["n_fft"]),
-                int(insert_spectrum_ctx["half_samples"]),
-                sample_rate,
-                n_samples,
-                params,
-            )
-            if sp is not None:
-                cand_ix, spectrum_score = sp
-                if _insert_spectrum_envelope_ok(cand_ix, audio_envelope, analysis_data, params):
-                    cand = int(cand_ix)
-                    insert_method = "spectrum_s1"
-
-        if cand is None:
-            continue
-        if (cand - s1) < min_sep_samples or (s1_next - cand) < min_sep_samples:
-            continue
-
-        new_s1_list.append(int(cand))
-        new_s1_list = sorted(list(dict.fromkeys(new_s1_list)))
-        corr: Dict[str, Any] = {
-            "type": "insert_s1",
-            "between_cycle": int(i),
-            "s1_prev": int(s1), "s1_next": int(s1_next),
-            "inserted_s1": int(cand),
-            "t_expected_sec": float(t_expected),
-            "expected_rr_sec": float(expected_rr),
-            "rr_sec": float(rr),
-            "method": insert_method,
-        }
-        if spectrum_score is not None:
-            corr["spectrum_score"] = float(spectrum_score)
-
-        new_s2_events = _rebuild_s2_events(
-            new_s1_list, lt_series, fallback_bpm,
-            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
-            noise_ivs=noise_ivs,
-        )
-        return new_s1_list, new_s2_events, [corr], True
-
-    return new_s1_list, s2_events, [], False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1883,6 +1976,21 @@ def run_pass3_correction(
       pass3_noise_unreliable_windows_samples  (when noise_event_segments exist: HF intervals as sample indices for HTML).
       When pass3_enable_noise_repair: labels in those windows are set to unknown (encoding includes "unknown").
     """
+    # Design intent (Pass 3 architecture)
+    # ----------------------------------
+    # Pass 2 provides labeled events (S1 peaks + paired S2 candidates + BPM belief). Pass 3's job is to:
+    #   1) Generate an initial *state sequence* from those Pass 2 labels, then
+    #   2) Correct that *state sequence* (not just isolated events) under timing constraints.
+    #
+    # Direction we are moving toward:
+    #   Treat each cardiac cycle as the canonical half-open interval [S1_i, S1_{i+1}), and make the four
+    #   phases (S1, systole, S2, diastole) a strict partition of that interval. All four phases have equal
+    #   weighting in the logic (timing plausibility / repairs should reason about the whole cycle, not only S2).
+    #
+    # Transitional note:
+    #   The current implementation includes a "trim diastole overlap" normalization step because transient-edge
+    #   detection can start S1 before its peak while diastole is anchored to the next peak. As the codebase
+    #   converges on strict [S1_i, S1_{i+1}) partitions, that trimming should become unnecessary.
     if "peak_classifications" not in analysis_data or analysis_data["peak_classifications"] is None:
         analysis_data["peak_classifications"] = {}
     if "s1_s2_pairs" not in analysis_data:
@@ -1926,11 +2034,6 @@ def run_pass3_correction(
     diastole_slack    = float(params.get("pass3_diastole_slack_frac",  0.20))
 
     max_iters          = int(params.get("pass3_correction_max_iters",        32))
-    enable_insert      = bool(params.get("pass3_enable_insert_missing_s1",  True))
-    rr_too_long_frac   = float(params.get("pass3_rr_too_long_frac",         1.7))
-    max_fill_gap_sec   = float(params.get("pass3_gap_fill_max_duration_sec", 5.0))
-    s1_search_window_ms = float(params.get("pass3_insert_s1_search_window_ms", 180.0))
-    s1_search_half     = max(1, int(round(0.5 * s1_search_window_ms * sample_rate / 1000.0)))
     min_sep_samples    = int(float(params.get("min_peak_distance_sec", 0.10)) * sample_rate)
 
     enable_phase_corr    = bool(params.get("pass3_enable_phase_correction",   True))
@@ -2035,27 +2138,18 @@ def run_pass3_correction(
         )
         corrections.extend(corrs_a)
 
-        s1_list, s2_events, corrs_b, changed_b = _pass_b_insert_missing_s1(
-            s1_list, s2_events, all_raw_peaks, pc, lt_pass3, fallback_bpm,
-            audio_envelope, analysis_data, n_samples, sample_rate, params,
-            enable_insert, rr_too_long_frac, max_fill_gap_sec,
-            s1_search_half, s1_search_window_ms, min_sep_samples,
-            snap_s2, snap_half, insert_spectrum_ctx, noise_ivs=noise_ivs_pass3,
-        )
-        corrections.extend(corrs_b)
-
         s1_list, s2_events, corrs_c, changed_c = _pass_c_phase_correction(
             s1_list, s2_events, cycle_diagnostics,
             all_raw_peaks, pc, lt_pass3, fallback_bpm,
             audio_envelope, analysis_data, n_samples, sample_rate, params,
             enable_phase_corr, phase_min_score_delta,
             local_peak_win_samp, local_peak_window_ms, local_peak_sens,
-            s1_search_half, min_sep_samples,
+            0, min_sep_samples,
             snap_s2, snap_half, insert_spectrum_ctx, noise_ivs=noise_ivs_pass3,
         )
         corrections.extend(corrs_c)
 
-        if not (changed_a or changed_b or changed_c):
+        if not (changed_a or changed_c):
             break
 
     peaks_out = np.asarray(s1_list, dtype=np.int64)
@@ -2246,15 +2340,36 @@ def run_pass3_correction(
         )
         _n_rebuilt = sum(
             1 for seg in state_boundaries
-            if seg[2] == "S1" and isinstance(seg[3], dict) and seg[3].get("noise_rebuild")
+            if seg[2] == "S1" and isinstance(seg[3], dict) and seg[3].get("rebuild_source") == "noise_repair"
         )
         logging.info("Pass 3 rebuild: %d rebuilt beat(s) in noise gap(s).", _n_rebuilt)
+
+        # ── Step 3: Insert missing states in large gaps (state-level) ─────────────
+        # Uses the same cursoring + scaling logic as _pass3_rebuild_unknown_runs.
+        if bool(params.get("pass3_enable_gap_state_insert", True)):
+            _gap_debug: List[Dict[str, Any]] = []
+            state_labels, state_boundaries = _pass3_insert_missing_states_in_large_gaps(
+                state_labels,
+                state_boundaries,
+                n_samples,
+                (_bpm_prior_t, _bpm_prior),
+                fallback_bpm,
+                sample_rate,
+                params,
+                measured_systole_t=_ms_t_r,
+                measured_systole_dur=_ms_d_r,
+                measured_diastole_t=_md_t_r,
+                measured_diastole_dur=_md_d_r,
+                debug_windows_out=_gap_debug,
+            )
+            if _gap_debug:
+                analysis_data["pass3_large_gap_windows_samples"] = list(_gap_debug)
 
     # ── Derive peaks_out from state sequence (canonical source of truth) ──────
     # Intent: Pass 3 treats the *state sequence* (pass3_state_labels / pass3_state_boundaries)
     # as the authoritative representation of cardiac timing. When HF-noise repair runs, it
     # may *regenerate* (“synthetic”) states inside unreliable/low-confidence audio windows
-    # (see metadata: noise_rebuild=True). Those regenerated states are not just for display:
+    # (see metadata: rebuild_source="noise_repair" or "gap_insert"). Those regenerated states are not just for display:
     # they are promoted into the canonical sequence and therefore replace the corresponding
     # noisy region for all downstream consumers (metrics, plots, Pass 4, etc.).
     _s1_from_states = sorted({
