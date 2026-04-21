@@ -122,6 +122,45 @@ def _compute_systolic_interval_data(
     return observed_times, observed_intervals, expected_times, expected_intervals
 
 
+def _compute_actual_systole_from_state_boundaries(
+    analysis_data: Dict,
+    sample_rate: int,
+    *,
+    prefer: str = "after",
+) -> Tuple[List[float], List[float]]:
+    """
+    Compute actual systole durations from Pass 3 dense state boundaries.
+    Returns (times, durations) in seconds, where time is the segment midpoint.
+    """
+    if prefer == "before":
+        boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+    else:
+        boundaries = analysis_data.get("pass3_state_boundaries") or []
+        if not boundaries:
+            boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+
+    actual_times: List[float] = []
+    actual_durations: List[float] = []
+    for s0, s1, state_name, _meta in (boundaries or []):
+        try:
+            if str(state_name).lower() != "systole":
+                continue
+            s0i = int(s0)
+            s1i = int(s1)
+            if s1i <= s0i:
+                continue
+            t_mid = (s0i + s1i) / 2.0 / float(sample_rate)
+            dur = (s1i - s0i) / float(sample_rate)
+            if not np.isfinite(t_mid) or not np.isfinite(dur):
+                continue
+            actual_times.append(float(t_mid))
+            actual_durations.append(float(dur))
+        except Exception:
+            continue
+
+    return actual_times, actual_durations
+
+
 def _compute_systolic_shift(
     obs_t: List[float],
     obs_iv: List[float],
@@ -1260,6 +1299,9 @@ class Plotter:
         obs_t, obs_iv, exp_t, exp_iv = _compute_systolic_interval_data(
             analysis_data, pass_metrics, self.sample_rate, self.params
         )
+        actual_t, actual_iv = _compute_actual_systole_from_state_boundaries(
+            analysis_data, self.sample_rate, prefer="after"
+        )
         if not exp_t and not obs_t:
             return
         to_dt = lambda seq: _elapsed_seconds_to_plot_datetimes(np.asarray(seq, dtype=np.float64))
@@ -1277,6 +1319,18 @@ class Plotter:
                     y=plot_exp_iv,
                     name="Expected systole from BPM",
                     line=dict(color="cyan", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if actual_t:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(actual_t),
+                    y=actual_iv,
+                    name="Actual systole (state timeline)",
+                    mode="markers",
+                    marker=dict(size=5, color="#b07cff", symbol="diamond"),
                     yaxis="y3",
                     visible="legendonly",
                 ),
