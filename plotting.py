@@ -1421,6 +1421,33 @@ class Plotter:
                     visible="legendonly",
                 ),
             )
+        # Cleaned & smoothed systole/diastole curves used by noise-repair rebuild.
+        _pre_sys_t   = analysis_data.get("pass3_measured_systole_t")
+        _pre_sys_dur = analysis_data.get("pass3_measured_systole_dur")
+        _pre_dia_t   = analysis_data.get("pass3_measured_diastole_t")
+        _pre_dia_dur = analysis_data.get("pass3_measured_diastole_dur")
+        if _pre_sys_t is not None and len(_pre_sys_t) >= 2:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(_pre_sys_t),
+                    y=list(_pre_sys_dur),
+                    name="Measured systole curve (before noise repair)",
+                    line=dict(color="#c87cff", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if _pre_dia_t is not None and len(_pre_dia_t) >= 2:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(_pre_dia_t),
+                    y=list(_pre_dia_dur),
+                    name="Measured diastole curve (before noise repair)",
+                    line=dict(color="#33cc77", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
         if obs_t:
             # Outlier removal + LOESS best-fit curve (reuses pass1 BPM pattern)
             fit_data = compute_systole_interval_curve(
