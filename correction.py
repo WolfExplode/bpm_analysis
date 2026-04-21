@@ -995,7 +995,7 @@ def _seed_s2_from_pass2_pairs(
     n_samples: int,
 ) -> List[int]:
     """
-    Build the initial s2_events list from Pass 2's acoustically-detected S1-S2 pairs.
+    Build the initial s2_events list from Pass 2's acoustically-detected S1→S2 (systole) pairs.
 
     For each beat (s1_list[j] → s1_list[j+1]):
     - If Pass 2 paired an S2 with this S1 and it falls inside the RR window, use it.

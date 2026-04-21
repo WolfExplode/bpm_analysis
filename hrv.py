@@ -316,12 +316,17 @@ def compute_pass1_bpm_curve(
     }
 
 
-def compute_s1_s2_interval_curve(
+def compute_systole_interval_curve(
     obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
 ) -> Optional[Dict[str, np.ndarray]]:
     """
     Outlier removal: local median+MAD in time window, then global median+MAD on intervals
-    (skipped if s1_s2_global_outlier_mad_k <= 0), then LOESS on measured S1-S2 intervals.
+    (skipped if systole_global_outlier_mad_k <= 0), then LOESS on measured systole intervals.
+
+    Notes:
+    - "S1→S2 interval" and "systole duration" are treated as the same quantity in this pipeline.
+    - Parameter keys accept both the preferred `systole_*` names and legacy `s1_s2_*` names.
+
     Returns dict with curve_times, curve_intervals (LOESS), scatter_times, scatter_intervals (filtered),
     or None if insufficient data.
     """
@@ -331,13 +336,13 @@ def compute_s1_s2_interval_curve(
     obs_intervals = np.asarray(obs_intervals, dtype=float)
 
     # Outlier removal: keep point if within median ± k*MAD in local time window
-    half_window_sec = float(params.get("s1_s2_outlier_window_sec", 8.0))
-    mad_k = float(params.get("s1_s2_outlier_mad_k", 2.5))
+    half_window_sec = float(params.get("systole_outlier_window_sec", params.get("s1_s2_outlier_window_sec", 8.0)))
+    mad_k = float(params.get("systole_outlier_mad_k", params.get("s1_s2_outlier_mad_k", 2.5)))
     keep = _median_mad_keep_mask_time_window(obs_times, obs_intervals, half_window_sec, mad_k)
     scatter_times = obs_times[keep]
     scatter_intervals = obs_intervals[keep]
 
-    global_mad_k = float(params.get("s1_s2_global_outlier_mad_k", 5.0))
+    global_mad_k = float(params.get("systole_global_outlier_mad_k", params.get("s1_s2_global_outlier_mad_k", 5.0)))
     if global_mad_k > 0 and len(scatter_intervals) > 0:
         gkeep = _median_mad_keep_mask_global(scatter_intervals, global_mad_k)
         scatter_times = scatter_times[gkeep]
@@ -346,7 +351,7 @@ def compute_s1_s2_interval_curve(
     if len(scatter_times) < 3:
         return None
 
-    loess_frac = float(params.get("s1_s2_loess_frac", 0.05))
+    loess_frac = float(params.get("systole_loess_frac", params.get("s1_s2_loess_frac", 0.05)))
     curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
     curve_intervals = _loess(curve_times, scatter_times, scatter_intervals, frac=loess_frac)
 
@@ -356,6 +361,13 @@ def compute_s1_s2_interval_curve(
         "scatter_times": scatter_times,
         "scatter_intervals": scatter_intervals,
     }
+
+
+def compute_s1_s2_interval_curve(
+    obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
+) -> Optional[Dict[str, np.ndarray]]:
+    """Legacy alias for `compute_systole_interval_curve`."""
+    return compute_systole_interval_curve(obs_times, obs_intervals, params)
 
 
 def filter_instant_bpm_mad(

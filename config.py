@@ -65,11 +65,11 @@ DEFAULT_PARAMS = {
 
     # =================================================================================
     # 4. S1/S2 Pairing & Confidence Engine
-    # The core logic for identifying S1-S2 pairs based on timing and physiology.
+    # The core logic for identifying S1→S2 (systole) pairs based on timing and physiology.
     # =================================================================================
     # --- 4.1. Core Pairing Rules ---
-    "pairing_confidence_threshold": 0.50,      # Confidence score required to classify two peaks as an S1-S2 pair.
-    "pass1_pairing_confidence_threshold": 0.7, # Pass 1 only: min S1–S2 pairing confidence for anchor beats (overrides pairing_confidence_threshold for that run).
+    "pairing_confidence_threshold": 0.50,      # Confidence score required to classify two peaks as an S1→S2 (systole) pair.
+    "pass1_pairing_confidence_threshold": 0.7, # Pass 1 only: min S1→S2 (systole) pairing confidence for anchor beats (overrides pairing_confidence_threshold for that run).
     "s1_s2_interval_cap_sec": 0.4,             # The absolute maximum time (seconds) allowed between S1 and S2.
     "min_s1_s2_interval_sec": 0.10,            # Absolute minimum (100ms)
     "min_s1_s2_interval_rr_fraction": 0.23,    # Or 23% of total RR interval
@@ -86,7 +86,7 @@ DEFAULT_PARAMS = {
     "s2_min_sec": 0.030,     # Shortest plausible S2 sound duration (10ms absolute floor).
     "s2_nominal_sec": 0.080, # S2 is generally shorter and softer than S1 (~30ms typical).
     "s2_max_sec": 0.120,     # Longest plausible S2 sound.
-    # BPM-dependent expected S1-S2 (Weissler: https://www.desmos.com/calculator/ebqshptip0)
+    # BPM-dependent expected systole (S1→S2) (Weissler: https://www.desmos.com/calculator/ebqshptip0)
     "s1_s2_expected_weissler_ref_et_ms": 320, # Reference ejection time (ms) at ref_bpm.
     "s1_s2_expected_weissler_ref_bpm": 60,    # BPM at which ref_et_ms is defined.
     "s1_s2_expected_weissler_slope_ms_per_bpm": 1.26,  # ET decrease (ms) per BPM.
@@ -108,7 +108,7 @@ DEFAULT_PARAMS = {
     "penalty_amount_max": 0.30,             # Subtractive confidence penalty for a "bad" pair in an unstable section.
     "forward_look_drop_threshold": 0.4,     # If next peak < 60% of S2, it's suspicious
     "forward_look_max_penalty": 0.4,        # Max penalty for this scenario
-    "pairing_rr_penalty_max": 0.25,         # Multiplicative penalty for RR mismatch vs 60/BPM when evaluating an S1-S2 pair.
+    "pairing_rr_penalty_max": 0.25,         # Multiplicative penalty for RR mismatch vs 60/BPM when evaluating an S1→S2 (systole) pair.
     # Contractility: S1/S2 prominence ratio. Expected from history (past N pairs) or BPM power-curve fallback.
     "contractility_expected_use_history": True,   # If True, expected S1/S2 = mean of last N accepted pairs; else BPM power curve.
     "contractility_expected_history_count": 8,   # Number of past S1/S2 ratios to average.
@@ -138,9 +138,9 @@ DEFAULT_PARAMS = {
     "interval_v_short_ramp_end_fraction": 0.4,  # Left: below this fraction of expected → hard reject; ramp from here up to left zero-crossing.
     "interval_v_long_ramp_end_fraction": 2.0,   # Right: ramp from right zero-crossing to this × expected → full penalty.
     "interval_v_long_reject_fraction": 2.5,     # Right: above this × expected → hard reject.
-    # Expected S1-S2 from past pairs (when enabled, overrides BPM-based expected for the V-shape)
-    "s1_s2_expected_use_history": True,         # If True, expected = mean of last N accepted S1-S2 intervals; else BPM-based.
-    "s1_s2_expected_history_count": 10,        # Number of past S1-S2 intervals to average.
+    # Expected systole (S1→S2) from past pairs (when enabled, overrides BPM-based expected for the V-shape)
+    "s1_s2_expected_use_history": True,         # If True, expected = mean of last N accepted systole (S1→S2) intervals; else BPM-based.
+    "s1_s2_expected_history_count": 10,        # Number of past systole (S1→S2) intervals to average.
     "s1_s2_expected_history_min": 1,           # Minimum history length before using average (else fallback to BPM).
 
     # =================================================================================
@@ -235,10 +235,10 @@ DEFAULT_PARAMS = {
     "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2/3 instantaneous BPM: local MAD outlier removal.
     "pass2_instant_bpm_outlier_mad_k": 8,       # Local MADs for pass 2/3 instant BPM. Lower = more aggressive.
     "pass1_bpm_loess_frac": 0.02,           # LOESS fraction for pass 1 BPM curve (lower = tighter fit).
-    "s1_s2_outlier_window_sec": 8.0,         # Half-window (seconds) for S1-S2 interval outlier removal: MAD in local time window.
-    "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for S1-S2 interval local outlier removal.
+    "s1_s2_outlier_window_sec": 8.0,         # Half-window (seconds) for systole (S1→S2) outlier removal: MAD in local time window.
+    "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for systole (S1→S2) local outlier removal.
     "s1_s2_global_outlier_mad_k": 5.0,     # After local pass: global median ± k*MAD on interval (s). Higher = less sensitive. <=0 disables.
-    "s1_s2_loess_frac": 0.05,               # LOESS fraction for S1-S2 interval best-fit curve.
+    "s1_s2_loess_frac": 0.05,               # LOESS fraction for systole (S1→S2) best-fit curve.
     "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
     # --- 7.1. Long Plot Optimization ---

@@ -87,7 +87,7 @@ def format_debug_entry(debug_entry: Dict) -> List[str]:
         sec_type = sec.get("type")
 
         if sec_type == "pairing":
-            lines.append("- S1-S2 pairing decision:")
+            lines.append("- S1→S2 (systole) pairing decision:")
             raw_lines = sec.get("lines")
             if raw_lines is None:
                 text = sec.get("text", "")

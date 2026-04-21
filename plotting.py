@@ -17,7 +17,7 @@ from plotly.subplots import make_subplots
 
 from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path, strip_output_filename_emojis
 from confidence_engine import calculate_bpm_intervals
-from hrv import compute_s1_s2_interval_curve
+from hrv import compute_systole_interval_curve
 
 import librosa
 import librosa.display
@@ -95,10 +95,10 @@ def _compute_systolic_interval_data(
     params: Dict,
 ) -> Tuple[List[float], List[float], List[float], List[float]]:
     """
-    Compute measured S1-S2 intervals from labeled pairs and BPM-expected systolic curve.
+    Compute measured systole intervals from labeled pairs and BPM-expected systolic curve.
     Returns (observed_times, observed_intervals, expected_times, expected_intervals).
     """
-    # Measured S1-S2 intervals from labeled pairs
+    # Measured systole intervals from labeled pairs
     pairs = analysis_data.get("s1_s2_pairs") or []
     observed_times: List[float] = []
     observed_intervals: List[float] = []
@@ -130,7 +130,7 @@ def _compute_systolic_shift(
     peak_bpm_time_sec: Optional[float],
 ) -> Optional[float]:
     """
-    Compute shift to align expected S1-S2 curve to measured data.
+    Compute shift to align expected systole curve to measured data.
     If peak_bpm_time_sec: use exertion only (t < peak). Else: average across all time.
     Returns shift (measured_avg - expected_avg) or None if insufficient data.
     """
@@ -1254,7 +1254,7 @@ class Plotter:
         pass_metrics: Dict,
         output_suffix: Optional[str],
     ) -> None:
-        """Add BPM-expected systolic curve, measured S1-S2 datapoints (outlier-filtered), and best-fit curve on yaxis3 (Pass 2 and Pass 3 only)."""
+        """Add BPM-expected systole curve, measured systole datapoints (outlier-filtered), and best-fit curve on yaxis3 (Pass 2 and Pass 3 only)."""
         if output_suffix not in ("_pass2", "_pass3"):
             return
         obs_t, obs_iv, exp_t, exp_iv = _compute_systolic_interval_data(
@@ -1275,7 +1275,7 @@ class Plotter:
                 go.Scatter(
                     x=to_dt(exp_t),
                     y=plot_exp_iv,
-                    name="Expected S1-S2 from BPM",
+                    name="Expected systole from BPM",
                     line=dict(color="cyan", width=2),
                     yaxis="y3",
                     visible="legendonly",
@@ -1283,7 +1283,7 @@ class Plotter:
             )
         if obs_t:
             # Outlier removal + LOESS best-fit curve (reuses pass1 BPM pattern)
-            fit_data = compute_s1_s2_interval_curve(
+            fit_data = compute_systole_interval_curve(
                 np.array(obs_t), np.array(obs_iv), self.params
             )
             if fit_data is not None:
@@ -1295,7 +1295,7 @@ class Plotter:
                     go.Scatter(
                         x=to_dt(curve_t),
                         y=curve_iv,
-                        name="S1-S2 Interval",
+                        name="Systole duration",
                         line=dict(color="orange", width=2),
                         yaxis="y3",
                         visible="legendonly",
@@ -1305,7 +1305,7 @@ class Plotter:
                     go.Scatter(
                         x=to_dt(scatter_t),
                         y=scatter_iv,
-                        name="Measured S1-S2",
+                        name="Measured systole",
                         mode="markers",
                         marker=dict(size=6, color="lime", symbol="circle"),
                         yaxis="y3",
@@ -1318,7 +1318,7 @@ class Plotter:
                     go.Scatter(
                         x=to_dt(obs_t),
                         y=obs_iv,
-                        name="Measured S1-S2",
+                        name="Measured systole",
                         mode="markers",
                         marker=dict(size=6, color="lime", symbol="circle"),
                         yaxis="y3",

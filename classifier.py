@@ -160,7 +160,7 @@ class PeakClassifier:
         return paired_count / history_window
 
     def _process_peak_pair(self, current_peak_idx: int, pairing_ratio: float) -> None:
-        """Processes a pair of peaks to determine if they are S1-S2."""
+        """Processes a pair of peaks to determine if they are S1→S2 (systole)."""
         all_peaks = self.state.all_peaks
         loop_idx = self.state.loop_idx
 
@@ -304,7 +304,7 @@ class PeakClassifier:
             self.state.long_term_bpm_history.append((time_sec, self.state.long_term_bpm))
 
     def _build_s1_s2_pairs(self) -> List[Tuple[int, int]]:
-        """Build list of (s1_idx, s2_idx) for each paired S1-S2 from classifications (pass 2 output)."""
+        """Build list of (s1_idx, s2_idx) for each paired S1→S2 (systole) from classifications (pass 2 output)."""
         pairs: List[Tuple[int, int]] = []
         pc = self.state.peak_classifications
         for i, idx in enumerate(self.state.all_peaks):
