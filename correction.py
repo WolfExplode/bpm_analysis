@@ -57,7 +57,9 @@ def _detect_sensitive_peaks_in_large_gap_windows(
     """
     Rerun a more sensitive peak detector inside Pass 3 "large gap" windows.
 
-    Output is for plotting/debug only (does not modify the Pass 3 rebuild logic yet).
+    The recovered peaks are stored in analysis_data for plotting/debug and are also
+    consumed by _pass3_snap_rebuilt_states_to_recovered_peaks to shift synthetic S1/S2
+    boundaries onto real acoustic events after the gap fill is complete.
     """
     if sample_rate <= 0:
         return np.asarray([], dtype=np.int64)
@@ -133,6 +135,138 @@ def _detect_sensitive_peaks_in_large_gap_windows(
     # Unique + sorted
     out_arr = np.asarray(sorted(set(int(x) for x in out if 0 <= int(x) < n)), dtype=np.int64)
     return out_arr
+
+
+def _pass3_snap_rebuilt_states_to_recovered_peaks(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    recovered_peaks: np.ndarray,
+    audio_envelope: np.ndarray,
+    sample_rate: int,
+    snap_window_samples: int,
+) -> Tuple[np.ndarray, List[Tuple]]:
+    """
+    Post-processing: after the gap fill is complete, shift rebuilt S1 and S2 segment
+    boundaries to align with acoustically recovered peaks where available.
+
+    "Fill first, then shift": the existing rebuild already produced a valid, non-overlapping
+    partition; this function makes small position adjustments on top of it. The neighboring
+    systole or diastole segment absorbs the shift on each side, so the partition stays
+    contiguous and non-overlapping by construction.
+
+    State segments represent durations [start, end). The center of an S1 or S2 segment
+    is only used here to locate a nearby recovered peak and compute the shift delta.
+
+    For start_after_s1 gaps the first rebuilt segment is systole (not S1), so the kept
+    real S1 anchor before the gap is never touched by this function.
+    """
+    if recovered_peaks is None or len(recovered_peaks) == 0:
+        return state_labels, state_boundaries
+
+    rec = np.asarray(recovered_peaks, dtype=np.int64)
+    n = int(len(state_labels))
+    env = np.asarray(audio_envelope, dtype=np.float64)
+    sw = int(snap_window_samples)
+
+    def _snap(expected: int) -> Optional[int]:
+        # Due to how gap detection works, there shouldn't be any already-known raw peaks
+        # inside the gap; recovered peaks are the only candidate source here.
+        # Scoring: closest in time; tie-break by higher envelope amplitude.
+        # Recovered peaks are generated with find_peaks(distance=...) so adjacent
+        # candidates shouldn't appear — the tie-break is just a safety net.
+        lo = expected - sw
+        hi = expected + sw
+        mask = (rec >= lo) & (rec <= hi)
+        cands = rec[mask]
+        if len(cands) == 0:
+            return None
+        dists = np.abs(cands - expected)
+        min_d = int(np.min(dists))
+        closest = cands[dists == min_d]
+        if len(closest) == 1:
+            return int(closest[0])
+        amps = env[np.clip(closest, 0, n - 1)]
+        return int(closest[np.argmax(amps)])
+
+    # Work on a mutable copy (list-of-lists) sorted by start.
+    segs = [list(s) for s in sorted(state_boundaries, key=lambda t: int(t[0]))]
+    ns = len(segs)
+    changed = False
+
+    for i, seg in enumerate(segs):
+        a0, a1, name, meta = int(seg[0]), int(seg[1]), seg[2], seg[3]
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("rebuild_source") not in ("gap_insert", "noise_repair"):
+            continue
+        if name not in ("S1", "S2"):
+            continue
+
+        width = a1 - a0
+        if width <= 0:
+            continue
+        center = (a0 + a1) // 2
+
+        snapped = _snap(center)
+        if snapped is None:
+            continue
+
+        delta = snapped - center
+        if delta == 0:
+            continue
+
+        new_a0 = a0 + delta
+        new_a1 = a1 + delta  # = new_a0 + width (segment width is preserved)
+
+        # Lower bound: can't start before the previous segment ends.
+        prev_end = int(segs[i - 1][1]) if i > 0 else a0
+        new_a0 = max(prev_end, new_a0)
+        new_a1 = new_a0 + width  # re-derive after clamping start
+
+        # Upper bound: the next segment must keep at least 1 sample (systole / diastole).
+        next_end = int(segs[i + 1][1]) if i + 1 < ns else a1
+        if new_a1 >= next_end:
+            # Not enough room after the shift; keep synthetic placement.
+            continue
+
+        if new_a1 <= new_a0:
+            continue
+
+        # Apply shift to this segment.
+        segs[i][0] = new_a0
+        segs[i][1] = new_a1
+        new_meta = dict(meta)
+        new_meta["s1" if name == "S1" else "s2"] = snapped
+        new_meta["snapped"] = True
+        segs[i][3] = new_meta
+
+        # Adjacent segments absorb the shift on each side.
+        if i > 0:
+            segs[i - 1][1] = new_a0
+        if i + 1 < ns:
+            segs[i + 1][0] = new_a1
+
+        changed = True
+
+    if not changed:
+        return state_labels, state_boundaries
+
+    new_boundaries = [tuple(s) for s in segs]
+
+    # Repaint state_labels from the updated boundary list.
+    _state_code = {
+        "S1": STATE_S1, "systole": STATE_SYSTOLE, "S2": STATE_S2, "diastole": STATE_DIASTOLE,
+    }
+    for _a0, _a1, _name, _ in new_boundaries:
+        code = _state_code.get(_name)
+        if code is None:
+            continue
+        lo = int(max(0, min(int(_a0), n)))
+        hi = int(max(0, min(int(_a1), n)))
+        if hi > lo:
+            state_labels[lo:hi] = code
+
+    return state_labels, new_boundaries
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1080,6 +1214,10 @@ def _pass3_rebuild_unknown_runs(
       - Choose how many full cycles to pack into the gap and apply a single scale factor
         (±30% preferred) so the generated sequence exactly fills the gap.
 
+    State segments represent durations [start, end). The metadata fields "s1" and "s2"
+    are peak *center* indices used as anchors for downstream derivation and hover display;
+    they are not the segment boundaries themselves.
+
     Rebuilt segments carry ``rebuild_source`` metadata so the UI can distinguish
     noise repair vs gap repair on hover (and other downstream debug consumers).
     If the gap is smaller than one minimum feasible cardiac cycle it is left
@@ -1440,7 +1578,18 @@ def _pass3_insert_missing_states_in_large_gaps(
                 pass
 
         # Keep the truncated original segment.
-        kept = (a0, tail_lo, name, meta)
+        # The reasoning payload has measured_ms baked in from painting time; update it
+        # so hover display reflects the new shorter duration instead of the pre-gap value.
+        new_meta = dict(meta)
+        new_dur_ms = round((tail_lo - a0) / float(SR) * 1000)
+        if "reasoning" in new_meta and isinstance(new_meta["reasoning"], dict):
+            r = dict(new_meta["reasoning"])
+            r["measured_ms"] = new_dur_ms
+            new_meta["reasoning"] = r
+        # Also update s1_next for diastole so downstream peak derivation is consistent.
+        if name == "diastole" and "s1_next" in new_meta:
+            new_meta["s1_next"] = int(tail_lo)
+        kept = (a0, tail_lo, name, new_meta)
         new_bd.append(kept)
 
     if not changed:
@@ -1945,6 +2094,12 @@ def run_pass3_correction(
                     dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
                 )
                 analysis_data["pass3_large_gap_recovered_peaks"] = recovered.tolist()
+                _snap_window = int(round(
+                    float(params.get("pass3_gap_snap_window_ms", 80.0)) * sample_rate / 1000.0
+                ))
+                state_labels, state_boundaries = _pass3_snap_rebuilt_states_to_recovered_peaks(
+                    state_labels, state_boundaries, recovered, audio_envelope, sample_rate, _snap_window,
+                )
     else:
         logging.info("Pass 3: gap state insert disabled (pass3_enable_gap_state_insert=False).")
 

@@ -81,10 +81,10 @@ DEFAULT_PARAMS = {
     # These define how long the audible heart sound event itself lasts, not the intervals between sounds.
     # Used by Pass 3 to gate corrections that would squeeze a state into an impossibly short window.
     "s1_min_sec": 0.030,     # Shortest plausible S1 sound duration (10ms absolute floor).
-    "s1_nominal_sec": 0.080, # Typical S1 sound duration (~40ms).
+    "s1_nominal_sec": 0.080, # Typical S1 sound duration (~80ms).
     "s1_max_sec": 0.120,     # Longest plausible S1 sound (beyond this it blurs into systole).
     "s2_min_sec": 0.030,     # Shortest plausible S2 sound duration (10ms absolute floor).
-    "s2_nominal_sec": 0.080, # S2 is generally shorter and softer than S1 (~30ms typical).
+    "s2_nominal_sec": 0.080, # S2 is generally shorter and softer than S1 (~80ms typical).
     "s2_max_sec": 0.120,     # Longest plausible S2 sound.
     # BPM-dependent expected systole (S1→S2) (Weissler: https://www.desmos.com/calculator/ebqshptip0)
     "s1_s2_expected_weissler_ref_et_ms": 320, # Reference ejection time (ms) at ref_bpm.
@@ -178,12 +178,13 @@ DEFAULT_PARAMS = {
     # --- 6.2 Insert missing states in large gaps (state-level) ---
     "pass3_enable_gap_state_insert": True,  # If True, long single-state spans get surplus tail regenerated via the same logic as noise rebuild.
 
-    # --- 6.2.1 Large-gap peak recovery (debug/visualization) ---
-    # Optional: rerun a more sensitive peak detector inside Pass 3 large-gap windows and plot them.
-    # This does not change the Pass 3 state rebuild yet; it's for visibility + future snapping logic.
+    # --- 6.2.1 Large-gap peak recovery + anchor snapping ---
+    # Reruns a more sensitive peak detector inside Pass 3 large-gap windows, then shifts
+    # rebuilt S1/S2 segment boundaries to align with those recovered peaks (fill first, then shift).
     "pass3_enable_gap_peak_recovery": True,
-    "pass3_gap_recovery_peak_prominence_quantile": 0.60,  # Lower = more sensitive (more peaks).
+    "pass3_gap_recovery_peak_prominence_quantile": 0.70,  # Lower = more sensitive (more peaks).
     "pass3_gap_recovery_height_scale": 0.85,              # Multiply dynamic noise-floor threshold (if available).
+    "pass3_gap_snap_window_ms": 80.0,                     # Search radius (ms) around each synthetic S1/S2 center when snapping to a recovered peak.
 
     # --- 6.3 Final state timeline — envelope boundary paint ---
     "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.
