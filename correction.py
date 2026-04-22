@@ -1211,16 +1211,29 @@ def _pass3_insert_missing_states_in_large_gaps(
         be able to absorb extra cycles is diastole (the leftover) if upstream timing is sane.
     """
     if n_samples <= 0 or sample_rate <= 0:
+        logging.info(
+            "Pass 3 gap insert: skipped (n_samples=%s, sample_rate=%s).",
+            n_samples, sample_rate,
+        )
         return state_labels, state_boundaries
 
     t_r, bpm_r = bpm_prior_raster
     t_r = np.asarray(t_r, dtype=np.float64)
     bpm_r = np.asarray(bpm_r, dtype=np.float64)
     if len(t_r) < 2 or len(t_r) != len(bpm_r):
+        logging.info(
+            "Pass 3 gap insert: skipped (invalid BPM prior raster: len(t)=%d, len(bpm)=%d).",
+            len(t_r), len(bpm_r),
+        )
         return state_labels, state_boundaries
 
     SR = float(sample_rate)
     MAX_SCALE = 0.30  # must match _pass3_rebuild_unknown_runs
+
+    logging.info(
+        "Pass 3 gap insert: scanning %d boundary segment(s) for extra-cycle surplus tails.",
+        len(state_boundaries),
+    )
 
     def _bpm_at_sample(ix: int) -> float:
         t = float(ix) / SR
@@ -1250,6 +1263,11 @@ def _pass3_insert_missing_states_in_large_gaps(
 
     changed = False
     new_bd: List[Tuple] = []
+    n_phase_segments = 0
+    n_skip_not_wide = 0
+    n_skip_tail_short = 0
+    # Largest width/need ratio among segments that failed the "extra cycle" width test (for debugging).
+    near_miss: Optional[Tuple[float, str, int, int, int, float]] = None
 
     for seg in state_boundaries:
         a0, a1, name, meta = seg
@@ -1261,6 +1279,7 @@ def _pass3_insert_missing_states_in_large_gaps(
             new_bd.append(seg)
             continue
 
+        n_phase_segments += 1
         width = a1 - a0
         t_mid = 0.5 * (a0 + a1) / SR
         bpm = _bpm_at_sample(int((a0 + a1) // 2))
@@ -1292,7 +1311,12 @@ def _pass3_insert_missing_states_in_large_gaps(
         exp_phase = _expected_phase_samples(name, t_mid, ivs)
         # "Can fit another cycle" allowing rebuild's ±30% scaling.
         min_extra = int(round((1.0 - MAX_SCALE) * float(max(1, cyc0))))
-        if width < exp_phase + max(4, min_extra):
+        need_wide = exp_phase + max(4, min_extra)
+        if width < need_wide:
+            n_skip_not_wide += 1
+            ratio = float(width) / float(need_wide) if need_wide > 0 else 0.0
+            if near_miss is None or ratio > near_miss[0]:
+                near_miss = (ratio, name, width, need_wide, exp_phase, float(a0) / SR)
             new_bd.append(seg)
             continue
 
@@ -1300,6 +1324,7 @@ def _pass3_insert_missing_states_in_large_gaps(
         tail_lo = a0 + exp_phase
         tail_hi = a1
         if tail_hi - tail_lo < 4:
+            n_skip_tail_short += 1
             new_bd.append(seg)
             continue
 
@@ -1325,6 +1350,19 @@ def _pass3_insert_missing_states_in_large_gaps(
         new_bd.append(kept)
 
     if not changed:
+        logging.info(
+            "Pass 3 gap insert: no surplus tails marked (phase_segments=%d, skipped_not_wide=%d, skipped_short_tail=%d).",
+            n_phase_segments,
+            n_skip_not_wide,
+            n_skip_tail_short,
+        )
+        if near_miss is not None:
+            _r, _nm, _w, _nw, _ep, _t0 = near_miss
+            logging.info(
+                "Pass 3 gap insert: closest miss — %s @ %.3fs, width=%d samples, need>=%d "
+                "(exp_phase=%d), %.1f%% of threshold.",
+                _nm, _t0, _w, _nw, _ep, 100.0 * _r,
+            )
         return state_labels, state_boundaries
 
     # Drop any segments that overlap unknown tails (they may have been truncated above).
@@ -1356,6 +1394,15 @@ def _pass3_insert_missing_states_in_large_gaps(
         measured_diastole_t=measured_diastole_t,
         measured_diastole_dur=measured_diastole_dur,
         rebuild_source="gap_insert",
+    )
+    _gap_ins = sum(
+        1 for s in rebuilt
+        if s[2] == "S1" and isinstance(s[3], dict) and s[3].get("rebuild_source") == "gap_insert"
+    )
+    logging.info(
+        "Pass 3 gap insert: rebuild done (%d surplus tail window(s), %d rebuilt S1 from gap_insert).",
+        len(debug_windows_out or []),
+        _gap_ins,
     )
     return state_labels, rebuilt
 
@@ -1503,6 +1550,11 @@ def run_pass3_correction(
         analysis_data["pass3_noise_unreliable_windows_samples"] = [
             {"start_sample": int(lo), "end_sample": int(hi)} for lo, hi in noise_ivs_pass3
         ]
+    logging.info(
+        "Pass 3: HF-noise from pipeline — raw noise_event_segments=%d, sample intervals [lo,hi)=%d.",
+        len(noise_segs_raw),
+        len(noise_ivs_pass3),
+    )
 
     # Build the BPM prior from clean RR intervals (exclude any S1→S1 that intersects HF noise).
     # If we can't build it (too few clean intervals), Pass 3 falls back to fallback_bpm.
@@ -1678,7 +1730,17 @@ def run_pass3_correction(
     _noise_repair_on = bool(
         params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True)),
     )
-    if _noise_repair_on and noise_ivs_final:
+    _gap_ins_enabled = bool(params.get("pass3_enable_gap_state_insert", True))
+    _did_noise_repair = bool(_noise_repair_on and noise_ivs_final)
+    if not _noise_repair_on:
+        logging.info(
+            "Pass 3: noise repair disabled — skipping HF-noise clear/rebuild.",
+        )
+    elif not noise_ivs_final:
+        logging.info(
+            "Pass 3: no HF-noise sample intervals — skipping HF-noise clear/rebuild.",
+        )
+    if _did_noise_repair:
         _ms_t, _ms_d = _pass3_measured_systole_series_from_boundaries(
             state_boundaries, sample_rate, noise_ivs=noise_ivs_final, params=params,
         )
@@ -1731,26 +1793,56 @@ def run_pass3_correction(
         )
         logging.info("Pass 3 rebuild: %d rebuilt beat(s) in noise gap(s).", _n_rebuilt)
 
-        # ── Step 3: Insert missing states in large gaps (state-level) ─────────────
-        # Uses the same cursoring + scaling logic as _pass3_rebuild_unknown_runs.
-        if bool(params.get("pass3_enable_gap_state_insert", True)):
-            _gap_debug: List[Dict[str, Any]] = []
-            state_labels, state_boundaries = _pass3_insert_missing_states_in_large_gaps(
-                state_labels,
-                state_boundaries,
-                n_samples,
-                (_bpm_prior_t, _bpm_prior),
-                fallback_bpm,
-                sample_rate,
-                params,
-                measured_systole_t=_ms_t_r,
-                measured_systole_dur=_ms_d_r,
-                measured_diastole_t=_md_t_r,
-                measured_diastole_dur=_md_d_r,
-                debug_windows_out=_gap_debug,
+    # ── Insert missing states in large gaps (state-level; independent of HF-noise repair) ──
+    # Runs after noise rebuild when that ran; otherwise builds BPM prior + measured rasters here.
+    # Uses the same cursoring + scaling logic as _pass3_rebuild_unknown_runs.
+    if _gap_ins_enabled:
+        if not _did_noise_repair:
+            _niv_gap = list(noise_ivs_final) if noise_ivs_final else []
+            _ms_t, _ms_d = _pass3_measured_systole_series_from_boundaries(
+                state_boundaries, sample_rate, noise_ivs=_niv_gap, params=params,
             )
-            if _gap_debug:
-                analysis_data["pass3_large_gap_windows_samples"] = list(_gap_debug)
+            _md_t, _md_d = _pass3_measured_diastole_series_from_boundaries(
+                state_boundaries, sample_rate, noise_ivs=_niv_gap, params=params,
+            )
+            _ms_t_r, _ms_d_r = _dense_raster_from_points(
+                _ms_t, _ms_d, n_samples, sample_rate, dt_sec=0.05,
+            )
+            _md_t_r, _md_d_r = _dense_raster_from_points(
+                _md_t, _md_d, n_samples, sample_rate, dt_sec=0.05,
+            )
+            analysis_data["pass3_measured_systole_times"] = _ms_t_r
+            analysis_data["pass3_measured_systole"] = _ms_d_r
+            analysis_data["pass3_measured_diastole_times"] = _md_t_r
+            analysis_data["pass3_measured_diastole"] = _md_d_r
+            _lt_clean = _build_lt_bpm_series_from_clean_rr(
+                peaks_out, _niv_gap, sample_rate, n_samples, params=params,
+            )
+            _lt_for_raster = _lt_clean if _lt_clean is not None else lt_pass3
+            _bpm_prior_t, _bpm_prior = _dense_bpm_raster_from_series(
+                _lt_for_raster, n_samples, sample_rate, fallback_bpm, dt_sec=0.05,
+            )
+            analysis_data["pass3_bpm_prior_times"] = _bpm_prior_t
+            analysis_data["pass3_bpm_prior"] = _bpm_prior
+        _gap_debug: List[Dict[str, Any]] = []
+        state_labels, state_boundaries = _pass3_insert_missing_states_in_large_gaps(
+            state_labels,
+            state_boundaries,
+            n_samples,
+            (_bpm_prior_t, _bpm_prior),
+            fallback_bpm,
+            sample_rate,
+            params,
+            measured_systole_t=_ms_t_r,
+            measured_systole_dur=_ms_d_r,
+            measured_diastole_t=_md_t_r,
+            measured_diastole_dur=_md_d_r,
+            debug_windows_out=_gap_debug,
+        )
+        if _gap_debug:
+            analysis_data["pass3_large_gap_windows_samples"] = list(_gap_debug)
+    else:
+        logging.info("Pass 3: gap state insert disabled (pass3_enable_gap_state_insert=False).")
 
     # ── Derive peaks_out from state sequence (canonical source of truth) ──────
     # Intent: Pass 3 treats the *state sequence* (pass3_state_labels / pass3_state_boundaries)
@@ -1769,7 +1861,7 @@ def run_pass3_correction(
 
     # ── Store results ─────────────────────────────────────────────────────────
     # Cleaned systole/diastole series (noise-removed + MAD + smoothed) for plotting.
-    if _noise_repair_on and noise_ivs_final:
+    if _did_noise_repair:
         analysis_data["pass3_measured_systole_t"]   = _ms_t
         analysis_data["pass3_measured_systole_dur"]  = _ms_d
         analysis_data["pass3_measured_diastole_t"]  = _md_t
