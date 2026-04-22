@@ -380,6 +380,7 @@ class Plotter:
         self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
         self._noise_event_segments = analysis_data.get("noise_event_segments") or []
         self._pass3_large_gap_windows_samples = analysis_data.get("pass3_large_gap_windows_samples") or []
+        self._pass3_large_gap_recovered_peaks = analysis_data.get("pass3_large_gap_recovered_peaks") or []
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
@@ -395,6 +396,7 @@ class Plotter:
             audio_envelope,
             analysis_data.get("trough_indices"),
         )
+        self._add_pass3_large_gap_recovered_peak_markers(audio_envelope)
         self._add_bpm_hrv_traces(
             pass_metrics.get("smoothed_bpm"),
             analysis_data,
@@ -1053,6 +1055,47 @@ class Plotter:
         # Average S1 / S2 contractility traces (prominence-based, averaged over time segments), Analysis Data only
         self._add_s1_s2_amplitude_traces(
             s1_peaks["indices"], s2_peaks["indices"], audio_envelope, trough_indices
+        )
+
+    def _add_pass3_large_gap_recovered_peak_markers(self, audio_envelope: np.ndarray) -> None:
+        """Pass 3 debug: markers for peaks re-detected at higher sensitivity inside large-gap windows."""
+        if getattr(self, "skip_detailed_debug_traces", False):
+            return
+        rec = getattr(self, "_pass3_large_gap_recovered_peaks", None) or []
+        if not rec:
+            return
+        try:
+            indices = np.asarray(rec, dtype=np.int64)
+        except Exception:
+            return
+        if indices.size == 0:
+            return
+        # Clip to array bounds
+        n = int(len(audio_envelope))
+        indices = indices[(indices >= 0) & (indices < n)]
+        if indices.size == 0:
+            return
+
+        customdata = []
+        for ix in indices.tolist():
+            try:
+                customdata.append(
+                    "<b>Type:</b> Recovered peak at large gap<br>"
+                    f"<b>Time:</b> {float(ix) / float(self.sample_rate):.2f}s<br>"
+                    f"<b>Amp:</b> {float(audio_envelope[int(ix)]):.0f}"
+                )
+            except Exception:
+                customdata.append("<b>Type:</b> Recovered peak at large gap")
+        hovertemplate = "%{customdata}<extra></extra>"
+        self._add_peak_marker_trace(
+            indices=indices.tolist(),
+            customdata=customdata,
+            name="Recovered peaks at large gaps",
+            color="#b07cff",
+            symbol="triangle-up-open",
+            size=8,
+            audio_envelope=audio_envelope,
+            hovertemplate=hovertemplate,
         )
 
     def _average_prominence_by_time_segment(

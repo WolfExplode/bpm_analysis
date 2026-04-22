@@ -567,7 +567,7 @@
     if (!seg) return null;
     const t0 = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
     const t1 = typeof seg.end === "number" ? seg.end.toFixed(2) : "?";
-    const lines = [`Large gap (state insert)`, `${t0}s – ${t1}s`];
+    const lines = [`Large gap detected`, `${t0}s – ${t1}s`];
     if (seg.source_state) lines.push(`Source state: ${seg.source_state}`);
     if (seg.bpm_at_mid !== undefined && seg.bpm_at_mid !== null) lines.push(`BPM@mid: ${Number(seg.bpm_at_mid).toFixed(1)}`);
     if (seg.expected_phase_samples !== undefined && seg.expected_phase_samples !== null)

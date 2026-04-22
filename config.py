@@ -178,6 +178,13 @@ DEFAULT_PARAMS = {
     # --- 6.2 Insert missing states in large gaps (state-level) ---
     "pass3_enable_gap_state_insert": True,  # If True, long single-state spans get surplus tail regenerated via the same logic as noise rebuild.
 
+    # --- 6.2.1 Large-gap peak recovery (debug/visualization) ---
+    # Optional: rerun a more sensitive peak detector inside Pass 3 large-gap windows and plot them.
+    # This does not change the Pass 3 state rebuild yet; it's for visibility + future snapping logic.
+    "pass3_enable_gap_peak_recovery": True,
+    "pass3_gap_recovery_peak_prominence_quantile": 0.60,  # Lower = more sensitive (more peaks).
+    "pass3_gap_recovery_height_scale": 0.85,              # Multiply dynamic noise-floor threshold (if available).
+
     # --- 6.3 Final state timeline — envelope boundary paint ---
     "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.
     "pass3_state_s2_window_ms": 120.0,          # Same for S2.

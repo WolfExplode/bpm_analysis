@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.signal import find_peaks
 from confidence_engine import calculate_bpm_intervals
 from hrv import _median_mad_keep_mask_time_window
 
@@ -40,6 +41,99 @@ STATE_LABELS_ENCODING: Dict[str, int] = {
     "diastole": STATE_DIASTOLE,
     "unknown": STATE_UNKNOWN,
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pass 3: large-gap peak recovery (debug/visualization)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_sensitive_peaks_in_large_gap_windows(
+    audio_envelope: np.ndarray,
+    sample_rate: int,
+    gap_windows_samples: List[Dict[str, Any]],
+    params: Dict,
+    *,
+    dynamic_noise_floor_series: Optional[pd.Series] = None,
+) -> np.ndarray:
+    """
+    Rerun a more sensitive peak detector inside Pass 3 "large gap" windows.
+
+    Output is for plotting/debug only (does not modify the Pass 3 rebuild logic yet).
+    """
+    if sample_rate <= 0:
+        return np.asarray([], dtype=np.int64)
+    env = np.asarray(audio_envelope, dtype=np.float64)
+    n = int(len(env))
+    if n <= 0:
+        return np.asarray([], dtype=np.int64)
+    if not gap_windows_samples or not isinstance(gap_windows_samples, list):
+        return np.asarray([], dtype=np.int64)
+
+    min_peak_dist_samples = int(float(params.get("min_peak_distance_sec", 0.18)) * float(sample_rate))
+    min_peak_dist_samples = max(1, int(min_peak_dist_samples))
+
+    q = float(params.get("pass3_gap_recovery_peak_prominence_quantile", 0.50))
+    q = float(np.clip(q, 0.0, 1.0))
+    height_scale = float(params.get("pass3_gap_recovery_height_scale", 0.85))
+    height_scale = float(np.clip(height_scale, 0.0, 1.0))
+
+    nf = None
+    if dynamic_noise_floor_series is not None and isinstance(dynamic_noise_floor_series, pd.Series):
+        try:
+            nf_arr = dynamic_noise_floor_series.to_numpy(dtype=np.float64, copy=False)
+            if len(nf_arr) == n:
+                nf = nf_arr
+        except Exception:
+            nf = None
+
+    out: List[int] = []
+    for w in gap_windows_samples:
+        if not isinstance(w, dict):
+            continue
+        try:
+            lo = int(w.get("start_sample", -1))
+            hi = int(w.get("end_sample", -1))
+        except Exception:
+            continue
+        lo = int(max(0, min(lo, n)))
+        hi = int(max(0, min(hi, n)))
+        if hi <= lo + 3:
+            continue
+
+        seg = env[lo:hi]
+        if seg.size < 4:
+            continue
+
+        try:
+            prom_thresh = float(np.quantile(seg, q))
+        except Exception:
+            prom_thresh = 0.0
+        if not np.isfinite(prom_thresh) or prom_thresh < 0:
+            prom_thresh = 0.0
+
+        height = None
+        if nf is not None:
+            ht = nf[lo:hi] * height_scale
+            height = ht
+
+        try:
+            pk, _ = find_peaks(
+                seg,
+                height=height,
+                prominence=prom_thresh,
+                distance=min_peak_dist_samples,
+            )
+        except Exception:
+            continue
+        if pk is None or len(pk) == 0:
+            continue
+        out.extend((lo + np.asarray(pk, dtype=np.int64)).tolist())
+
+    if not out:
+        return np.asarray([], dtype=np.int64)
+    # Unique + sorted
+    out_arr = np.asarray(sorted(set(int(x) for x in out if 0 <= int(x) < n)), dtype=np.int64)
+    return out_arr
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level helpers  (formerly closures inside _refine_and_correct_peaks)
@@ -1841,6 +1935,16 @@ def run_pass3_correction(
         )
         if _gap_debug:
             analysis_data["pass3_large_gap_windows_samples"] = list(_gap_debug)
+            # Optional: rerun a more sensitive peak detector inside these large-gap windows.
+            if bool(params.get("pass3_enable_gap_peak_recovery", True)):
+                recovered = _detect_sensitive_peaks_in_large_gap_windows(
+                    audio_envelope,
+                    sample_rate,
+                    analysis_data.get("pass3_large_gap_windows_samples") or [],
+                    params,
+                    dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
+                )
+                analysis_data["pass3_large_gap_recovered_peaks"] = recovered.tolist()
     else:
         logging.info("Pass 3: gap state insert disabled (pass3_enable_gap_state_insert=False).")
 
