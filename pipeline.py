@@ -487,11 +487,6 @@ def analyze_wav_file(
         wav_file_path=wav_file_path,
     )
 
-    # Pass 3 continuous emissions (optional, guarded by config).
-    if params.get("pass3_generate_emissions", True):
-        from emissions import generate_pass3_emissions
-        generate_pass3_emissions(analysis_data, algorithm_envelope, sample_rate, params, wav_file_path)
-
     # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
     peaks_after_pass4 = peaks_after_pass3
     if params.get("enable_pass4", False):

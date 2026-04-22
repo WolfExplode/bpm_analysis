@@ -217,7 +217,7 @@ def run_pass4_viterbi(
     """
     Run the Pass 4 Viterbi holistic decoder.
 
-    Requires analysis_data["pass3_emissions"] (produced by emissions.generate_pass3_emissions).
+    Requires analysis_data["pass3_emissions"] (see archived emissions generator in pass3 archived logic.md).
     Falls back to returning s1_peaks_in unchanged if emissions are unavailable.
 
     Stores analysis_data["pass4_state_sequence"] (int32 array, length = n_samples)
@@ -228,8 +228,7 @@ def run_pass4_viterbi(
     emissions = analysis_data.get("pass3_emissions")
     if emissions is None or not isinstance(emissions, np.ndarray) or emissions.ndim != 2:
         logging.warning(
-            "Pass 4 Viterbi: pass3_emissions not available "
-            "(run with pass3_generate_emissions=True). Returning Pass 3 peaks unchanged."
+            "Pass 4 Viterbi: pass3_emissions not available. Returning Pass 3 peaks unchanged."
         )
         return s1_peaks_in, analysis_data
 

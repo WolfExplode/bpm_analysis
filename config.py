@@ -168,47 +168,21 @@ DEFAULT_PARAMS = {
     "lone_s1_missed_beat_tolerance_frac": 0.22,  # |span − m×RR| / (m×RR) must be ≤ this (m = k+1).
 
     # =================================================================================
-    # 6. Pass 3 — Correction + dense state timeline (bridge to Pass 4)
+    # 6. Pass 3 — Dense state timeline from Pass 2 (spectral S2 / Pass A–C / emissions removed; see pass3 archived logic.md)
     # =================================================================================
-    # pass3's job is to generate the state sequence based on data from pass2. then correct that sequence.
 
-    # --- 6.1 S2 spectral-profile alignment (used while generating the initial state timeline) ---
-    # This affects: initial S2 rebuild, any later per-cycle rebuilds, and final paint.
-    "pass3_align_s2_to_s2_spectral_profile": False,  # If True, slide FFT vs S2 spectral template to refine S2 time; if False, nominal ejection-time index only. HF-noise beats still skip alignment per cycle.
-    "pass3_align_s2_window_ms": 120.0,          # FFT search width for initial rebuild / Pass B–C rebuild / final paint (ms), ±half around nominal S2.
-
-    # --- 6.2 Correction loop (A→B→C) — iteration cap + Pass A–only search width ---
-    "pass3_correction_max_iters": 0,          # Max rounds of A→B→C; use 0 to skip the loop entirely. Higher fixes more disjoint issues; risks over-correction.
-    "pass3_resnap_s2_window_ms": 220.0,         # Pass A only: FFT search width when re-snapping S2 for implausible systole (wider = search farther).
-    "pass3_systole_slack_frac": 0.15,           # Pass A: tolerate systole this much shorter/longer vs BPM bounds before calling it “bad” (higher = fewer resnaps).
-    "pass3_diastole_slack_frac": 0.20,          # Pass A diagnostics + Pass C: diastole “too short” threshold slack (higher = fewer flip/demote triggers).
-
-    # --- 6.3 Noise repair (global modifier after the initial timeline exists) ---
+    # --- 6.1 Noise repair (global modifier after the initial timeline exists) ---
     # If enabled and HF-noise windows exist: clear state labels inside those spans and rebuild the full S1→systole→S2→diastole sequence.
     "pass3_enable_noise_repair": True,
 
-    # --- 6.4 Insert missing states in large gaps (state-level) ---
+    # --- 6.2 Insert missing states in large gaps (state-level) ---
     "pass3_enable_gap_state_insert": True,  # If True, long single-state spans get surplus tail regenerated via the same logic as noise rebuild.
 
-    # --- 6.5 Pass C — phase / sequence fixes (false S1, S1↔S2 flip, faint S2) ---
-    "pass3_enable_phase_correction": False,     # Master switch for Pass C.
-    "pass3_phase_min_score_delta": 0.15,        # Peak must win label_scores by this much to demote/remove (higher = only obvious fixes).
-    # Pass C.1 short-RR false S1: uses diastole_min from §4.1 (min_diastole_nominal_frac / min_diastole_sec), not a separate pass3_rr_too_short_frac.
-    "pass3_local_peak_window_ms": 100.0,        # Total width (ms); ±half for sensitive local-peak hunt (Pass C.3 / helpers).
-    "pass3_local_peak_sensitivity_factor": 0.6, # vs dynamic noise floor; lower = more sensitive peaks, more false positives.
-    "pass3_s2_spectral_min_templates": 3,      # Min paired S2 templates before any spectral S2 path runs (insert context).
-
-    # --- 6.6 Final state timeline — envelope boundary paint ---
+    # --- 6.3 Final state timeline — envelope boundary paint ---
     "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.
     "pass3_state_s2_window_ms": 120.0,          # Same for S2.
     "pass3_state_edge_alpha": 0.03,             # Transient edge threshold as a fraction of weighted peak height (lower → wider S1/S2 regions).
     "pass3_state_edge_n_exp": 4.0,              # Super-Gaussian exponent for edge weighting (higher → harder cap at window edge). Keep ≤ peak_refine_super_gaussian_n.
-
-    # --- 6.7 Emissions for Pass 4 Viterbi (requires pass3_generate_emissions=True) ---
-    "pass3_generate_emissions": False,          # If True, fill analysis_data["pass3_emissions"] after the timeline is final.
-    "pass3_emission_spectral_tau": 5.0,       # Softmax temperature mapping spectral scores → probabilities.
-    "pass3_emission_gate_width_ms": 80.0,     # Gaussian width scale (ms) for bumps seeded at S1/S2 event times (wider = smoother spread).
-    "pass3_emission_noise_floor": 0.05,         # Baseline P(noise) added before normalizing emission rows.
 
     # =================================================================================
     # 7. Output, HRV & Reporting
@@ -253,7 +227,7 @@ DEFAULT_PARAMS = {
     "fft_separation_high_hz": 15000.0,            # High bound (Hz) for S1 vs S2 frequency separation vector.
 
     # =================================================================================
-    # 8. Pass 4 — Viterbi Holistic Decoder  (requires pass3_generate_emissions=True)
+    # 8. Pass 4 — Viterbi Holistic Decoder  (pass3_emissions generation removed; restore from pass3 archived logic.md if needed)
     # =================================================================================
     "enable_pass4": False,                          # Guard: off until implementation matures. Set True to run Viterbi after Pass 3.
     "pass4_transition_self_loop_weight": 0.85,      # Higher → decoder prefers longer state durations (more inertia). Lower → allows faster state transitions.

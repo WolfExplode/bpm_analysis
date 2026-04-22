@@ -546,6 +546,23 @@
     return lines.join("\n");
   }
 
+  /** Position fixed strip tooltips above the cursor (bottom edge near clientY − gap), using measured size. */
+  function _placeStripTooltipAboveCursor(el, clientX, clientY) {
+    const gap = 10;
+    const margin = 8;
+    el.classList.remove("hidden");
+    void el.offsetHeight;
+    const r = el.getBoundingClientRect();
+    let tx = clientX + 14;
+    if (tx + r.width > window.innerWidth - margin) tx = clientX - r.width - 14;
+    tx = Math.max(margin, Math.min(tx, window.innerWidth - r.width - margin));
+    const tyIdeal = clientY - r.height - gap;
+    const tyMax = Math.max(margin, window.innerHeight - r.height - margin);
+    const ty = Math.max(margin, Math.min(tyIdeal, tyMax));
+    el.style.left = `${tx}px`;
+    el.style.top = `${ty}px`;
+  }
+
   function _formatGapTooltip(seg) {
     if (!seg) return null;
     const t0 = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
@@ -579,15 +596,7 @@
           return;
         }
         cardiacStateStripTooltip.textContent = text;
-        cardiacStateStripTooltip.classList.remove("hidden");
-        const ttW = 340;
-        const ttH = 90;
-        let tx = e.clientX + 14;
-        let ty = e.clientY - 10;
-        if (tx + ttW > window.innerWidth) tx = e.clientX - ttW - 14;
-        if (ty + ttH > window.innerHeight) ty = e.clientY - ttH - 4;
-        cardiacStateStripTooltip.style.left = `${Math.max(0, tx)}px`;
-        cardiacStateStripTooltip.style.top = `${Math.max(0, ty)}px`;
+        _placeStripTooltipAboveCursor(cardiacStateStripTooltip, e.clientX, e.clientY);
       });
       cardiacStateStripCanvas.addEventListener("mouseleave", () => {
         cardiacStateStripTooltip.classList.add("hidden");
@@ -611,15 +620,7 @@
           return;
         }
         noiseStateStripTooltip.textContent = text;
-        noiseStateStripTooltip.classList.remove("hidden");
-        const ttW = 340;
-        const ttH = 110;
-        let tx = e.clientX + 14;
-        let ty = e.clientY - 10;
-        if (tx + ttW > window.innerWidth) tx = e.clientX - ttW - 14;
-        if (ty + ttH > window.innerHeight) ty = e.clientY - ttH - 4;
-        noiseStateStripTooltip.style.left = `${Math.max(0, tx)}px`;
-        noiseStateStripTooltip.style.top = `${Math.max(0, ty)}px`;
+        _placeStripTooltipAboveCursor(noiseStateStripTooltip, e.clientX, e.clientY);
       });
       noiseStateStripCanvas.addEventListener("mouseleave", () => {
         noiseStateStripTooltip.classList.add("hidden");

@@ -8,26 +8,18 @@ Structure
   Module-level helpers  (formerly closures inside _refine_and_correct_peaks)
   Boundary geometry     (_resolve_boundary_overlap, _paint_state_boundaries,
                          _build_reasoning_payload)
-  S2-events rebuild     (_rebuild_s2_events — shared by multiple passes)
-  Correction passes     (_pass_a_resnap_s2, _pass_c_phase_correction)
+  S2-events rebuild     (_rebuild_s2_events)
   Main entry point      (run_pass3_correction)
 """
 
 import logging
 import math
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks as _scipy_find_peaks
-
 from confidence_engine import calculate_bpm_intervals
 from hrv import _median_mad_keep_mask_time_window
-from fft_profiles import (
-    prepare_pass3_s1_insert_context,
-    spectrum_template_search_envelope_index,
-)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -150,215 +142,6 @@ def _find_transient_bounds(
         return max(0, peak_idx - half_window), min(n_samples, peak_idx + half_window + 1)
 
 
-def _s2_index_respects_pass3_intervals(
-    s1: int,
-    s1_next: int,
-    s2_idx: int,
-    sample_rate: int,
-    intervals: Dict,
-    params: Dict,
-) -> bool:
-    """
-    True when S2 at s2_idx yields systole/diastole durations that Pass A would not flag
-    as too short (same thresholds as _pass_a_resnap_s2).
-    """
-    if s2_idx <= s1 or s2_idx >= s1_next:
-        return False
-    sr = float(sample_rate)
-    systole = (s2_idx - s1) / sr
-    diastole = (s1_next - s2_idx) / sr
-    s1_s2_min = float(intervals.get("s1_s2_min", 0.12))
-    diastole_min = float(intervals.get("diastole_min", 0.08))
-    sys_slack = float(params.get("pass3_systole_slack_frac", 0.15))
-    dia_slack = float(params.get("pass3_diastole_slack_frac", 0.20))
-    systole_too_short = systole < (1.0 - sys_slack) * s1_s2_min
-    diastole_too_short = diastole < (1.0 - dia_slack) * diastole_min
-    return not (systole_too_short or diastole_too_short)
-
-
-def _choose_s2_near(
-    s1: int,
-    s1_next: int,
-    s2_pred: int,
-    half_window_samples: int,
-    snap_s2: bool,
-    insert_spectrum_ctx: Optional[Dict],
-    sample_rate: int,
-    n_samples: int,
-    params: Dict,
-    intervals: Dict,
-) -> int:
-    """Choose S2 near predicted time by sliding FFT windows against the S2 spectral template.
-
-    If snap_s2 is False, no spectral context is available, or no confident match is found,
-    returns s2_pred clamped within [s1+1, s1_next-1] — keeps rhythm at nominal ejection time
-    without requiring a peak at that location.
-
-    A spectral winner is rejected if it would make systole or diastole shorter than Pass A's
-    minimum plausible durations for this BPM (calculate_bpm_intervals + slack).
-    """
-    s2 = int(max(s1 + 1, min(s2_pred, s1_next - 1)))
-    if not snap_s2 or insert_spectrum_ctx is None:
-        return s2
-    t_pred_sec = float(s2_pred) / float(sample_rate)
-    search_half_sec = float(half_window_samples) / float(sample_rate)
-    result = _choose_s2_spectral(
-        t_pred_sec, search_half_sec, insert_spectrum_ctx, params, sample_rate, n_samples,
-    )
-    if result is None:
-        return s2
-    sp_idx, _ = result
-    if not (s1 < sp_idx < s1_next):
-        return s2
-    if not _s2_index_respects_pass3_intervals(s1, s1_next, int(sp_idx), sample_rate, intervals, params):
-        return s2
-    return int(sp_idx)
-
-
-def _choose_s1_near(
-    t_expected_sec: float,
-    half_window_samples: int,
-    min_sep_samples: int,
-    all_raw_peaks: np.ndarray,
-    pc: Dict,
-    n_samples: int,
-    sample_rate: int,
-) -> Optional[int]:
-    """Choose best S1 near expected time using label_scores['S1']."""
-    if len(all_raw_peaks) == 0:
-        return None
-    center = int(round(t_expected_sec * sample_rate))
-    lo = max(0, center - half_window_samples)
-    hi = min(n_samples - 1, center + half_window_samples)
-    if hi <= lo:
-        return None
-    cand = [int(p) for p in all_raw_peaks if lo <= int(p) <= hi]
-    if not cand:
-        return None
-    best: Optional[int] = None
-    best_score: Optional[float] = None
-    for p in cand:
-        entry = pc.get(int(p)) or {}
-        ls = entry.get("label_scores") if isinstance(entry, dict) else None
-        s1_score = float(ls.get("S1", 0.0)) if isinstance(ls, dict) else 0.0
-        noise_score = float(ls.get("noise", 0.0)) if isinstance(ls, dict) else 0.0
-        dist_sec = abs(p - center) / float(sample_rate)
-        score = (2.0 * s1_score) - (1.0 * noise_score) - (0.75 * dist_sec)
-        if best is None or score > best_score:
-            best, best_score = p, score
-    return int(best) if best is not None else None
-
-
-def _insert_spectrum_envelope_ok(
-    env_idx: int,
-    audio_envelope: np.ndarray,
-    analysis_data: Dict,
-    params: Dict,
-) -> bool:
-    """Return True if envelope at env_idx meets the noise-floor margin."""
-    margin = float(params.get("pass3_insert_spectrum_envelope_margin", 0.0))
-    if margin <= 0:
-        return True
-    nfs = analysis_data.get("dynamic_noise_floor_series")
-    if nfs is None or getattr(nfs, "empty", True):
-        return True
-    try:
-        ei = int(max(0, min(env_idx, len(audio_envelope) - 1)))
-        e = float(audio_envelope[ei])
-        nf = float(nfs.reindex([ei], method="nearest").iloc[0])
-        return e >= margin * nf
-    except Exception:
-        return True
-
-
-def _find_sensitive_peaks_near(
-    t_expected_sec: float,
-    window_samples: int,
-    sensitivity_factor: float,
-    audio_envelope: np.ndarray,
-    analysis_data: Dict,
-    n_samples: int,
-    sample_rate: int,
-    params: Dict,
-) -> Optional[int]:
-    """
-    Re-scan audio_envelope in a narrow window with a lower height threshold to find
-    faint peaks missed by the main detector.  Returns the highest-amplitude peak or None.
-    """
-    nfs = analysis_data.get("dynamic_noise_floor_series")
-    center = int(round(t_expected_sec * sample_rate))
-    lo = max(0, center - window_samples)
-    hi = min(n_samples - 1, center + window_samples)
-    if hi <= lo:
-        return None
-    segment = audio_envelope[lo: hi + 1]
-    if len(segment) == 0:
-        return None
-    if nfs is not None and not getattr(nfs, "empty", True):
-        try:
-            indices = np.arange(lo, hi + 1)
-            nf_vals = nfs.reindex(indices, method="nearest").values.astype(np.float64)
-            height_thresh = sensitivity_factor * nf_vals
-        except Exception:
-            height_thresh = sensitivity_factor * float(np.median(audio_envelope))
-    else:
-        height_thresh = sensitivity_factor * float(np.median(audio_envelope))
-    min_dist = max(1, int(float(params.get("min_peak_distance_sec", 0.10)) * sample_rate // 2))
-    try:
-        local_peaks, _ = _scipy_find_peaks(segment, height=height_thresh, distance=min_dist)
-    except Exception:
-        return None
-    if len(local_peaks) == 0:
-        return None
-    best_local = int(local_peaks[np.argmax(segment[local_peaks])])
-    return lo + best_local
-
-
-def _choose_s2_spectral(
-    t_expected_sec: float,
-    search_half_sec: float,
-    insert_spectrum_ctx: Optional[Dict],
-    params: Dict,
-    sample_rate: int,
-    n_samples: int,
-) -> Optional[Tuple[int, float]]:
-    """
-    Search for S2 using the spectral S2 template from insert_spectrum_ctx.
-
-    LIMITATION: the S2 template is built from Pass 2 paired S2 peaks.  If Pass 2 made
-    systematic labeling errors those may bias the template (confirmation-bias risk).
-    Only call after _find_sensitive_peaks_near has already failed.
-
-    Returns (envelope_index, score) or None.
-    """
-    if insert_spectrum_ctx is None:
-        return None
-    mu_s2 = insert_spectrum_ctx.get("mu_s2_db")
-    if mu_s2 is None or not isinstance(mu_s2, np.ndarray) or len(mu_s2) == 0:
-        return None
-    n_s2_tpl = int(insert_spectrum_ctx.get("n_s2_template", 0))
-    min_tpl = int(params.get("pass3_s2_spectral_min_templates", 3))
-    if n_s2_tpl < min_tpl:
-        return None
-    try:
-        result = spectrum_template_search_envelope_index(
-            insert_spectrum_ctx["bandpass_audio"],
-            int(insert_spectrum_ctx["full_sr"]),
-            t_expected_sec,
-            search_half_sec,
-            mu_s2,
-            insert_spectrum_ctx["freqs"],
-            int(insert_spectrum_ctx["n_fft"]),
-            int(insert_spectrum_ctx["half_samples"]),
-            sample_rate,
-            n_samples,
-            params,
-        )
-    except Exception:
-        return None
-    return result
-
-
 def _fmt_corr_note(c: Dict[str, Any], sample_rate: float) -> str:
     """Return a warning line describing the direct correction applied."""
     ctype = c.get("type", "")
@@ -462,6 +245,15 @@ def _paint_state_boundaries(
     return s1_start, s1_end, s2_start, s2_end
 
 
+def _hover_audio_time_mmssmmm(sample_idx: int, sample_rate: float) -> str:
+    """Wall-clock style time from start of audio: M:SS.mmm (minutes may exceed two digits)."""
+    sr = float(max(sample_rate, 1e-9))
+    t = float(sample_idx) / sr
+    m = int(t // 60)
+    s = t - 60.0 * m
+    return f"{m}:{s:06.3f}"
+
+
 def _envelope_align_duration_note(phase: str, before_ms: int, after_ms: int) -> str:
     """Hover line: fixed ±window duration vs envelope-aligned duration (Pass 3 final paint)."""
     label = {"S1": "S1", "S2": "S2", "systole": "Systole", "diastole": "Diastole"}.get(phase, phase)
@@ -483,78 +275,27 @@ def _s2_index_hover_note(
     s1_s2_pairs: Optional[List[Tuple[int, int]]],
     ivs: Dict,
     sample_rate: float,
-    snap_s2_effective: bool,
-    noise_ivs: Optional[List[Tuple[int, int]]],
-    direct_corrections: Optional[List[Dict]] = None,
 ) -> str:
-    """How the S2 *sample index* was chosen for this cycle (Pass 2 pair vs nominal vs spectral), for hover."""
+    """Short S2 peak-time line for hover (Pass 2 pair vs BPM nominal)."""
     pair_map = {int(a): int(b) for a, b in (s1_s2_pairs or [])}
     s2_p2 = pair_map.get(int(s1))
     in_w = s2_p2 is not None and s1 < int(s2_p2) < s1_next
     s1_s2_nom = float(ivs.get("s1_s2_nominal", 0.30))
     sr = float(sample_rate)
-    s2_pred = int(round(s1 + s1_s2_nom * sr))
-    s2_nom = int(max(s1 + 1, min(s2_pred, s1_next - 1)))
-    thresh = max(2, int(0.010 * sr))
-    niv = noise_ivs or []
-    hf = _hf_noise_disables_s2_snap(int(s1), int(s1_next), niv, s2_check=int(s2))
     s2i = int(s2)
+    t_here = _hover_audio_time_mmssmmm(s2i, sr)
 
-    parts: List[str] = []
     if in_w and s2i == int(s2_p2):
-        parts.append(
-            "\u2139 S2 index: uses the Pass 2 labeled S2 for this S1."
-        )
-    elif in_w:
-        ct = {str(c.get("type", "")) for c in (direct_corrections or [])}
-        explain: List[str] = []
-        if "resnap_s2" in ct:
-            explain.append("Pass A re-snapped S2 for systole timing")
-        if "flip_demote_s1" in ct:
-            explain.append("Pass C flipped a mistaken S1 boundary")
-        if "remove_false_s1" in ct:
-            explain.append("Pass C removed a false S1 (S1 list rebuilt)")
-        if "sensitive_peak" in ct or "spectral_s2" in ct:
-            explain.append("Pass C faint-S2 placement")
-        if snap_s2_effective and abs(s2i - s2_nom) > thresh and "resnap_s2" not in ct:
-            explain.append("spectral S2 alignment on initial rebuild or paint")
+        return f"\u2139 S2: location unchanged at {t_here}."
 
-        if explain:
-            parts.append(
-                f"\u2139 S2 index: Pass 2 had S2 at sample {int(s2_p2)} in-window, but the timeline uses {s2i} "
-                f"({'; '.join(explain)})."
-            )
-        else:
-            if snap_s2_effective:
-                parts.append(
-                    f"\u2139 S2 index: Pass 2 had S2 at sample {int(s2_p2)} in-window, but the timeline uses {s2i}. "
-                    "No Pass A/C correction is logged on this beat; with spectral S2 alignment on, "
-                    "the rebuild step can replace the Pass 2 sample with the template-based pick."
-                )
-            else:
-                parts.append(
-                    f"\u2139 S2 index: Pass 2 had S2 at sample {int(s2_p2)} in-window, but the timeline uses {s2i}. "
-                    "Pass A resnap and Pass C edits are not logged for this beat, and spectral S2 snap is off—"
-                    "so those steps did not move S2 away from Pass 2."
-                )
-    else:
-        parts.append(
-            "\u2139 S2 index: no Pass 2 S2 pair usable inside this RR window (or pair outside the interval)—"
-            f"placed from BPM nominal s1_s2 ({s1_s2_nom:.3f}s via calculate_bpm_intervals), then Pass 3 rules."
-        )
+    if in_w:
+        t_from = _hover_audio_time_mmssmmm(int(s2_p2), sr)
+        t_to = _hover_audio_time_mmssmmm(s2i, sr)
+        return f"\u2139 S2: location altered from {t_from} to {t_to}."
 
-    if hf and (not snap_s2_effective):
-        parts.append("HF-noise window: spectral S2 snap is disabled; index follows the nominal path above.")
-    elif snap_s2_effective and abs(s2i - s2_nom) > thresh:
-        if not (in_w and s2i == int(s2_p2)):
-            d_ms = round(abs(s2i - s2_nom) / sr * 1000)
-            parts.append(f"S2 spectral template alignment moved the index ~{d_ms} ms vs the nominal clamp.")
-    elif snap_s2_effective and not (in_w and s2i == int(s2_p2)) and abs(s2i - s2_nom) <= thresh:
-        parts.append(
-            "Spectral snap is on; the final index matches the nominal ejection-time clamp (no large shift)."
-        )
-
-    return " ".join(parts)
+    return (
+        f"\u2139 S2: at {t_here} from BPM nominal s1_s2 ({s1_s2_nom:.3f}s); no Pass 2 pair in this RR window."
+    )
 
 
 def _build_reasoning_payload(
@@ -572,11 +313,9 @@ def _build_reasoning_payload(
     before_s1nxt: Optional[int],
     sample_rate: float,
     shift_thresh_samp: int,
-    snap_s2: bool,
     *,
     hover_debug_geometry: bool = False,
     hover_s1_s2_pairs: Optional[List[Tuple[int, int]]] = None,
-    hover_noise_ivs: Optional[List[Tuple[int, int]]] = None,
     hover_s1_half: int = 0,
     hover_s2_half: int = 0,
     hover_n_samples: int = 0,
@@ -609,17 +348,6 @@ def _build_reasoning_payload(
         if not _s2_notes and before_s2 is not None and abs(before_s2 - s2) > shift_thresh_samp:
             _s2_notes.append(_fmt_cascade_note(cascade_src, sample_rate))
 
-    # Initial S2 placement uses FFT template matching when pass3_align_s2_to_s2_spectral_profile is on.
-    # There is no per-beat correction dict for that path — explain when S2 still differs from the nominal index.
-    if snap_s2 and not _s2_notes and not hover_debug_geometry:
-        s2_pred_nom = int(round(s1 + float(ivs.get("s1_s2_nominal", 0.30)) * sample_rate))
-        s2_nom_idx = int(max(s1 + 1, min(s2_pred_nom, s1_next - 1)))
-        if abs(s2 - s2_nom_idx) > shift_thresh_samp:
-            d_ms = round(abs(s2 - s2_nom_idx) / sample_rate * 1000)
-            _s2_notes.append(
-                f"\u2139 S2 placed by S2 spectral template match ({d_ms} ms from nominal ejection time)."
-            )
-
     if hover_debug_geometry:
         if hover_n_samples > 0 and hover_s1_half >= 1 and hover_s2_half >= 1:
             fs1s, fs1e, fs2s, fs2e = _paint_state_boundaries(
@@ -634,10 +362,7 @@ def _build_reasoning_payload(
             _sys_notes = [_envelope_align_duration_note("systole", bf_sys, _meas_sys_ms)] + _sys_notes
             _s2_notes = (
                 [_envelope_align_duration_note("S2", bf_s2, _meas_s2_ms)]
-                + [_s2_index_hover_note(
-                    s1, s2, s1_next, hover_s1_s2_pairs, ivs, sample_rate, snap_s2, hover_noise_ivs,
-                    direct_corrections=direct_corrections,
-                )]
+                + [_s2_index_hover_note(s1, s2, s1_next, hover_s1_s2_pairs, ivs, sample_rate)]
                 + _s2_notes
             )
             _dia_notes = [_envelope_align_duration_note("diastole", bf_dia, _meas_dia_ms)] + _dia_notes
@@ -650,10 +375,7 @@ def _build_reasoning_payload(
             ] + _sys_notes
             _s2_notes = (
                 [f"\u2139 S2: duration {_meas_s2_ms}ms (envelope-aligned; fixed-window baseline unavailable)."]
-                + [_s2_index_hover_note(
-                    s1, s2, s1_next, hover_s1_s2_pairs, ivs, sample_rate, snap_s2, hover_noise_ivs,
-                    direct_corrections=direct_corrections,
-                )]
+                + [_s2_index_hover_note(s1, s2, s1_next, hover_s1_s2_pairs, ivs, sample_rate)]
                 + _s2_notes
             )
             _dia_notes = [
@@ -669,7 +391,7 @@ def _build_reasoning_payload(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# S2-events rebuild helper  (used by multiple correction passes)
+# S2-events rebuild helper
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _rebuild_s2_events(
@@ -678,19 +400,9 @@ def _rebuild_s2_events(
     fallback_bpm: float,
     sample_rate: int,
     params: Dict,
-    snap_s2: bool,
-    snap_half: int,
-    n_samples: int,
-    insert_spectrum_ctx: Optional[Dict],
-    noise_ivs: Optional[List[Tuple[int, int]]] = None,
     seed_s2_events: Optional[List[int]] = None,
 ) -> List[int]:
-    """Rebuild s2_events from scratch given the current s1_list.
-
-    When ``seed_s2_events`` is set and a cycle overlaps HF-noise, keep that seed
-    index so pass3_align_s2_to_s2_spectral_profile does not run on bad audio.
-    """
-    niv = noise_ivs or []
+    """One S2 index per RR interval: Pass 2 seed when valid, else BPM nominal clamp."""
     seed = seed_s2_events
     s2_events: List[int] = []
     for j in range(len(s1_list) - 1):
@@ -699,34 +411,17 @@ def _rebuild_s2_events(
         if b <= a:
             s2_events.append(int(a))
             continue
-        if (
-            seed is not None
-            and j < len(seed)
-            and niv
-            and _hf_noise_disables_s2_snap(a, b, niv, s2_check=int(seed[j]))
-        ):
-            s2_keep = int(max(a + 1, min(int(seed[j]), b - 1)))
-            s2_events.append(s2_keep)
-            continue
+        if seed is not None and j < len(seed):
+            sj = int(seed[j])
+            if a < sj < b:
+                s2_events.append(int(max(a + 1, min(sj, b - 1))))
+                continue
         t_a = a / float(sample_rate)
         bpm_a = _bpm_at_time(t_a, lt_series, fallback_bpm)
         ivs_a = calculate_bpm_intervals(bpm_a, params)
         s1_s2_nominal_a = float(ivs_a.get("s1_s2_nominal", 0.30))
         s2_pred_a = int(round(a + s1_s2_nominal_a * sample_rate))
-        snap_here = _effective_snap_s2(snap_s2, a, b, niv, s2_check=None)
-        # When spectral S2 alignment is off, keep the Pass-2 / nominal seed from
-        # _seed_s2_from_pass2_pairs instead of re-deriving only the BPM clamp (which
-        # can disagree with an in-window labeled S2).
-        if seed is not None and j < len(seed) and (not snap_here):
-            sj = int(seed[j])
-            if a < sj < b:
-                s2_events.append(int(max(a + 1, min(sj, b - 1))))
-                continue
-        s2_a = _choose_s2_near(
-            a, b, s2_pred_a, snap_half,
-            snap_here, insert_spectrum_ctx, sample_rate, n_samples, params, ivs_a,
-        )
-        s2_events.append(int(s2_a))
+        s2_events.append(int(max(a + 1, min(s2_pred_a, b - 1))))
     return s2_events
 
 
@@ -1665,39 +1360,6 @@ def _pass3_insert_missing_states_in_large_gaps(
     return state_labels, rebuilt
 
 
-def _hf_noise_disables_s2_snap(
-    s1: int,
-    s1_next: int,
-    noise_ivs: List[Tuple[int, int]],
-    s2_check: Optional[int] = None,
-) -> bool:
-    """
-    True → do not use pass3_align_s2_to_s2_spectral_profile (spectral / sliding template) for this cycle.
-    HF-noise segments make the underlying audio unreliable; use nominal timing only.
-    """
-    if not noise_ivs:
-        return False
-    for lo, hi in noise_ivs:
-        if lo < s1_next and hi > s1:
-            return True
-        if s2_check is not None and lo <= int(s2_check) < hi:
-            return True
-    return False
-
-
-def _effective_snap_s2(
-    snap_s2: bool,
-    s1: int,
-    s1_next: int,
-    noise_ivs: List[Tuple[int, int]],
-    s2_check: Optional[int] = None,
-) -> bool:
-    """Spectral S2 snap allowed only when globally on and cycle not in HF-noise."""
-    if not snap_s2:
-        return False
-    return not _hf_noise_disables_s2_snap(s1, s1_next, noise_ivs, s2_check)
-
-
 def _seed_s2_from_pass2_pairs(
     s1_list: List[int],
     s1_s2_pairs: List[Tuple[int, int]],
@@ -1768,341 +1430,6 @@ def _build_state_boundaries_before_from_cycles(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pass A — re-snap S2 for timing plausibility
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _pass_a_resnap_s2(
-    s1_list: List[int],
-    s2_events: List[int],
-    lt_series: Optional[pd.Series],
-    fallback_bpm: float,
-    sample_rate: int,
-    params: Dict,
-    snap_s2: bool,
-    resnap_half: int,
-    n_samples: int,
-    insert_spectrum_ctx: Optional[Dict],
-    systole_slack: float,
-    diastole_slack: float,
-    noise_ivs: Optional[List[Tuple[int, int]]] = None,
-) -> Tuple[List[int], List[Dict[str, Any]], List[Dict[str, Any]], bool]:
-    """
-    Re-snap S2 when systole/diastole are out of plausible range.
-
-    Returns (new_s2_events, new_corrections, cycle_diagnostics, changed).
-    s1_list is unchanged.
-    """
-    new_s2_events = list(s2_events)
-    new_corrections: List[Dict[str, Any]] = []
-    cycle_diagnostics: List[Dict[str, Any]] = []
-    changed = False
-    niv = noise_ivs or []
-
-    for i in range(len(s1_list) - 1):
-        s1 = int(s1_list[i])
-        s1_next = int(s1_list[i + 1])
-        if s1_next <= s1:
-            continue
-        s2 = int(new_s2_events[i]) if i < len(new_s2_events) else s1
-        s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
-
-        t_s1 = s1 / float(sample_rate)
-        bpm = _bpm_at_time(t_s1, lt_series, fallback_bpm)
-        intervals = calculate_bpm_intervals(bpm, params)
-        s1_s2_min     = float(intervals.get("s1_s2_min",     0.12))
-        s1_s2_nominal = float(intervals.get("s1_s2_nominal", 0.30))
-        s1_s2_max     = float(intervals.get("s1_s2_max",     0.40))
-
-        systole  = (s2 - s1)     / float(sample_rate)
-        rr       = (s1_next - s1) / float(sample_rate)
-        diastole = rr - systole
-        expected_rr      = float(intervals.get("rr_interval", 60.0 / bpm if bpm > 0 else 0.75))
-        diastole_nominal = float(intervals.get("s2_s1_nominal", max(0.0, expected_rr - s1_s2_nominal)))
-        diastole_min     = float(intervals.get("diastole_min", 0.08))
-        diastole_max     = float(intervals.get("diastole_max", diastole_nominal * 2.0))
-
-        s1_min_evt      = float(intervals.get("s1_min",      0.010))
-        s1_nominal_evt  = float(intervals.get("s1_nominal",  0.040))
-        s1_max_evt      = float(intervals.get("s1_max",      0.080))
-        s2_min_evt      = float(intervals.get("s2_min",      0.010))
-        s2_nominal_evt  = float(intervals.get("s2_nominal",  0.030))
-        s2_max_evt      = float(intervals.get("s2_max",      0.060))
-        min_feasible    = float(intervals.get(
-            "min_feasible_cycle", s1_min_evt + s1_s2_min + s2_min_evt + diastole_min,
-        ))
-
-        too_short        = systole < (1.0 - systole_slack)  * s1_s2_min
-        too_long         = systole > (1.0 + systole_slack)  * s1_s2_max
-        far_from_nominal = abs(systole - s1_s2_nominal) > max(0.12, 0.5 * (s1_s2_max - s1_s2_min))
-        diastole_too_short = diastole < (1.0 - diastole_slack) * diastole_min
-
-        cycle_diagnostics.append({
-            "i": int(i), "s1": int(s1), "s2": int(s2), "s1_next": int(s1_next),
-            "bpm": float(bpm), "rr_sec": float(rr),
-            "systole_sec": float(systole), "diastole_sec": float(diastole),
-            "expected_rr_sec": float(expected_rr),
-            "diastole_nominal_sec": float(diastole_nominal),
-            "diastole_min_sec": float(diastole_min),
-            "diastole_max_sec": float(diastole_max),
-            "s1_min_sec": float(s1_min_evt), "s1_nominal_sec": float(s1_nominal_evt),
-            "s1_max_sec": float(s1_max_evt),
-            "s2_min_sec": float(s2_min_evt), "s2_nominal_sec": float(s2_nominal_evt),
-            "s2_max_sec": float(s2_max_evt),
-            "min_feasible_cycle_sec": float(min_feasible),
-            "s1_s2_min": float(s1_s2_min), "s1_s2_nominal": float(s1_s2_nominal),
-            "s1_s2_max": float(s1_s2_max),
-            "flags": {
-                "systole_too_short": bool(too_short),
-                "systole_too_long": bool(too_long),
-                "systole_far_from_nominal": bool(far_from_nominal),
-                "diastole_too_short": bool(diastole_too_short),
-            },
-        })
-
-        snap_here = _effective_snap_s2(snap_s2, s1, s1_next, niv, s2_check=s2)
-        if (too_short or too_long or far_from_nominal) and snap_here and insert_spectrum_ctx is not None:
-            s2_pred = int(round(s1 + s1_s2_nominal * sample_rate))
-            new_s2 = _choose_s2_near(
-                s1, s1_next, s2_pred, resnap_half,
-                snap_here, insert_spectrum_ctx, sample_rate, n_samples, params, intervals,
-            )
-            new_s2 = int(max(s1 + 1, min(new_s2, s1_next - 1)))
-            if new_s2 != s2:
-                new_corrections.append({
-                    "type": "resnap_s2",
-                    "cycle": int(i), "s1": int(s1),
-                    "old_s2": int(s2), "new_s2": int(new_s2), "s2_pred": int(s2_pred),
-                })
-                new_s2_events[i] = int(new_s2)
-                changed = True
-
-    return new_s2_events, new_corrections, cycle_diagnostics, changed
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pass C — phase-shift cascade corrections
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _pass_c_phase_correction(
-    s1_list: List[int],
-    s2_events: List[int],
-    cycle_diagnostics: List[Dict[str, Any]],
-    all_raw_peaks: np.ndarray,
-    pc: Dict,
-    lt_series: Optional[pd.Series],
-    fallback_bpm: float,
-    audio_envelope: np.ndarray,
-    analysis_data: Dict,
-    n_samples: int,
-    sample_rate: int,
-    params: Dict,
-    enable_phase_correction: bool,
-    phase_min_score_delta: float,
-    local_peak_window_samples: int,
-    local_peak_window_ms: float,
-    local_peak_sensitivity: float,
-    s1_search_half: int,
-    min_sep_samples: int,
-    snap_s2: bool,
-    snap_half: int,
-    insert_spectrum_ctx: Optional[Dict],
-    noise_ivs: Optional[List[Tuple[int, int]]] = None,
-) -> Tuple[List[int], List[int], List[Dict[str, Any]], bool]:
-    """
-    Phase-shift cascade corrections (one fix per call; outer loop handles multiples).
-
-    C.1  Remove false S1 (both systole + diastole too short).
-    C.2  Demote S1_next to S2 (diastole too short, S1_next looks like S2).
-    C.3  Find faint S2 (systole too long, Pass A already failed).
-
-    Returns (new_s1_list, new_s2_events, new_corrections, changed).
-    """
-    if not enable_phase_correction or not cycle_diagnostics:
-        return s1_list, s2_events, [], False
-
-    niv = noise_ivs or []
-    new_s1_list = list(s1_list)
-    new_s2_events = list(s2_events)
-
-    # ── C.1: Remove false S1 ─────────────────────────────────────────────────
-    for diag in cycle_diagnostics:
-        i = diag["i"]
-        if i + 1 >= len(new_s1_list):
-            continue
-        s1     = diag["s1"]
-        s1_next = diag["s1_next"]
-        systole  = diag["systole_sec"]
-        diastole = diag["diastole_sec"]
-        diastole_min_c = diag.get("diastole_min_sec", 0.0)
-        s1_s2_min_c    = diag["s1_s2_min"]
-        if not (systole < s1_s2_min_c and diastole < diastole_min_c):
-            continue
-        suspect = int(s1_next)
-        entry = pc.get(suspect) or {}
-        ls = entry.get("label_scores") if isinstance(entry, dict) else None
-        if not isinstance(ls, dict):
-            continue
-        noise_score = float(ls.get("noise", 0.0))
-        s1_score    = float(ls.get("S1",    0.0))
-        if noise_score - s1_score < phase_min_score_delta:
-            continue
-        min_feasible = diag.get("min_feasible_cycle_sec", 0.0)
-        merged_next  = int(new_s1_list[i + 2]) if i + 2 < len(new_s1_list) else n_samples
-        merged_span  = (merged_next - int(s1)) / float(sample_rate)
-        if min_feasible > 0 and merged_span < min_feasible:
-            continue
-        new_s1_list = [p for p in new_s1_list if p != suspect]
-        new_s2_events = _rebuild_s2_events(
-            new_s1_list, lt_series, fallback_bpm,
-            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
-            noise_ivs=niv,
-        )
-        corr = {
-            "type": "remove_false_s1", "cycle": int(i), "s1": int(s1),
-            "removed_s1": int(suspect),
-            "systole_sec": float(systole), "diastole_sec": float(diastole),
-            "diastole_min_sec": float(diastole_min_c),
-            "noise_score": float(noise_score), "s1_score": float(s1_score),
-        }
-        logging.info(
-            "Pass 3 C.1: removed false S1 at sample %d "
-            "(cycle %d, systole=%.3fs, diastole=%.3fs/min=%.3fs).",
-            suspect, i, systole, diastole, diastole_min_c,
-        )
-        return new_s1_list, new_s2_events, [corr], True
-
-    # ── C.2: Demote S1_next to S2 ────────────────────────────────────────────
-    for diag in cycle_diagnostics:
-        i = diag["i"]
-        if i + 1 >= len(new_s1_list):
-            continue
-        if not diag["flags"].get("diastole_too_short", False):
-            continue
-        s1     = diag["s1"]
-        s1_next = diag["s1_next"]
-        entry = pc.get(int(s1_next)) or {}
-        ls = entry.get("label_scores") if isinstance(entry, dict) else None
-        if not isinstance(ls, dict):
-            continue
-        s2_score = float(ls.get("S2", 0.0))
-        s1_score = float(ls.get("S1", 0.0))
-        if s2_score - s1_score < phase_min_score_delta:
-            continue
-        new_s2 = int(s1_next)
-        upper_bound = int(new_s1_list[i + 2]) if i + 2 < len(new_s1_list) else n_samples
-        bpm_here = _bpm_at_time(int(s1) / float(sample_rate), lt_series, fallback_bpm)
-        ivs_here = calculate_bpm_intervals(bpm_here, params)
-        s2_min_here      = float(ivs_here.get("s2_min",      0.010))
-        diastole_min_here = float(ivs_here.get("diastole_min", 0.08))
-        earliest_new_s1  = new_s2 + max(1, int(s2_min_here * sample_rate))
-        expected_dia_here = max(diastole_min_here, float(ivs_here.get("s2_s1_nominal", 0.35)))
-        t_new_s1 = earliest_new_s1 / float(sample_rate) + max(0.0, expected_dia_here - s2_min_here)
-        new_s1_cand: Optional[int] = None
-        new_s1_cand = _choose_s1_near(
-            t_new_s1, s1_search_half, min_sep_samples,
-            all_raw_peaks, pc, n_samples, sample_rate,
-        )
-        if new_s1_cand is not None and (new_s1_cand < earliest_new_s1 or new_s1_cand >= upper_bound):
-            new_s1_cand = None
-        if new_s1_cand is None:
-            sens = _find_sensitive_peaks_near(
-                t_new_s1, local_peak_window_samples, local_peak_sensitivity,
-                audio_envelope, analysis_data, n_samples, sample_rate, params,
-            )
-            if sens is not None and earliest_new_s1 <= sens < upper_bound:
-                new_s1_cand = sens
-        if new_s1_cand is None or new_s1_cand < earliest_new_s1 or new_s1_cand >= upper_bound:
-            continue
-        new_s2_events[i] = new_s2
-        new_s1_list = [p for p in new_s1_list if p != int(s1_next)]
-        new_s1_list.append(new_s1_cand)
-        new_s1_list = sorted(list(dict.fromkeys(new_s1_list)))
-        new_s2_events = _rebuild_s2_events(
-            new_s1_list, lt_series, fallback_bpm,
-            sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
-            noise_ivs=niv,
-        )
-        corr = {
-            "type": "flip_demote_s1", "cycle": int(i), "s1": int(s1),
-            "old_s1_next": int(s1_next), "new_s2_for_cycle": int(new_s2),
-            "new_s1_next": int(new_s1_cand),
-            "s2_score": float(s2_score), "s1_score": float(s1_score),
-        }
-        logging.info(
-            "Pass 3 C.2: flipped S1@%d\u2192S2, new S1 at %d (cycle %d, diastole was %.3fs).",
-            s1_next, new_s1_cand, i, diag["diastole_sec"],
-        )
-        return new_s1_list, new_s2_events, [corr], True
-
-    # ── C.3: Find faint S2 ───────────────────────────────────────────────────
-    for diag in cycle_diagnostics:
-        i = diag["i"]
-        if not diag["flags"].get("systole_too_long", False):
-            continue
-        s1     = diag["s1"]
-        s1_next = diag["s1_next"]
-        if _hf_noise_disables_s2_snap(int(s1), int(s1_next), niv, s2_check=int(diag["s2"])):
-            continue
-        bpm_c  = diag["bpm"]
-        ivs_c  = calculate_bpm_intervals(bpm_c, params)
-        s1_s2_nominal_c = float(ivs_c.get("s1_s2_nominal", 0.30))
-        t_s2_pred       = int(s1) / float(sample_rate) + s1_s2_nominal_c
-        search_half_sec = local_peak_window_ms / 2000.0
-
-        new_s2: Optional[int] = None
-        method_used: Optional[str] = None
-        spectral_score: Optional[float] = None
-
-        sens = _find_sensitive_peaks_near(
-            t_s2_pred, local_peak_window_samples, local_peak_sensitivity,
-            audio_envelope, analysis_data, n_samples, sample_rate, params,
-        )
-        if sens is not None and int(s1) < sens < int(s1_next):
-            new_s2 = sens
-            method_used = "sensitive_peak"
-
-        if new_s2 is None:
-            sp_result = _choose_s2_spectral(
-                t_s2_pred, search_half_sec, insert_spectrum_ctx, params, sample_rate, n_samples,
-            )
-            if sp_result is not None:
-                sp_idx, sp_score = sp_result
-                if int(s1) < sp_idx < int(s1_next):
-                    new_s2 = sp_idx
-                    spectral_score = sp_score
-                    method_used = "spectral_s2"
-
-        if new_s2 is None:
-            continue
-
-        new_systole  = (new_s2 - int(s1))     / float(sample_rate)
-        new_diastole = (int(s1_next) - new_s2) / float(sample_rate)
-        s2_min_c      = float(ivs_c.get("s2_min",     0.010))
-        diastole_min_c = float(ivs_c.get("diastole_min", 0.08))
-        if new_systole < float(ivs_c.get("s1_s2_min", 0.12)):
-            continue
-        if new_diastole < s2_min_c + diastole_min_c:
-            continue
-
-        new_s2_events[i] = new_s2
-        corr: Dict[str, Any] = {
-            "type": method_used, "cycle": int(i), "s1": int(s1),
-            "new_s2": int(new_s2), "t_s2_pred_sec": float(t_s2_pred),
-            "new_systole_sec": float(new_systole), "new_diastole_sec": float(new_diastole),
-        }
-        if spectral_score is not None:
-            corr["spectral_score"] = float(spectral_score)
-        logging.info(
-            "Pass 3 C.3: placed faint S2 at sample %d via %s "
-            "(cycle %d, systole %.3fs\u2192%.3fs).",
-            new_s2, method_used, i, diag["systole_sec"], new_systole,
-        )
-        return new_s1_list, new_s2_events, [corr], True
-
-    return new_s1_list, new_s2_events, [], False
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2116,31 +1443,16 @@ def run_pass3_correction(
     wav_file_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, Dict]:
     """
-    Pass 3 (bridge): correction + dense per-sample cardiac-state timeline.
+    Pass 3: dense per-sample cardiac-state timeline from Pass 2 peaks and pairs.
 
     Mutates and returns analysis_data with keys:
       pass3_state_labels, pass3_state_labels_encoding,
       pass3_state_boundaries, pass3_state_boundaries_before,
-      pass3_corrections, pass3_cycle_diagnostics,
-      pass3_spectral_context  (template arrays only; bandpass_audio not stored).
-      pass3_noise_unreliable_windows_samples  (when noise_event_segments exist: HF intervals as sample indices for HTML).
-      When pass3_enable_noise_repair: labels in those windows are set to unknown (encoding includes "unknown").
+      pass3_corrections (empty), pass3_cycle_diagnostics (empty),
+      pass3_spectral_context (None),
+      pass3_noise_unreliable_windows_samples (when noise_event_segments exist).
+      When pass3_enable_noise_repair: labels in HF windows may be cleared and rebuilt.
     """
-    # Design intent (Pass 3 architecture)
-    # ----------------------------------
-    # Pass 2 provides labeled events (S1 peaks + paired S2 candidates + BPM belief). Pass 3's job is to:
-    #   1) Generate an initial *state sequence* from those Pass 2 labels, then
-    #   2) Correct that *state sequence* (not just isolated events) under timing constraints.
-    #
-    # Direction we are moving toward:
-    #   Treat each cardiac cycle as the canonical half-open interval [S1_i, S1_{i+1}), and make the four
-    #   phases (S1, systole, S2, diastole) a strict partition of that interval. All four phases have equal
-    #   weighting in the logic (timing plausibility / repairs should reason about the whole cycle, not only S2).
-    #
-    # Transitional note:
-    #   The current implementation includes a "trim diastole overlap" normalization step because transient-edge
-    #   detection can start S1 before its peak while diastole is anchored to the next peak. As the codebase
-    #   converges on strict [S1_i, S1_{i+1}) partitions, that trimming should become unnecessary.
     if "peak_classifications" not in analysis_data or analysis_data["peak_classifications"] is None:
         analysis_data["peak_classifications"] = {}
     if "s1_s2_pairs" not in analysis_data:
@@ -2169,31 +1481,6 @@ def run_pass3_correction(
     s2_min_half = max(1, int(round(float(params.get("s2_min_sec", 0.030)) * 0.5 * sample_rate)))
     s2_max_half = max(1, int(round(float(params.get("s2_max_sec", 0.080)) * 0.5 * sample_rate)))
 
-    snap_s2           = bool(params.get(
-        "pass3_align_s2_to_s2_spectral_profile",
-        True,
-    ))
-    snap_window_ms    = float(params.get(
-        "pass3_align_s2_window_ms",
-        120.0,
-    ))
-    snap_half         = max(1, int(round(0.5 * snap_window_ms * sample_rate / 1000.0)))
-    resnap_window_ms  = float(params.get("pass3_resnap_s2_window_ms",  220.0))
-    resnap_half       = max(1, int(round(0.5 * resnap_window_ms * sample_rate / 1000.0)))
-    systole_slack     = float(params.get("pass3_systole_slack_frac",   0.15))
-    diastole_slack    = float(params.get("pass3_diastole_slack_frac",  0.20))
-
-    max_iters          = int(params.get("pass3_correction_max_iters",        32))
-    min_sep_samples    = int(float(params.get("min_peak_distance_sec", 0.10)) * sample_rate)
-
-    enable_phase_corr    = bool(params.get("pass3_enable_phase_correction",   True))
-    phase_min_score_delta = float(params.get("pass3_phase_min_score_delta",  0.15))
-    local_peak_window_ms  = float(params.get("pass3_local_peak_window_ms",   160.0))
-    local_peak_win_samp   = max(1, int(round(0.5 * local_peak_window_ms * sample_rate / 1000.0)))
-    local_peak_sens       = float(params.get("pass3_local_peak_sensitivity_factor", 0.6))
-
-    pc = analysis_data.get("peak_classifications") or {}
-
     fallback_bpm = 80.0
     try:
         rr_arr = np.diff(peaks_out) / float(sample_rate)
@@ -2216,23 +1503,6 @@ def run_pass3_correction(
         analysis_data["pass3_noise_unreliable_windows_samples"] = [
             {"start_sample": int(lo), "end_sample": int(hi)} for lo, hi in noise_ivs_pass3
         ]
-    # ── Build spectral context (S1 + S2 templates) ───────────────────────────
-    insert_spectrum_ctx: Optional[Dict] = None
-    if bool(params.get("pass3_insert_use_spectrum", True)) and wav_file_path and os.path.isfile(wav_file_path):
-        try:
-            insert_spectrum_ctx = prepare_pass3_s1_insert_context(
-                wav_file_path, pc, sample_rate, audio_envelope, params,
-            )
-            if insert_spectrum_ctx is not None:
-                logging.info(
-                    "Pass 3: spectral context ready "
-                    "(n_s1_template=%s, n_s2_template=%s, sr=%s).",
-                    insert_spectrum_ctx.get("n_s1_template"),
-                    insert_spectrum_ctx.get("n_s2_template"),
-                    insert_spectrum_ctx.get("full_sr"),
-                )
-        except Exception as exc:
-            logging.warning("Pass 3: could not build spectral context: %s", exc)
 
     # Build the BPM prior from clean RR intervals (exclude any S1→S1 that intersects HF noise).
     # If we can't build it (too few clean intervals), Pass 3 falls back to fallback_bpm.
@@ -2244,7 +1514,7 @@ def run_pass3_correction(
         params=params,
     )
 
-    # ── S2 placement: Pass 2 pair seed → spectral snap (_rebuild_s2_events) ────
+    # ── S2 placement: Pass 2 pair seed → nominal fallback (_rebuild_s2_events) ─
     _pairs = analysis_data.get("s1_s2_pairs") or []
     s2_seed = _seed_s2_from_pass2_pairs(
         s1_list, _pairs, lt_pass3, fallback_bpm, sample_rate, params, n_samples,
@@ -2258,10 +1528,7 @@ def run_pass3_correction(
     )
 
     s2_events = _rebuild_s2_events(
-        s1_list, lt_pass3, fallback_bpm,
-        sample_rate, params, snap_s2, snap_half, n_samples, insert_spectrum_ctx,
-        noise_ivs=noise_ivs_pass3,
-        seed_s2_events=s2_seed,
+        s1_list, lt_pass3, fallback_bpm, sample_rate, params, seed_s2_events=s2_seed,
     )
 
     # ── Before-correction snapshot for HTML before/after visualization ────────
@@ -2269,38 +1536,8 @@ def run_pass3_correction(
         s1_list, s2_events, s1_half, s2_half, n_samples,
     )
 
-    # ── Correction loop ───────────────────────────────────────────────────────
     corrections: List[Dict[str, Any]] = []
     cycle_diagnostics: List[Dict[str, Any]] = []
-
-    for _iter in range(max_iters):
-        # Sync s2_events length with current s1_list.
-        n_cycles = max(0, len(s1_list) - 1)
-        if len(s2_events) != n_cycles:
-            s2_events = s2_events[:n_cycles]
-            while len(s2_events) < n_cycles:
-                s2_events.append(int(s1_list[len(s2_events)]))
-
-        s2_events, corrs_a, cycle_diagnostics, changed_a = _pass_a_resnap_s2(
-            s1_list, s2_events, lt_pass3, fallback_bpm,
-            sample_rate, params, snap_s2, resnap_half, n_samples, insert_spectrum_ctx,
-            systole_slack, diastole_slack, noise_ivs=noise_ivs_pass3,
-        )
-        corrections.extend(corrs_a)
-
-        s1_list, s2_events, corrs_c, changed_c = _pass_c_phase_correction(
-            s1_list, s2_events, cycle_diagnostics,
-            all_raw_peaks, pc, lt_pass3, fallback_bpm,
-            audio_envelope, analysis_data, n_samples, sample_rate, params,
-            enable_phase_corr, phase_min_score_delta,
-            local_peak_win_samp, local_peak_window_ms, local_peak_sens,
-            0, min_sep_samples,
-            snap_s2, snap_half, insert_spectrum_ctx, noise_ivs=noise_ivs_pass3,
-        )
-        corrections.extend(corrs_c)
-
-        if not (changed_a or changed_c):
-            break
 
     peaks_out = np.asarray(s1_list, dtype=np.int64)
 
@@ -2355,11 +1592,7 @@ def run_pass3_correction(
             bpm  = _bpm_at_time(t_s1, lt_pass3, fallback_bpm)
             ivs  = calculate_bpm_intervals(bpm, params)
             s2_pred = int(round(s1 + float(ivs.get("s1_s2_nominal", 0.30)) * _sr_f))
-            snap_paint = _effective_snap_s2(snap_s2, s1, s1_next, noise_ivs_final, s2_check=None)
-            s2 = _choose_s2_near(
-                s1, s1_next, s2_pred, snap_half,
-                snap_paint, insert_spectrum_ctx, sample_rate, n_samples, params, ivs,
-            )
+            s2 = int(max(s1 + 1, min(s2_pred, s1_next - 1)))
         s2 = int(max(s1 + 1, min(s2, s1_next - 1)))
 
         s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
@@ -2384,14 +1617,12 @@ def run_pass3_correction(
             if _cc not in _direct:
                 _cascade = _cc
 
-        snap_reason = _effective_snap_s2(snap_s2, s1, s1_next, noise_ivs_final, s2_check=s2)
         _reasoning = _build_reasoning_payload(
             s1, s1_start, s1_end, s2, s2_start, s2_end, s1_next,
             _ivs_r, _direct, _cascade, _bef_s2, _bef_s1nxt,
-            _sr_f, _SHIFT_THRESH_SAMP, snap_reason,
+            _sr_f, _SHIFT_THRESH_SAMP,
             hover_debug_geometry=True,
             hover_s1_s2_pairs=_pairs,
-            hover_noise_ivs=noise_ivs_final,
             hover_s1_half=s1_half,
             hover_s2_half=s2_half,
             hover_n_samples=n_samples,
@@ -2550,13 +1781,7 @@ def run_pass3_correction(
     analysis_data["pass3_corrections"]    = corrections
     analysis_data["pass3_cycle_diagnostics"] = cycle_diagnostics
 
-    # Store lightweight spectral templates (no bandpass_audio) for emissions / Pass 4.
-    if insert_spectrum_ctx is not None:
-        analysis_data["pass3_spectral_context"] = {
-            k: v for k, v in insert_spectrum_ctx.items() if k != "bandpass_audio"
-        }
-    else:
-        analysis_data["pass3_spectral_context"] = None
+    analysis_data["pass3_spectral_context"] = None
 
     logging.info(
         "Pass 3: corrected peaks=%d, state timeline n=%d samples, %d cycles, %d corrections.",
