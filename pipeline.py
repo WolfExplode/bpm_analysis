@@ -10,6 +10,7 @@ from scipy.interpolate import interp1d
 from audio_preprocessing import preprocess_audio
 from noise_segments import compute_noise_event_segments
 from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
+from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
 from plotting import Plotter, prewarm_kaleido_png_export
 from reporting import ReportGenerator
 from validation import (
@@ -72,7 +73,7 @@ def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
     """
     Runs pass 1 (high-confidence anchor-finding) to estimate global BPM and find the recovery phase.
     Returns (start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, pass1_bpm, pass1_analysis_data).
-    pass1_bpm is the canonical curve (outlier-filtered + LOESS) used for prior and all plots, or None if insufficient data.
+    pass1_bpm is the canonical curve (outlier-filtered + light Gaussian smoothing) used for prior and all plots, or None if insufficient data.
     """
     logging.info("--- STAGE 2: Pass 1 — high-confidence anchor beats ---")
     params_pass1 = params.copy()
@@ -93,27 +94,34 @@ def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
 
     start_bpm = start_bpm_hint or global_bpm_estimate or 80.0
 
-    # Canonical pass 1 BPM curve (outlier filter + LOESS) — same data used for prior and all plots
+    # Canonical pass 1 BPM curve (outlier filter + light Gaussian smoothing) — same data used for prior and all plots
     pass1_bpm = compute_pass1_bpm_curve(anchor_beats, sample_rate, params)
     if pass1_bpm is not None:
-        curve_series = pd.Series(pass1_bpm["curve_bpm"])
-        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(curve_series, pass1_bpm["curve_times"], params)
+        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(
+            np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
+            np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
+            params,
+        )
     else:
         pass1_fallback_series, pass1_fallback_times, _ = calculate_bpm_series(anchor_beats, sample_rate, params)
-        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(pass1_fallback_series, pass1_fallback_times, params)
+        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(
+            np.asarray(pass1_fallback_series.values, dtype=np.float64),
+            np.asarray(pass1_fallback_times, dtype=np.float64),
+            params,
+        )
 
     return start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, pass1_bpm, pass1_analysis_data
 
 
 def _build_pass1_bpm_prior(
     pass1_bpm_times: np.ndarray,
-    pass1_bpm_series: pd.Series,
+    pass1_bpm_values: np.ndarray,
 ) -> Optional[Callable[[float], float]]:
     """Build a time -> BPM callable from the pass 1 BPM curve for use as a time-varying prior. Returns None if insufficient data."""
-    if pass1_bpm_times is None or pass1_bpm_series is None or len(pass1_bpm_times) < 2 or pass1_bpm_series.empty:
+    if pass1_bpm_times is None or pass1_bpm_values is None or len(pass1_bpm_times) < 2 or len(pass1_bpm_values) < 2:
         return None
     times = np.asarray(pass1_bpm_times, dtype=float)
-    values = np.asarray(pass1_bpm_series.values, dtype=float)
+    values = np.asarray(pass1_bpm_values, dtype=float)
     if len(times) != len(values) or len(times) < 2:
         return None
     try:
@@ -148,12 +156,12 @@ def _refine_and_correct_peaks(
 def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: Dict) -> Dict:
     """Calculates BPM, HRV, and slope metrics from a peak list. Used by any pass (pass 2, pass 3, etc.)."""
     metrics = {}
-    metrics['smoothed_bpm'], metrics['bpm_times'], metrics['instant_bpm'] = calculate_bpm_series(peaks, sample_rate, params)
-    metrics['major_inclines'] = find_major_hr_inclines(metrics['smoothed_bpm'])
-    metrics['major_declines'] = find_major_hr_declines(metrics['smoothed_bpm'])
-    metrics['hrr_stats'] = calculate_hrr(metrics['smoothed_bpm'])
-    metrics['peak_recovery_stats'] = find_peak_recovery_rate(metrics['smoothed_bpm'])
-    metrics['peak_exertion_stats'] = find_peak_exertion_rate(metrics['smoothed_bpm'])
+    smoothed_bpm, bpm_times, instant_bpm = calculate_bpm_series(peaks, sample_rate, params)
+    metrics['major_inclines'] = find_major_hr_inclines(smoothed_bpm)
+    metrics['major_declines'] = find_major_hr_declines(smoothed_bpm)
+    metrics['hrr_stats'] = calculate_hrr(smoothed_bpm)
+    metrics['peak_recovery_stats'] = find_peak_recovery_rate(smoothed_bpm)
+    metrics['peak_exertion_stats'] = find_peak_exertion_rate(smoothed_bpm)
     metrics['windowed_hrv_df'] = calculate_windowed_hrv(peaks, sample_rate, params)
     if params.get("enable_hrv_frequency_domain", False):
         metrics['hrv_global_freq'] = calculate_global_hrv_frequency(peaks, sample_rate, params)
@@ -161,10 +169,10 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
         metrics['hrv_global_freq'] = None
 
     hrv_summary_stats = {}
-    if not metrics['smoothed_bpm'].empty:
-        hrv_summary_stats['avg_bpm'] = metrics['smoothed_bpm'].mean()
-        hrv_summary_stats['min_bpm'] = metrics['smoothed_bpm'].min()
-        hrv_summary_stats['max_bpm'] = metrics['smoothed_bpm'].max()
+    if smoothed_bpm is not None and not getattr(smoothed_bpm, "empty", True):
+        hrv_summary_stats['avg_bpm'] = smoothed_bpm.mean()
+        hrv_summary_stats['min_bpm'] = smoothed_bpm.min()
+        hrv_summary_stats['max_bpm'] = smoothed_bpm.max()
     if not metrics['windowed_hrv_df'].empty:
         hrv_summary_stats['avg_rmssdc'] = metrics['windowed_hrv_df']['rmssdc'].mean()
         hrv_summary_stats['avg_sdnn'] = metrics['windowed_hrv_df']['sdnn'].mean()
@@ -183,6 +191,22 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
     if metrics.get('hrv_global_freq') is not None:
         hrv_summary_stats['global_freq'] = metrics['hrv_global_freq']
     metrics['hrv_summary'] = hrv_summary_stats
+
+    # Canonical BPM representation for all downstream code: dense raster at STANDARD_DT_SEC.
+    # We keep peak-derived time axis (bpm_times, in seconds) but store only the raster.
+    if bpm_times is not None and smoothed_bpm is not None and not getattr(smoothed_bpm, "empty", True):
+        try:
+            dur = float(np.max(peaks) / sample_rate) if len(peaks) else float(bpm_times[-1])
+        except Exception:
+            dur = float(bpm_times[-1]) if bpm_times is not None and len(bpm_times) else 0.0
+        t_grid = dense_time_grid(dur, STANDARD_DT_SEC)
+        bpm_vals = np.asarray(smoothed_bpm.values, dtype=np.float64)
+        bpm_grid = rasterize_timeseries_linear(np.asarray(bpm_times, dtype=np.float64), bpm_vals, t_grid, fallback=float(bpm_vals[0]))
+        metrics["bpm_times"] = t_grid
+        metrics["smoothed_bpm"] = bpm_grid
+    else:
+        metrics["bpm_times"] = np.asarray([], dtype=np.float64)
+        metrics["smoothed_bpm"] = np.asarray([], dtype=np.float64)
 
     return metrics
 
@@ -220,15 +244,23 @@ def _apply_pass3_state_timeline_bpm(
         )
         return
     smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
-    metrics["smoothed_bpm"] = smoothed_bpm
-    metrics["bpm_times"] = bpm_times
-    metrics["instant_bpm"] = instant_bpm
+    # Store canonical dense raster (dt=STANDARD_DT_SEC) instead of irregular points/Series.
+    try:
+        dur = float(len(sl) / float(sample_rate))
+    except Exception:
+        dur = float(bpm_times[-1]) if bpm_times is not None and len(bpm_times) else 0.0
+    t_grid = dense_time_grid(dur, STANDARD_DT_SEC)
+    bpm_vals = np.asarray(smoothed_bpm.values, dtype=np.float64)
+    bpm_grid = rasterize_timeseries_linear(np.asarray(bpm_times, dtype=np.float64), bpm_vals, t_grid, fallback=float(bpm_vals[0]))
+    metrics["smoothed_bpm"] = bpm_grid
+    metrics["bpm_times"] = t_grid
+    metrics.pop("instant_bpm", None)
     metrics["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
     metrics["major_declines"] = find_major_hr_declines(smoothed_bpm)
     metrics["hrr_stats"] = calculate_hrr(smoothed_bpm)
     metrics["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
     metrics["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-    if not smoothed_bpm.empty:
+    if not getattr(smoothed_bpm, "empty", True):
         hrv_summary = dict(metrics.get("hrv_summary") or {})
         hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
         hrv_summary["min_bpm"] = float(smoothed_bpm.min())
@@ -341,7 +373,10 @@ def analyze_wav_file(
     logging.info("--- STAGE 3: Pass 2 — main analysis ---")
     _ui("Pass 2: classifying peaks...")
     pass1_bpm_prior = (
-        _build_pass1_bpm_prior(pass1_bpm["curve_times"], pd.Series(pass1_bpm["curve_bpm"]))
+        _build_pass1_bpm_prior(
+            np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
+            np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
+        )
         if pass1_bpm is not None
         else None
     )
@@ -413,7 +448,7 @@ def analyze_wav_file(
                 metrics_pass2["hrr_stats"] = calculate_hrr(smoothed_bpm)
                 metrics_pass2["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
                 metrics_pass2["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-                if not smoothed_bpm.empty:
+                if not getattr(smoothed_bpm, "empty", True):
                     hrv_summary = metrics_pass2.get("hrv_summary") or {}
                     hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
                     hrv_summary["min_bpm"] = float(smoothed_bpm.min())
@@ -435,8 +470,8 @@ def analyze_wav_file(
                 metrics_pass2,
                 output_options,
                 output_suffix="_pass2",
-                pass1_bpm_series=pd.Series(pass1_bpm["curve_bpm"]) if pass1_bpm is not None else None,
-                pass1_bpm_times=pass1_bpm["curve_times"] if pass1_bpm is not None else None,
+                pass1_bpm_series=np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64) if pass1_bpm is not None else None,
+                pass1_bpm_times=np.asarray(pass1_bpm["curve_times"], dtype=np.float64) if pass1_bpm is not None else None,
             )
 
     # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
@@ -451,11 +486,6 @@ def analyze_wav_file(
         params,
         wav_file_path=wav_file_path,
     )
-
-    # Pass 3 continuous emissions (optional, guarded by config).
-    if params.get("pass3_generate_emissions", True):
-        from emissions import generate_pass3_emissions
-        generate_pass3_emissions(analysis_data, algorithm_envelope, sample_rate, params, wav_file_path)
 
     # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
     peaks_after_pass4 = peaks_after_pass3
@@ -509,7 +539,7 @@ def analyze_wav_file(
                 metrics_after_pass3["hrr_stats"] = calculate_hrr(smoothed_bpm)
                 metrics_after_pass3["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
                 metrics_after_pass3["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-                if not smoothed_bpm.empty:
+                if not getattr(smoothed_bpm, "empty", True):
                     hrv_summary = metrics_after_pass3.get("hrv_summary") or {}
                     hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
                     hrv_summary["min_bpm"] = float(smoothed_bpm.min())
@@ -562,12 +592,12 @@ def analyze_wav_file(
         # Pass 3 plot: show BPM (Pass 2) as the prior curve, not BPM (Pass 1)
         prior_bpm_series = None
         prior_bpm_times = None
-        if metrics_pass2 is not None and metrics_pass2.get("smoothed_bpm") is not None and not metrics_pass2["smoothed_bpm"].empty:
+        if metrics_pass2 is not None and metrics_pass2.get("smoothed_bpm") is not None and len(metrics_pass2["smoothed_bpm"]) > 0:
             prior_bpm_series = metrics_pass2["smoothed_bpm"]
             prior_bpm_times = metrics_pass2.get("bpm_times")
         if prior_bpm_series is None and pass1_bpm is not None:
-            prior_bpm_series = pd.Series(pass1_bpm["curve_bpm"])
-            prior_bpm_times = pass1_bpm["curve_times"]
+            prior_bpm_series = np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64)
+            prior_bpm_times = np.asarray(pass1_bpm["curve_times"], dtype=np.float64)
         # Pass 3 plot: include peak/recovery times for systolic shift (exertion vs all-time averaging)
         metrics_after_pass3["peak_bpm_time_sec"] = peak_time
         metrics_after_pass3["recovery_end_time_sec"] = recovery_time
@@ -675,14 +705,15 @@ def analyze_wav_file(
 
     bpm_rename_summary = None
     sb = metrics_after_pass3.get("smoothed_bpm")
-    if sb is not None and not sb.empty:
-        vals = sb.dropna()
-        if not vals.empty:
-            vals_time = vals.sort_index()
+    if sb is not None and len(sb) > 0:
+        arr = np.asarray(sb, dtype=np.float64)
+        if np.any(np.isfinite(arr)):
+            # start_bpm: first finite sample (dense raster)
+            start_i = int(np.argmax(np.isfinite(arr)))
             bpm_rename_summary = {
-                "start_bpm": float(vals_time.iloc[0]),
-                "min_bpm": float(vals.min()),
-                "max_bpm": float(vals.max()),
+                "start_bpm": float(arr[start_i]),
+                "min_bpm": float(np.nanmin(arr)),
+                "max_bpm": float(np.nanmax(arr)),
             }
 
     return plotly_figure, fft_aggregate_data, bpm_rename_summary

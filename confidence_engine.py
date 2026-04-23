@@ -30,12 +30,12 @@ class AnalysisState:
         smoothed_dev_series: Time-indexed series of normalized peak-to-peak amplitude
             deviations, smoothed over time. This captures rhythm stability and is used
             as context when reasoning about sudden changes in the waveform.
-        long_term_bpm: BPM value used when computing expected S1-S2 and R-R intervals.
+        long_term_bpm: BPM value used when computing expected systole (S1→S2) and R-R intervals.
             Set each iteration from the pass 1 BPM prior (time-varying) when available;
             otherwise the initial start_bpm and not updated.
         analysis_data: Bag of analysis artifacts that downstream plotting/reporting
             relies on (e.g., `dynamic_noise_floor_series`, `trough_indices`,
-            `deviation_series`, `peak_classifications`, `long_term_bpm_series`).
+            `deviation_series`, `peak_classifications`, `pass2_lt_bpm_times`, `pass2_lt_bpm`).
         candidate_beats: Sample indices of peaks that have been accepted as S1 heartbeats
             (either paired S1 or validated Lone S1) during the main loop.
         peak_classifications: Mapping from raw peak index to a structured record
@@ -48,9 +48,9 @@ class AnalysisState:
             kept in list form for fast neighbor lookups and iteration.
         loop_idx: Current index into `all_peaks` for the main classification loop. This
             is the loop counter that drives progression through raw peaks.
-        s1_s2_interval_history: Rolling window of the last N accepted S1-S2 intervals
+        s1_s2_interval_history: Rolling window of the last N accepted systole (S1→S2) intervals
             (in seconds). Used by `PairingEngine` to build an empirical expected
-            S1-S2 interval once enough paired beats have been observed.
+            systole (S1→S2) interval once enough paired beats have been observed.
         s1_s2_contractility_history: Rolling window of the last N accepted S1/S2
             prominence ratios. Used by `PairingEngine` to build an empirical
             contractility expectation once enough paired beats have been observed.
@@ -74,7 +74,7 @@ class AnalysisState:
     pass1_bpm_prior: Optional[Callable[[float], float]] = None
     sorted_troughs: List[int] = field(default_factory=list)
     loop_idx: int = 0
-    s1_s2_interval_history: List[float] = field(default_factory=list)  # Last N accepted S1-S2 intervals (sec) for expected-S1-S2
+    s1_s2_interval_history: List[float] = field(default_factory=list)  # Last N accepted systole (S1→S2) intervals (sec)
     s1_s2_contractility_history: List[float] = field(default_factory=list)  # Last N accepted S1/S2 prominence ratios for expected contractility
     recent_s1_outcomes: List[Tuple[float, bool]] = field(default_factory=list)  # (time_sec, was_paired) for pair-rate window
     peak_prominence_detail_cache: Optional[Dict[int, Dict[str, Any]]] = None
@@ -511,7 +511,7 @@ def calculate_lone_s1_confidence(
 # ---------------------------------------------------------------------------
 
 def _append_s1_s2_interval(state: AnalysisState, interval_sec: float, params: Dict) -> None:
-    """Append an accepted S1-S2 interval to history and cap to last N for expected-S1-S2 from past pairs."""
+    """Append an accepted systole (S1→S2) interval to history and cap to last N for history-based expected systole."""
     state.s1_s2_interval_history.append(interval_sec)
     n_keep = params.get("s1_s2_expected_history_count", 10)
     if len(state.s1_s2_interval_history) > n_keep:
@@ -586,7 +586,7 @@ def _get_recent_s1_prominences_for_state(
 
 class PairingEngine:
     """
-    Scores candidate S1-S2 pairs and returns a pairing decision plus debug context.
+    Scores candidate S1→S2 (systole) pairs and returns a pairing decision plus debug context.
 
     This class is intentionally stateless (mostly stateless) with respect to the main analysis loop:
     it never mutates `AnalysisState` and instead relies on the caller (`PeakClassifier`)
@@ -650,14 +650,14 @@ class PairingEngine:
             implied_total_cycle = interval_sec * 2.0
             implied_bpm = 60.0 / implied_total_cycle if implied_total_cycle > 0 else float('inf')
             detail = (
-                f"S1-S2 interval {interval_sec:.3f}s < short cutoff {short_cutoff:.3f}s "
+                f"Systole (S1→S2) interval {interval_sec:.3f}s < short cutoff {short_cutoff:.3f}s "
                 f"(expected {expected_s1_s2:.3f}s @ {bpm:.0f} BPM; implies {implied_bpm:.0f} BPM)"
             )
             return False, [{"step": "Interval Reject", "detail": detail, "result": 0.0}], {}
 
         if interval_sec >= long_reject:
             detail = (
-                f"S1-S2 interval {interval_sec:.3f}s >= long reject {long_reject:.3f}s "
+                f"Systole (S1→S2) interval {interval_sec:.3f}s >= long reject {long_reject:.3f}s "
                 f"(expected {expected_s1_s2:.3f}s @ {bpm:.0f} BPM)"
             )
             return False, [{"step": "Interval Reject", "detail": detail, "result": 0.0}], {}
@@ -811,22 +811,22 @@ class PairingEngine:
         if interval_v_penalty > 0:
             confidence *= max(0.0, 1.0 - interval_v_penalty)
             steps.append({
-                "step": "S1-S2 Interval",
+                "step": "Systole (S1→S2) interval",
                 "detail": f"{interval_base_detail}. Too far → -{interval_v_penalty:.2f} (×{(1.0 - interval_v_penalty):.2f})",
                 "result": confidence,
             })
         elif interval_v_boost > 0:
             confidence = min(1.0, confidence * (1.0 + interval_v_boost))
             steps.append({
-                "step": "S1-S2 Interval",
+                "step": "Systole (S1→S2) interval",
                 "detail": f"{interval_base_detail}. Near expected → +{interval_v_boost:.2f} (×{(1.0 + interval_v_boost):.2f})",
                 "result": confidence,
             })
         else:
-            steps.append({"step": "S1-S2 Interval", "detail": f"{interval_base_detail} → no change", "result": confidence})
+            steps.append({"step": "Systole (S1→S2) interval", "detail": f"{interval_base_detail} → no change", "result": confidence})
 
         # --- Forward-Looking Contextual Penalty ---
-        # If pairing S1-S2 causes the next S2→S1 transition to be implausible, penalize it.
+        # If pairing systole (S1→S2) causes the next S2→S1 transition to be implausible, penalize it.
         # Guardrail: only trust this check if the "next S1" peak is strong enough to be
         # a plausible beat; otherwise it may just be noise and should not veto the pair.
         if state.loop_idx + 2 < len(state.all_peaks):
@@ -863,7 +863,7 @@ class PairingEngine:
             ceiling = self.params.get("stability_confidence_ceiling", 1.10)
             current_time_sec = s1_candidate_idx / self.sample_rate
             # During recovery, pairing_ratio can be low because S2 was physiologically absent at high BPM.
-            # Use a higher floor so we don't penalize valid S1-S2 pairs when S2 re-emerges.
+            # Use a higher floor so we don't penalize valid systole (S1→S2) pairs when S2 re-emerges.
             if (self.peak_bpm_time_sec is not None and
                 self.recovery_end_time_sec is not None and
                 self.peak_bpm_time_sec <= current_time_sec <= self.recovery_end_time_sec):

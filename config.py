@@ -32,7 +32,7 @@ DEFAULT_PARAMS = {
     # HF noise strip: merge / min-duration only (threshold quantile is hardcoded in noise_segments.py).
     "noise_segment_merge_gap_ms": 500.0,    # Merge if gap < this before expand_ms and again after (expanded time).
     "noise_segment_min_duration_ms": 20.0,  # Drop shorter noisy blips after merge.
-    "noise_segment_expand_ms": 70.0,       # Pad each segment start/end by this (quantile gate tends to clip early/late).
+    "noise_segment_expand_ms": 100.0,       # Pad each segment start/end by this (quantile gate tends to clip early/late).
 
     # =================================================================================
     # 2. Signal Feature Detection
@@ -65,11 +65,11 @@ DEFAULT_PARAMS = {
 
     # =================================================================================
     # 4. S1/S2 Pairing & Confidence Engine
-    # The core logic for identifying S1-S2 pairs based on timing and physiology.
+    # The core logic for identifying S1→S2 (systole) pairs based on timing and physiology.
     # =================================================================================
     # --- 4.1. Core Pairing Rules ---
-    "pairing_confidence_threshold": 0.50,      # Confidence score required to classify two peaks as an S1-S2 pair.
-    "pass1_pairing_confidence_threshold": 0.7, # Pass 1 only: min S1–S2 pairing confidence for anchor beats (overrides pairing_confidence_threshold for that run).
+    "pairing_confidence_threshold": 0.50,      # Confidence score required to classify two peaks as an S1→S2 (systole) pair.
+    "pass1_pairing_confidence_threshold": 0.7, # Pass 1 only: min S1→S2 (systole) pairing confidence for anchor beats (overrides pairing_confidence_threshold for that run).
     "s1_s2_interval_cap_sec": 0.4,             # The absolute maximum time (seconds) allowed between S1 and S2.
     "min_s1_s2_interval_sec": 0.10,            # Absolute minimum (100ms)
     "min_s1_s2_interval_rr_fraction": 0.23,    # Or 23% of total RR interval
@@ -81,12 +81,12 @@ DEFAULT_PARAMS = {
     # These define how long the audible heart sound event itself lasts, not the intervals between sounds.
     # Used by Pass 3 to gate corrections that would squeeze a state into an impossibly short window.
     "s1_min_sec": 0.030,     # Shortest plausible S1 sound duration (10ms absolute floor).
-    "s1_nominal_sec": 0.080, # Typical S1 sound duration (~40ms).
+    "s1_nominal_sec": 0.080, # Typical S1 sound duration (~80ms).
     "s1_max_sec": 0.120,     # Longest plausible S1 sound (beyond this it blurs into systole).
     "s2_min_sec": 0.030,     # Shortest plausible S2 sound duration (10ms absolute floor).
-    "s2_nominal_sec": 0.080, # S2 is generally shorter and softer than S1 (~30ms typical).
+    "s2_nominal_sec": 0.080, # S2 is generally shorter and softer than S1 (~80ms typical).
     "s2_max_sec": 0.120,     # Longest plausible S2 sound.
-    # BPM-dependent expected S1-S2 (Weissler: https://www.desmos.com/calculator/ebqshptip0)
+    # BPM-dependent expected systole (S1→S2) (Weissler: https://www.desmos.com/calculator/ebqshptip0)
     "s1_s2_expected_weissler_ref_et_ms": 320, # Reference ejection time (ms) at ref_bpm.
     "s1_s2_expected_weissler_ref_bpm": 60,    # BPM at which ref_et_ms is defined.
     "s1_s2_expected_weissler_slope_ms_per_bpm": 1.26,  # ET decrease (ms) per BPM.
@@ -108,7 +108,7 @@ DEFAULT_PARAMS = {
     "penalty_amount_max": 0.30,             # Subtractive confidence penalty for a "bad" pair in an unstable section.
     "forward_look_drop_threshold": 0.4,     # If next peak < 60% of S2, it's suspicious
     "forward_look_max_penalty": 0.4,        # Max penalty for this scenario
-    "pairing_rr_penalty_max": 0.25,         # Multiplicative penalty for RR mismatch vs 60/BPM when evaluating an S1-S2 pair.
+    "pairing_rr_penalty_max": 0.25,         # Multiplicative penalty for RR mismatch vs 60/BPM when evaluating an S1→S2 (systole) pair.
     # Contractility: S1/S2 prominence ratio. Expected from history (past N pairs) or BPM power-curve fallback.
     "contractility_expected_use_history": True,   # If True, expected S1/S2 = mean of last N accepted pairs; else BPM power curve.
     "contractility_expected_history_count": 8,   # Number of past S1/S2 ratios to average.
@@ -138,9 +138,9 @@ DEFAULT_PARAMS = {
     "interval_v_short_ramp_end_fraction": 0.4,  # Left: below this fraction of expected → hard reject; ramp from here up to left zero-crossing.
     "interval_v_long_ramp_end_fraction": 2.0,   # Right: ramp from right zero-crossing to this × expected → full penalty.
     "interval_v_long_reject_fraction": 2.5,     # Right: above this × expected → hard reject.
-    # Expected S1-S2 from past pairs (when enabled, overrides BPM-based expected for the V-shape)
-    "s1_s2_expected_use_history": True,         # If True, expected = mean of last N accepted S1-S2 intervals; else BPM-based.
-    "s1_s2_expected_history_count": 10,        # Number of past S1-S2 intervals to average.
+    # Expected systole (S1→S2) from past pairs (when enabled, overrides BPM-based expected for the V-shape)
+    "s1_s2_expected_use_history": True,         # If True, expected = mean of last N accepted systole (S1→S2) intervals; else BPM-based.
+    "s1_s2_expected_history_count": 10,        # Number of past systole (S1→S2) intervals to average.
     "s1_s2_expected_history_min": 1,           # Minimum history length before using average (else fallback to BPM).
 
     # =================================================================================
@@ -168,54 +168,30 @@ DEFAULT_PARAMS = {
     "lone_s1_missed_beat_tolerance_frac": 0.22,  # |span − m×RR| / (m×RR) must be ≤ this (m = k+1).
 
     # =================================================================================
-    # 6. Pass 3 — Correction + dense state timeline (bridge to Pass 4)
+    # 6. Pass 3 — Dense state timeline from Pass 2 (spectral S2 / Pass A–C / emissions removed; see pass3 archived logic.md)
     # =================================================================================
-    # pass3's job is to generate the state sequence based on data from pass2. then correct that sequence.
-    #
 
-    # --- 6.1 S2 spectral-profile alignment (global; not “outside the loop” only — also Pass A, B/C rebuilds, final paint) ---
-    "pass3_align_s2_to_s2_spectral_profile": False,  # If True, slide FFT vs S2 spectral template to refine S2 time; if False, nominal ejection-time index only. HF-noise beats still skip alignment per cycle.
-    "pass3_align_s2_window_ms": 120.0,          # FFT search width for initial rebuild / Pass B–C rebuild / final paint (ms), ±half around nominal S2.
+    # --- 6.1 Noise repair (global modifier after the initial timeline exists) ---
+    # If enabled and HF-noise windows exist: clear state labels inside those spans and rebuild the full S1→systole→S2→diastole sequence.
+    "pass3_enable_noise_repair": True,
 
-    # --- 6.2 HF-noise — four-phase cardiac layout from interpolated BPM (noise_event_segments) ---
-    "pass3_enable_noise_repair": True,          # If True and noise_event_segments exist, BPM-based partition for affected cycles before spectral alignment; LT BPM masked in noise then interpolated.
+    # --- 6.2 Insert missing states in large gaps (state-level) ---
+    "pass3_enable_gap_state_insert": True,  # If True, long single-state spans get surplus tail regenerated via the same logic as noise rebuild.
 
-    # --- 6.3 Correction loop (A→B→C) — iteration cap + Pass A–only search width (pass3_align_s2_to_s2_spectral_profile still applies in Pass A) ---
-    "pass3_correction_max_iters": 200,          # Max rounds of A→B→C; use 0 to skip the loop entirely. Higher fixes more disjoint issues; risks over-correction.
-    "pass3_resnap_s2_window_ms": 220.0,         # Pass A only: FFT search width when re-snapping S2 for implausible systole (wider = search farther).
-    "pass3_systole_slack_frac": 0.15,           # Pass A: tolerate systole this much shorter/longer vs BPM bounds before calling it “bad” (higher = fewer resnaps).
-    "pass3_diastole_slack_frac": 0.20,          # Pass A diagnostics + Pass C: diastole “too short” threshold slack (higher = fewer flip/demote triggers).
+    # --- 6.2.1 Large-gap peak recovery + anchor snapping ---
+    # Reruns a more sensitive peak detector inside Pass 3 large-gap windows, then shifts
+    # rebuilt S1/S2 segment boundaries to align with those recovered peaks (fill first, then shift).
+    "pass3_enable_gap_peak_recovery": True,
+    "pass3_gap_recovery_peak_prominence_quantile_insensitive": 0.70,  # Higher = fewer peaks, more likely real S1/S2.
+    "pass3_gap_recovery_peak_prominence_quantile_sensitive": 0.40,    # Lower = more peaks; used as an "anything at all here?" scan.
+    "pass3_gap_recovery_height_scale": 0.85,              # Multiply dynamic noise-floor threshold (if available).
+    "pass3_gap_snap_window_ms": 100.0,                     # Search radius (ms) around each synthetic S1/S2 center when snapping to a recovered peak.
 
-    # --- 6.4 Pass B — insert missing S1 in long RR ---
-    "pass3_enable_insert_missing_s1": False,      # True = may add S1 in obvious gap spans (recall vs false-insert risk).
-    "pass3_rr_too_long_frac": 1.7,              # RR must exceed this × expected RR to consider an insert (lower = insert more aggressively).
-    "pass3_gap_fill_max_duration_sec": 10.0,    # Skip insert logic when RR exceeds this (likely dropout, not missed beat).
-    "pass3_insert_s1_search_window_ms": 180.0,  # Total width (ms); ±half around expected beat for raw-peak insert search.
-    "pass3_insert_use_spectrum": False,         # If True, allow S1 template search when no raw peak in window.
-    "pass3_insert_spectrum_stride_ms": 5.0,     # Template search step (ms); smaller = finer, slower.
-    "pass3_insert_spectrum_min_margin": 0.15,   # Min best-vs-second score gap to accept spectral insert.
-    "pass3_insert_spectrum_envelope_margin": 1.05,  # Require envelope ≥ this × dynamic noise floor at candidate; ≤0 disables.
-    "pass3_insert_spectrum_target_sr": None,     # None = WAV native SR for insert template; or set e.g. 32000 to match fft_aggregate_sr.
-
-    # --- 6.5 Pass C — phase / sequence fixes (false S1, S1↔S2 flip, faint S2) ---
-    "pass3_enable_phase_correction": False,     # Master switch for Pass C.
-    "pass3_phase_min_score_delta": 0.15,        # Peak must win label_scores by this much to demote/remove (higher = only obvious fixes).
-    # Pass C.1 short-RR false S1: uses diastole_min from §4.1 (min_diastole_nominal_frac / min_diastole_sec), not a separate pass3_rr_too_short_frac.
-    "pass3_local_peak_window_ms": 100.0,        # Total width (ms); ±half for sensitive local-peak hunt (Pass C.3 / helpers).
-    "pass3_local_peak_sensitivity_factor": 0.6, # vs dynamic noise floor; lower = more sensitive peaks, more false positives.
-    "pass3_s2_spectral_min_templates": 3,      # Min paired S2 templates before any spectral S2 path runs (insert context).
-
-    # --- 6.6 Final state timeline — envelope boundary paint (after loop; also caps the “before” snapshot half-windows) ---
+    # --- 6.3 Final state timeline — envelope boundary paint ---
     "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.
     "pass3_state_s2_window_ms": 120.0,          # Same for S2.
     "pass3_state_edge_alpha": 0.03,             # Transient edge threshold as a fraction of weighted peak height (lower → wider S1/S2 regions).
     "pass3_state_edge_n_exp": 4.0,              # Super-Gaussian exponent for edge weighting (higher → harder cap at window edge). Keep ≤ peak_refine_super_gaussian_n.
-
-    # --- 6.7 Emissions for Pass 4 Viterbi (requires pass3_generate_emissions=True) ---
-    "pass3_generate_emissions": False,          # If True, fill analysis_data["pass3_emissions"] after the timeline is final.
-    "pass3_emission_spectral_tau": 5.0,       # Softmax temperature mapping spectral scores → probabilities.
-    "pass3_emission_gate_width_ms": 80.0,     # Gaussian width scale (ms) for bumps seeded at S1/S2 event times (wider = smoother spread).
-    "pass3_emission_noise_floor": 0.05,         # Baseline P(noise) added before normalizing emission rows.
 
     # =================================================================================
     # 7. Output, HRV & Reporting
@@ -234,11 +210,13 @@ DEFAULT_PARAMS = {
     "pass1_bpm_global_outlier_mad_k": 5.0,    # After local pass: global median ± k*MAD. Higher = less sensitive. Set <= 0 to disable this pass.
     "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2/3 instantaneous BPM: local MAD outlier removal.
     "pass2_instant_bpm_outlier_mad_k": 8,       # Local MADs for pass 2/3 instant BPM. Lower = more aggressive.
-    "pass1_bpm_loess_frac": 0.02,           # LOESS fraction for pass 1 BPM curve (lower = tighter fit).
-    "s1_s2_outlier_window_sec": 8.0,         # Half-window (seconds) for S1-S2 interval outlier removal: MAD in local time window.
-    "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for S1-S2 interval local outlier removal.
+    "pass1_bpm_gaussian_frac": 0.02,        # Used to derive Gaussian smoothing sigma for pass 1 BPM curve (smaller = tighter smoothing).
+    "pass1_bpm_loess_frac": 0.02,           # Deprecated alias for pass1_bpm_gaussian_frac (kept for backward compatibility).
+    "s1_s2_outlier_window_sec": 8.0,         # Half-window (seconds) for systole (S1→S2) outlier removal: MAD in local time window.
+    "s1_s2_outlier_mad_k": 2.5,             # Number of MADs for systole (S1→S2) local outlier removal.
     "s1_s2_global_outlier_mad_k": 5.0,     # After local pass: global median ± k*MAD on interval (s). Higher = less sensitive. <=0 disables.
-    "s1_s2_loess_frac": 0.05,               # LOESS fraction for S1-S2 interval best-fit curve.
+    "systole_gaussian_frac": 0.05,          # Used to derive Gaussian smoothing sigma for systole curve (smaller = tighter smoothing).
+    "s1_s2_loess_frac": 0.05,               # Deprecated alias for systole_gaussian_frac (kept for backward compatibility).
     "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
     # --- 7.1. Long Plot Optimization ---
@@ -258,7 +236,7 @@ DEFAULT_PARAMS = {
     "fft_separation_high_hz": 15000.0,            # High bound (Hz) for S1 vs S2 frequency separation vector.
 
     # =================================================================================
-    # 8. Pass 4 — Viterbi Holistic Decoder  (requires pass3_generate_emissions=True)
+    # 8. Pass 4 — Viterbi Holistic Decoder  (pass3_emissions generation removed; restore from pass3 archived logic.md if needed)
     # =================================================================================
     "enable_pass4": False,                          # Guard: off until implementation matures. Set True to run Viterbi after Pass 3.
     "pass4_transition_self_loop_weight": 0.85,      # Higher → decoder prefers longer state durations (more inertia). Lower → allows faster state transitions.

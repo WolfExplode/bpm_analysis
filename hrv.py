@@ -1,11 +1,11 @@
 import datetime
 import logging
-import warnings
 import numpy as np
-from numpy.exceptions import RankWarning
 import pandas as pd
 from scipy.signal import find_peaks, lombscargle
 from typing import List, Dict, Tuple, Optional
+
+from time_utils import dense_time_grid, STANDARD_DT_SEC
 
 _LOMB_FREQS: Optional[np.ndarray] = None
 _LOMB_ANGULAR: Optional[np.ndarray] = None
@@ -234,33 +234,56 @@ def calculate_global_hrv_frequency(
     }
 
 
-def _loess(
+def _gaussian_kernel_smooth(
     t_evals: np.ndarray,
     t_data: np.ndarray,
     y_data: np.ndarray,
-    frac: float = 0.2,
-    degree: int = 1,
+    sigma_sec: float,
 ) -> np.ndarray:
-    """LOESS: weighted local polynomial fit. For each t in t_evals, fit polynomial to nearby (t_data, y_data) with tricube weights; return fitted values."""
+    """
+    Gaussian kernel regression for irregular time series.
+
+    For each t in t_evals: y(t) = sum_i exp(-0.5 * ((t - t_i)/sigma)^2) * y_i / sum_i w_i
+    """
     t_evals = np.asarray(t_evals, dtype=float)
     t_data = np.asarray(t_data, dtype=float)
     y_data = np.asarray(y_data, dtype=float)
-    n = len(t_data)
-    k = max(degree + 1, min(n, int(np.ceil(frac * n))))
-    y_out = np.zeros(len(t_evals), dtype=float)
+    if len(t_data) == 0 or len(t_data) != len(y_data):
+        return np.zeros(len(t_evals), dtype=float)
+    sigma = float(sigma_sec)
+    if not np.isfinite(sigma) or sigma <= 1e-9:
+        # No smoothing; nearest-neighbor via interpolation fallback.
+        return np.interp(t_evals, t_data, y_data, left=float(y_data[0]), right=float(y_data[-1]))
+    y_out = np.empty(len(t_evals), dtype=float)
     for i, t in enumerate(t_evals):
-        dist = np.abs(t_data - t)
-        idx = np.argsort(dist)[:k]
-        d_max = float(dist[idx[-1]])
-        if d_max < 1e-9:
-            y_out[i] = float(np.mean(y_data[idx]))
+        d = (t_data - float(t)) / sigma
+        w = np.exp(-0.5 * d * d)
+        ws = float(np.sum(w))
+        if ws <= 1e-12:
+            y_out[i] = float(np.mean(y_data))
         else:
-            w = (1 - (dist[idx] / d_max) ** 3) ** 3
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RankWarning)
-                p = np.polyfit(t_data[idx], y_data[idx], degree, w=w)
-            y_out[i] = float(np.polyval(p, t))
+            y_out[i] = float(np.dot(w, y_data) / ws)
     return y_out
+
+
+def _gaussian_sigma_from_frac_and_spacing(
+    t_data: np.ndarray,
+    frac: float,
+) -> float:
+    """
+    Map a legacy curve \"frac\" to an approximate Gaussian sigma in seconds.
+    Uses median sample spacing * (frac*n) as an effective span; sigma ~ span/3.
+    """
+    t_data = np.asarray(t_data, dtype=float)
+    if len(t_data) < 3:
+        return 1.0
+    dt = np.diff(np.sort(t_data))
+    dt = dt[np.isfinite(dt) & (dt > 1e-9)]
+    med_dt = float(np.median(dt)) if len(dt) else 1.0
+    n = len(t_data)
+    k = max(3, int(np.ceil(float(frac) * n)))
+    span = med_dt * float(k)
+    return max(0.25 * med_dt, span / 3.0)
 
 
 def compute_pass1_bpm_curve(
@@ -268,10 +291,10 @@ def compute_pass1_bpm_curve(
 ) -> Optional[Dict[str, np.ndarray]]:
     """
     Canonical pass 1 BPM curve: instant BPM from anchor beats, local then global outlier removal
-    (median+MAD; global pass skipped if pass1_bpm_global_outlier_mad_k <= 0), then LOESS. Used for the
+    (median+MAD; global pass skipped if pass1_bpm_global_outlier_mad_k <= 0), then light Gaussian smoothing. Used for the
     time-varying prior, recovery phase, and all plots so display
     matches algorithm input.
-    Returns dict with curve_times, curve_bpm (dense LOESS), scatter_times, scatter_bpm (filtered instant),
+    Returns dict with curve_times, curve_bpm (dense Gaussian-smoothed), scatter_times, scatter_bpm (filtered instant),
     raw_scatter_times, raw_scatter_bpm (instant BPM before any outlier removal), or None if insufficient data.
     """
     if anchor_beats is None or len(anchor_beats) < 2:
@@ -302,9 +325,15 @@ def compute_pass1_bpm_curve(
     if len(scatter_times) < 3:
         return None
 
-    loess_frac = float(params.get("pass1_bpm_loess_frac", 0.2))
-    curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
-    curve_bpm = _loess(curve_times, scatter_times, scatter_bpm, frac=loess_frac)
+    gaussian_frac = float(params.get(
+        "pass1_bpm_gaussian_frac",
+        params.get("pass1_bpm_loess_frac", 0.2),
+    ))
+    # Canonical dense curve on the standardized dt raster.
+    curve_times = dense_time_grid(float(scatter_times.max()), STANDARD_DT_SEC)
+    curve_times = curve_times[curve_times >= float(scatter_times.min())]
+    sigma_sec = _gaussian_sigma_from_frac_and_spacing(scatter_times, gaussian_frac)
+    curve_bpm = _gaussian_kernel_smooth(curve_times, scatter_times, scatter_bpm, sigma_sec)
 
     return {
         "curve_times": curve_times,
@@ -316,13 +345,18 @@ def compute_pass1_bpm_curve(
     }
 
 
-def compute_s1_s2_interval_curve(
+def compute_systole_interval_curve(
     obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
 ) -> Optional[Dict[str, np.ndarray]]:
     """
     Outlier removal: local median+MAD in time window, then global median+MAD on intervals
-    (skipped if s1_s2_global_outlier_mad_k <= 0), then LOESS on measured S1-S2 intervals.
-    Returns dict with curve_times, curve_intervals (LOESS), scatter_times, scatter_intervals (filtered),
+    (skipped if systole_global_outlier_mad_k <= 0), then light Gaussian smoothing on measured systole intervals.
+
+    Notes:
+    - "S1→S2 interval" and "systole duration" are treated as the same quantity in this pipeline.
+    - Parameter keys accept both the preferred `systole_*` names and legacy `s1_s2_*` names.
+
+    Returns dict with curve_times, curve_intervals (Gaussian-smoothed), scatter_times, scatter_intervals (filtered),
     or None if insufficient data.
     """
     if obs_times is None or obs_intervals is None or len(obs_times) != len(obs_intervals) or len(obs_times) < 3:
@@ -331,13 +365,13 @@ def compute_s1_s2_interval_curve(
     obs_intervals = np.asarray(obs_intervals, dtype=float)
 
     # Outlier removal: keep point if within median ± k*MAD in local time window
-    half_window_sec = float(params.get("s1_s2_outlier_window_sec", 8.0))
-    mad_k = float(params.get("s1_s2_outlier_mad_k", 2.5))
+    half_window_sec = float(params.get("systole_outlier_window_sec", params.get("s1_s2_outlier_window_sec", 8.0)))
+    mad_k = float(params.get("systole_outlier_mad_k", params.get("s1_s2_outlier_mad_k", 2.5)))
     keep = _median_mad_keep_mask_time_window(obs_times, obs_intervals, half_window_sec, mad_k)
     scatter_times = obs_times[keep]
     scatter_intervals = obs_intervals[keep]
 
-    global_mad_k = float(params.get("s1_s2_global_outlier_mad_k", 5.0))
+    global_mad_k = float(params.get("systole_global_outlier_mad_k", params.get("s1_s2_global_outlier_mad_k", 5.0)))
     if global_mad_k > 0 and len(scatter_intervals) > 0:
         gkeep = _median_mad_keep_mask_global(scatter_intervals, global_mad_k)
         scatter_times = scatter_times[gkeep]
@@ -346,9 +380,13 @@ def compute_s1_s2_interval_curve(
     if len(scatter_times) < 3:
         return None
 
-    loess_frac = float(params.get("s1_s2_loess_frac", 0.05))
+    gaussian_frac = float(params.get(
+        "systole_gaussian_frac",
+        params.get("systole_loess_frac", params.get("s1_s2_loess_frac", 0.05)),
+    ))
     curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
-    curve_intervals = _loess(curve_times, scatter_times, scatter_intervals, frac=loess_frac)
+    sigma_sec = _gaussian_sigma_from_frac_and_spacing(scatter_times, gaussian_frac)
+    curve_intervals = _gaussian_kernel_smooth(curve_times, scatter_times, scatter_intervals, sigma_sec)
 
     return {
         "curve_times": curve_times,
@@ -356,6 +394,13 @@ def compute_s1_s2_interval_curve(
         "scatter_times": scatter_times,
         "scatter_intervals": scatter_intervals,
     }
+
+
+def compute_s1_s2_interval_curve(
+    obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
+) -> Optional[Dict[str, np.ndarray]]:
+    """Legacy alias for `compute_systole_interval_curve`."""
+    return compute_systole_interval_curve(obs_times, obs_intervals, params)
 
 
 def filter_instant_bpm_mad(
@@ -403,12 +448,13 @@ def smooth_bpm_series_from_instant(
         return pd.Series(dtype=np.float64), np.array([]), np.array([])
     bpm_times = np.asarray(bpm_times, dtype=float)
     instant_bpm = np.asarray(instant_bpm, dtype=float)
+    smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
+    # Gaussian sigma chosen so that ±3σ spans roughly the same width as the old rolling window.
+    sigma_sec = max(0.05, smoothing_window_sec / 3.0)
+    smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
     start_time = datetime.datetime.fromtimestamp(0)
     valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
-    bpm_series = pd.Series(instant_bpm, index=valid_peak_times_dt)
-    smoothing_window_sec = params["output_smoothing_window_sec"]
-    smoothing_window_str = f"{smoothing_window_sec}s"
-    smoothed_bpm = bpm_series.rolling(window=smoothing_window_str, min_periods=1, center=True).mean()
+    smoothed_bpm = pd.Series(smoothed_vals, index=valid_peak_times_dt)
     return smoothed_bpm, bpm_times, instant_bpm
 
 
@@ -424,17 +470,16 @@ def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> T
 
     instant_bpm = np.asarray(60.0 / time_diffs[valid_diffs], dtype=float)
     bpm_times = peak_times[1:][valid_diffs]
-    start_time = datetime.datetime.fromtimestamp(0)
-    valid_peak_times_dt = [start_time + datetime.timedelta(seconds=t) for t in bpm_times]
-    bpm_series = pd.Series(instant_bpm, index=valid_peak_times_dt)
     avg_heart_rate = np.median(instant_bpm)
-    if avg_heart_rate > 0:
-        smoothing_window_sec = params['output_smoothing_window_sec']
-        smoothing_window_str = f"{smoothing_window_sec}s"
-        smoothed_bpm = bpm_series.rolling(window=smoothing_window_str, min_periods=1, center=True).mean()
-    else:
-        smoothed_bpm = pd.Series(dtype=np.float64)
+    if avg_heart_rate <= 0:
+        return pd.Series(dtype=np.float64), bpm_times, instant_bpm
 
+    smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
+    sigma_sec = max(0.05, smoothing_window_sec / 3.0)
+    smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
+    start_time = datetime.datetime.fromtimestamp(0)
+    valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
+    smoothed_bpm = pd.Series(smoothed_vals, index=valid_peak_times_dt)
     return smoothed_bpm, bpm_times, instant_bpm
 
 
@@ -469,17 +514,16 @@ def calculate_bpm_series_from_s1_state_labels(
 
     instant_bpm = np.asarray(60.0 / time_diffs[valid_diffs], dtype=float)
     bpm_times = peak_times[1:][valid_diffs]
+    avg_heart_rate = np.median(instant_bpm)
+    if avg_heart_rate <= 0:
+        return pd.Series(dtype=np.float64), bpm_times, instant_bpm
+
+    smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
+    sigma_sec = max(0.05, smoothing_window_sec / 3.0)
+    smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
     start_time = datetime.datetime.fromtimestamp(0)
     valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
-    bpm_series = pd.Series(instant_bpm, index=valid_peak_times_dt)
-    avg_heart_rate = np.median(instant_bpm)
-    if avg_heart_rate > 0:
-        smoothing_window_sec = params["output_smoothing_window_sec"]
-        smoothing_window_str = f"{smoothing_window_sec}s"
-        smoothed_bpm = bpm_series.rolling(window=smoothing_window_str, min_periods=1, center=True).mean()
-    else:
-        smoothed_bpm = pd.Series(dtype=np.float64)
-
+    smoothed_bpm = pd.Series(smoothed_vals, index=valid_peak_times_dt)
     return smoothed_bpm, bpm_times, instant_bpm
 
 
@@ -633,13 +677,17 @@ def calculate_hrr(smoothed_bpm_series: pd.Series, interval_sec: int = 60) -> Opt
             'interval_sec': interval_sec}
 
 
-def find_recovery_phase(bpm_series: pd.Series, bpm_times_sec: np.ndarray, params: Dict) -> Tuple[Optional[float], Optional[float]]:
+def find_recovery_phase(bpm_values: np.ndarray, bpm_times_sec: np.ndarray, params: Dict) -> Tuple[Optional[float], Optional[float]]:
     """Analyzes a pass 1 BPM series to find the peak heart rate and define the subsequent recovery phase window.
     Returns (None, None) if BPM stays low (no exertion/recovery), so recovery-phase adjust is not applied."""
     if bpm_times_sec is None or len(bpm_times_sec) < 2:
         logging.warning("Not enough pass 1 beats to determine a recovery phase.")
         return None, None
-    bpm_values = bpm_series.to_numpy()
+    bpm_values = np.asarray(bpm_values, dtype=np.float64)
+    bpm_times_sec = np.asarray(bpm_times_sec, dtype=np.float64)
+    if len(bpm_values) < 2 or len(bpm_values) != len(bpm_times_sec):
+        logging.warning("Pass 1 BPM curve has inconsistent lengths; cannot determine recovery phase.")
+        return None, None
     peak_idx = np.argmax(bpm_values)
     peak_bpm = float(bpm_values[peak_idx])
     min_peak_bpm = params.get("recovery_phase_min_peak_bpm", 95.0)

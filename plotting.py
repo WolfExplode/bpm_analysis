@@ -17,7 +17,7 @@ from plotly.subplots import make_subplots
 
 from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path, strip_output_filename_emojis
 from confidence_engine import calculate_bpm_intervals
-from hrv import compute_s1_s2_interval_curve
+from hrv import compute_systole_interval_curve
 
 import librosa
 import librosa.display
@@ -95,10 +95,10 @@ def _compute_systolic_interval_data(
     params: Dict,
 ) -> Tuple[List[float], List[float], List[float], List[float]]:
     """
-    Compute measured S1-S2 intervals from labeled pairs and BPM-expected systolic curve.
+    Compute measured systole intervals from labeled pairs and BPM-expected systolic curve.
     Returns (observed_times, observed_intervals, expected_times, expected_intervals).
     """
-    # Measured S1-S2 intervals from labeled pairs
+    # Measured systole intervals from labeled pairs
     pairs = analysis_data.get("s1_s2_pairs") or []
     observed_times: List[float] = []
     observed_intervals: List[float] = []
@@ -113,13 +113,111 @@ def _compute_systolic_interval_data(
     bpm_times = pass_metrics.get("bpm_times")
     expected_times: List[float] = []
     expected_intervals: List[float] = []
-    if smoothed_bpm is not None and bpm_times is not None:
-        for t, bpm in zip(bpm_times, smoothed_bpm.values):
+    if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm):
+        for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
             intervals = calculate_bpm_intervals(float(bpm), params)
             expected_times.append(float(t))
             expected_intervals.append(intervals["s1_s2_nominal"])
 
     return observed_times, observed_intervals, expected_times, expected_intervals
+
+
+def _compute_measured_systole_from_state_boundaries(
+    analysis_data: Dict,
+    sample_rate: int,
+    *,
+    prefer: str = "after",
+) -> Tuple[List[float], List[float]]:
+    """
+    Compute measured systole durations from Pass 3 dense state boundaries.
+    Returns (times, durations) in seconds, where time is the segment midpoint.
+    """
+    if prefer == "before":
+        boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+    else:
+        boundaries = analysis_data.get("pass3_state_boundaries") or []
+        if not boundaries:
+            boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+
+    measured_times: List[float] = []
+    measured_durations: List[float] = []
+    for s0, s1, state_name, _meta in (boundaries or []):
+        try:
+            if str(state_name).lower() != "systole":
+                continue
+            s0i = int(s0)
+            s1i = int(s1)
+            if s1i <= s0i:
+                continue
+            t_mid = (s0i + s1i) / 2.0 / float(sample_rate)
+            dur = (s1i - s0i) / float(sample_rate)
+            if not np.isfinite(t_mid) or not np.isfinite(dur):
+                continue
+            measured_times.append(float(t_mid))
+            measured_durations.append(float(dur))
+        except Exception:
+            continue
+
+    return measured_times, measured_durations
+
+
+def _compute_measured_diastole_from_state_boundaries(
+    analysis_data: Dict,
+    sample_rate: int,
+    *,
+    prefer: str = "after",
+) -> Tuple[List[float], List[float]]:
+    """
+    Compute measured diastole durations from Pass 3 dense state boundaries.
+    Returns (times, durations) in seconds, where time is the segment midpoint.
+    """
+    if prefer == "before":
+        boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+    else:
+        boundaries = analysis_data.get("pass3_state_boundaries") or []
+        if not boundaries:
+            boundaries = analysis_data.get("pass3_state_boundaries_before") or []
+
+    measured_times: List[float] = []
+    measured_durations: List[float] = []
+    for s0, s1, state_name, _meta in (boundaries or []):
+        try:
+            if str(state_name).lower() != "diastole":
+                continue
+            s0i = int(s0)
+            s1i = int(s1)
+            if s1i <= s0i:
+                continue
+            t_mid = (s0i + s1i) / 2.0 / float(sample_rate)
+            dur = (s1i - s0i) / float(sample_rate)
+            if not np.isfinite(t_mid) or not np.isfinite(dur):
+                continue
+            measured_times.append(float(t_mid))
+            measured_durations.append(float(dur))
+        except Exception:
+            continue
+
+    return measured_times, measured_durations
+
+
+def _compute_expected_diastole_from_bpm(
+    pass_metrics: Dict,
+    params: Dict,
+) -> Tuple[List[float], List[float]]:
+    """
+    Compute expected diastole (S2→next S1) from BPM over time.
+    Returns (times, durations) in seconds.
+    """
+    smoothed_bpm = pass_metrics.get("smoothed_bpm")
+    bpm_times = pass_metrics.get("bpm_times")
+    expected_times: List[float] = []
+    expected_durations: List[float] = []
+    if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm):
+        for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
+            intervals = calculate_bpm_intervals(float(bpm), params)
+            expected_times.append(float(t))
+            expected_durations.append(float(intervals["s2_s1_nominal"]))
+    return expected_times, expected_durations
 
 
 def _compute_systolic_shift(
@@ -130,7 +228,7 @@ def _compute_systolic_shift(
     peak_bpm_time_sec: Optional[float],
 ) -> Optional[float]:
     """
-    Compute shift to align expected S1-S2 curve to measured data.
+    Compute shift to align expected systole curve to measured data.
     If peak_bpm_time_sec: use exertion only (t < peak). Else: average across all time.
     Returns shift (measured_avg - expected_avg) or None if insufficient data.
     """
@@ -281,6 +379,10 @@ class Plotter:
         self._pass3_state_boundaries_before = analysis_data.get("pass3_state_boundaries_before") or []
         self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
         self._noise_event_segments = analysis_data.get("noise_event_segments") or []
+        self._pass3_large_gap_windows_samples = analysis_data.get("pass3_large_gap_windows_samples") or []
+        self._pass3_gap_quiet_windows_samples = analysis_data.get("pass3_gap_quiet_windows_samples") or []
+        self._pass3_large_gap_recovered_peaks_insensitive = analysis_data.get("pass3_large_gap_recovered_peaks_insensitive") or []
+        self._pass3_large_gap_recovered_peaks_sensitive = analysis_data.get("pass3_large_gap_recovered_peaks_sensitive") or []
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
@@ -296,6 +398,7 @@ class Plotter:
             audio_envelope,
             analysis_data.get("trough_indices"),
         )
+        self._add_pass3_large_gap_recovered_peak_markers(audio_envelope)
         self._add_bpm_hrv_traces(
             pass_metrics.get("smoothed_bpm"),
             analysis_data,
@@ -318,6 +421,7 @@ class Plotter:
             pass_metrics.get("peak_exertion_stats"),
         )
         self._add_annotations_and_summary(
+            pass_metrics.get("bpm_times"),
             pass_metrics.get("smoothed_bpm"),
             pass_metrics.get("hrv_summary"),
             pass_metrics.get("hrr_stats"),
@@ -406,7 +510,7 @@ class Plotter:
         if output_options is None or output_options.get("csv", True):
             smoothed_bpm = pass_metrics.get("smoothed_bpm")
             bpm_times = pass_metrics.get("bpm_times")
-            if smoothed_bpm is not None and not smoothed_bpm.empty and bpm_times is not None:
+            if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm) and len(bpm_times) > 0:
                 csv_path = os.path.join(self.output_directory, f"{base_name}{file_suffix}.csv")
                 csv_bpm_header = (
                     "BPM (Pass 2)"
@@ -419,7 +523,7 @@ class Plotter:
                     with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
                         writer = csv.writer(csvfile)
                         writer.writerow(["Time (s)", csv_bpm_header])
-                        for t, bpm in zip(bpm_times, smoothed_bpm.values):
+                        for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
                             if not np.isnan(bpm):
                                 writer.writerow([f"{t:.3f}", f"{bpm:.3f}"])
                     logging.info(f"BPM plot data saved to {csv_path}")
@@ -441,7 +545,7 @@ class Plotter:
     ):
         """
         Builds and saves the pass 1 plot: envelope, anchor beats, BPM scatter + curve (canonical, same as algorithm), and BPM Trend (Belief).
-        pass1_bpm_data: dict from compute_pass1_bpm_curve: raw_scatter_* (instant BPM), scatter_* (outlier-filtered), curve_* (LOESS on filtered).
+        pass1_bpm_data: dict from compute_pass1_bpm_curve: raw_scatter_* (instant BPM), scatter_* (outlier-filtered), curve_* (Gaussian smoothing on filtered).
         """
         self.time_axis_sec = np.arange(len(audio_envelope), dtype=float) / self.sample_rate
         self.audio_duration_sec = float(self.time_axis_sec[-1]) if len(self.time_axis_sec) > 0 else 0.0
@@ -602,14 +706,16 @@ class Plotter:
         if not has_pass1_bpm_markers:
             self.bpm_axis_center = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
 
-        # BPM Trend (Belief) from pass 1 (EMA from accepted beats during that run)
-        if pass1_analysis_data and "long_term_bpm_series" in pass1_analysis_data and not pass1_analysis_data["long_term_bpm_series"].empty:
-            lt_series = pass1_analysis_data["long_term_bpm_series"]
-            lt_times_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(lt_series.index, dtype=np.float64))
+        # BPM Trend (Belief) (canonical: dense raster at STANDARD_DT_SEC).
+        if pass1_analysis_data and "pass2_lt_bpm_times" in pass1_analysis_data and "pass2_lt_bpm" in pass1_analysis_data:
+            lt_times = np.asarray(pass1_analysis_data["pass2_lt_bpm_times"], dtype=np.float64)
+            lt_vals = np.asarray(pass1_analysis_data["pass2_lt_bpm"], dtype=np.float64)
+            if len(lt_times) >= 2 and len(lt_times) == len(lt_vals):
+                lt_times_dt = _elapsed_seconds_to_plot_datetimes(lt_times)
             fig.add_trace(
                 go.Scatter(
                     x=lt_times_dt,
-                    y=lt_series.values,
+                    y=lt_vals,
                     name="BPM Trend (Belief)",
                     mode="lines",
                     line=dict(color="orange", width=2),
@@ -652,8 +758,8 @@ class Plotter:
         hrv_summary = pass_metrics.get("hrv_summary") or {}
         avg_bpm = hrv_summary.get("avg_bpm")
         smoothed_bpm = pass_metrics.get("smoothed_bpm")
-        if avg_bpm is None and smoothed_bpm is not None and not smoothed_bpm.empty:
-            avg_bpm = float(smoothed_bpm.mean())
+        if avg_bpm is None and smoothed_bpm is not None and len(smoothed_bpm) > 0:
+            avg_bpm = float(np.nanmean(np.asarray(smoothed_bpm, dtype=float)))
         if avg_bpm is None:
             avg_bpm = float(self.params.get("default_bpm_axis_center", self.bpm_axis_center))
         self.bpm_axis_center = float(avg_bpm)
@@ -726,7 +832,7 @@ class Plotter:
         if getattr(self, "_has_systolic_traces", False):
             self.fig.update_layout(
                 yaxis3=dict(
-                    title="Systolic Interval (s)",
+                    title="Phase Interval (s)",
                     overlaying="y",
                     anchor="free",
                     side="right",
@@ -953,6 +1059,58 @@ class Plotter:
             s1_peaks["indices"], s2_peaks["indices"], audio_envelope, trough_indices
         )
 
+    def _add_pass3_large_gap_recovered_peak_markers(self, audio_envelope: np.ndarray) -> None:
+        """Pass 3 debug: markers for peaks re-detected at higher sensitivity inside large-gap windows."""
+        if getattr(self, "skip_detailed_debug_traces", False):
+            return
+        def _add(rec, name, color):
+            if not rec:
+                return
+            try:
+                indices = np.asarray(rec, dtype=np.int64)
+            except Exception:
+                return
+            if indices.size == 0:
+                return
+            # Clip to array bounds
+            n = int(len(audio_envelope))
+            indices = indices[(indices >= 0) & (indices < n)]
+            if indices.size == 0:
+                return
+
+            customdata = []
+            for ix in indices.tolist():
+                try:
+                    customdata.append(
+                        f"<b>Type:</b> {name}<br>"
+                        f"<b>Time:</b> {float(ix) / float(self.sample_rate):.2f}s<br>"
+                        f"<b>Amp:</b> {float(audio_envelope[int(ix)]):.0f}"
+                    )
+                except Exception:
+                    customdata.append(f"<b>Type:</b> {name}")
+            hovertemplate = "%{customdata}<extra></extra>"
+            self._add_peak_marker_trace(
+                indices=indices.tolist(),
+                customdata=customdata,
+                name=name,
+                color=color,
+                symbol="triangle-up-open",
+                size=8,
+                audio_envelope=audio_envelope,
+                hovertemplate=hovertemplate,
+            )
+
+        _add(
+            getattr(self, "_pass3_large_gap_recovered_peaks_insensitive", None) or [],
+            "Recovered peaks at large gaps (insensitive)",
+            "#b07cff",
+        )
+        _add(
+            getattr(self, "_pass3_large_gap_recovered_peaks_sensitive", None) or [],
+            "Recovered peaks at large gaps (sensitive)",
+            "#67d1ff",
+        )
+
     def _average_prominence_by_time_segment(
         self, times_sec: np.ndarray, proms: np.ndarray, segment_sec: float
     ) -> tuple:
@@ -1067,8 +1225,10 @@ class Plotter:
             """
             Pass 2 debug: plot per-peak label_scores (S1/S2/noise) as percentage traces (0–100)
             on the same axis as BPM (secondary_y=True).
+
+            Also included on the Pass 3 plot since Pass 3 consumes these scores.
             """
-            if output_suffix != "_pass2":
+            if output_suffix not in ("_pass2", "_pass3"):
                 return
             debug_info = (analysis_data or {}).get("peak_classifications") or {}
             if not isinstance(debug_info, dict) or not debug_info:
@@ -1127,10 +1287,14 @@ class Plotter:
             bpm_trace_name = "BPM (Pass 3)"
         else:
             bpm_trace_name = "Average BPM"
-        if smoothed_bpm is not None and not smoothed_bpm.empty:
+        if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm) and len(bpm_times) > 0:
+            bpm_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times, dtype=np.float64))
             self.fig.add_trace(
                 go.Scatter(
-                    x=smoothed_bpm.index, y=smoothed_bpm.values, name=bpm_trace_name, line=dict(color="#4a4a4a", width=3)
+                    x=bpm_dt,
+                    y=np.asarray(smoothed_bpm, dtype=np.float64),
+                    name=bpm_trace_name,
+                    line=dict(color="#4a4a4a", width=3),
                 ),
                 secondary_y=True,
             )
@@ -1198,7 +1362,7 @@ class Plotter:
         # Prior BPM curve: pass 1 on pass 2 plot, pass 2 on pass 3 plot
         if (
             pass1_bpm_series is not None
-            and not pass1_bpm_series.empty
+            and len(pass1_bpm_series) > 0
             and pass1_bpm_times is not None
             and len(pass1_bpm_times) == len(pass1_bpm_series)
         ):
@@ -1207,7 +1371,7 @@ class Plotter:
             self.fig.add_trace(
                 go.Scatter(
                     x=pass1_times_dt,
-                    y=pass1_bpm_series.values,
+                    y=np.asarray(pass1_bpm_series, dtype=np.float64),
                     name=prior_curve_name,
                     line=dict(color="orange", width=2),
                     visible="legendonly",
@@ -1254,12 +1418,19 @@ class Plotter:
         pass_metrics: Dict,
         output_suffix: Optional[str],
     ) -> None:
-        """Add BPM-expected systolic curve, measured S1-S2 datapoints (outlier-filtered), and best-fit curve on yaxis3 (Pass 2 and Pass 3 only)."""
+        """Add BPM-expected systole curve, measured systole datapoints (outlier-filtered), and best-fit curve on yaxis3 (Pass 2 and Pass 3 only)."""
         if output_suffix not in ("_pass2", "_pass3"):
             return
         obs_t, obs_iv, exp_t, exp_iv = _compute_systolic_interval_data(
             analysis_data, pass_metrics, self.sample_rate, self.params
         )
+        measured_timeline_t, measured_timeline_iv = _compute_measured_systole_from_state_boundaries(
+            analysis_data, self.sample_rate, prefer="after"
+        )
+        measured_diastole_t, measured_diastole_iv = _compute_measured_diastole_from_state_boundaries(
+            analysis_data, self.sample_rate, prefer="after"
+        )
+        exp_dia_t, exp_dia_iv = _compute_expected_diastole_from_bpm(pass_metrics, self.params)
         if not exp_t and not obs_t:
             return
         to_dt = lambda seq: _elapsed_seconds_to_plot_datetimes(np.asarray(seq, dtype=np.float64))
@@ -1275,15 +1446,77 @@ class Plotter:
                 go.Scatter(
                     x=to_dt(exp_t),
                     y=plot_exp_iv,
-                    name="Expected S1-S2 from BPM",
+                    name="Expected systole from BPM",
                     line=dict(color="cyan", width=2),
                     yaxis="y3",
                     visible="legendonly",
                 ),
             )
+        if exp_dia_t:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(exp_dia_t),
+                    y=exp_dia_iv,
+                    name="Expected diastole from BPM",
+                    line=dict(color="#66d9ff", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if measured_timeline_t:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(measured_timeline_t),
+                    y=measured_timeline_iv,
+                    name="Measured systole",
+                    mode="markers",
+                    marker=dict(size=5, color="#b07cff", symbol="diamond"),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if measured_diastole_t:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(measured_diastole_t),
+                    y=measured_diastole_iv,
+                    name="Measured diastole",
+                    mode="markers",
+                    marker=dict(size=5, color="#55d68d", symbol="triangle-up"),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        # Cleaned & smoothed systole/diastole curves used by noise-repair rebuild.
+        _pre_sys_t   = analysis_data.get("pass3_measured_systole_t")
+        _pre_sys_dur = analysis_data.get("pass3_measured_systole_dur")
+        _pre_dia_t   = analysis_data.get("pass3_measured_diastole_t")
+        _pre_dia_dur = analysis_data.get("pass3_measured_diastole_dur")
+        if _pre_sys_t is not None and len(_pre_sys_t) >= 2:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(_pre_sys_t),
+                    y=list(_pre_sys_dur),
+                    name="Measured systole curve (before noise repair)",
+                    line=dict(color="#c87cff", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
+        if _pre_dia_t is not None and len(_pre_dia_t) >= 2:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(_pre_dia_t),
+                    y=list(_pre_dia_dur),
+                    name="Measured diastole curve (before noise repair)",
+                    line=dict(color="#33cc77", width=2),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
         if obs_t:
-            # Outlier removal + LOESS best-fit curve (reuses pass1 BPM pattern)
-            fit_data = compute_s1_s2_interval_curve(
+            # Outlier removal + Gaussian-smoothed curve (reuses pass1 BPM pattern)
+            fit_data = compute_systole_interval_curve(
                 np.array(obs_t), np.array(obs_iv), self.params
             )
             if fit_data is not None:
@@ -1295,7 +1528,7 @@ class Plotter:
                     go.Scatter(
                         x=to_dt(curve_t),
                         y=curve_iv,
-                        name="S1-S2 Interval",
+                        name="Systole duration",
                         line=dict(color="orange", width=2),
                         yaxis="y3",
                         visible="legendonly",
@@ -1305,7 +1538,7 @@ class Plotter:
                     go.Scatter(
                         x=to_dt(scatter_t),
                         y=scatter_iv,
-                        name="Measured S1-S2",
+                        name="Measured systole",
                         mode="markers",
                         marker=dict(size=6, color="lime", symbol="circle"),
                         yaxis="y3",
@@ -1318,7 +1551,7 @@ class Plotter:
                     go.Scatter(
                         x=to_dt(obs_t),
                         y=obs_iv,
-                        name="Measured S1-S2",
+                        name="Measured systole",
                         mode="markers",
                         marker=dict(size=6, color="lime", symbol="circle"),
                         yaxis="y3",
@@ -1327,13 +1560,20 @@ class Plotter:
                 )
         self._has_systolic_traces = True
 
-    def _add_annotations_and_summary(self, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats):
+    def _add_annotations_and_summary(self, bpm_times, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats):
         """Adds min/max BPM annotations on the plot and builds plain-text summary for the HTML Analysis Summary modal."""
-        if smoothed_bpm is not None and not smoothed_bpm.empty:
-            max_bpm_val = smoothed_bpm.max()
-            min_bpm_val = smoothed_bpm.min()
-            max_bpm_time = smoothed_bpm.idxmax()
-            min_bpm_time = smoothed_bpm.idxmin()
+        # smoothed_bpm is stored as a dense raster (array) in pass_metrics.
+        if bpm_times is not None and smoothed_bpm is not None and len(bpm_times) > 0 and len(bpm_times) == len(smoothed_bpm):
+            arr = np.asarray(smoothed_bpm, dtype=np.float64)
+            if not np.any(np.isfinite(arr)):
+                return
+            max_bpm_val = float(np.nanmax(arr))
+            min_bpm_val = float(np.nanmin(arr))
+            t = np.asarray(bpm_times, dtype=np.float64)
+            max_i = int(np.nanargmax(arr))
+            min_i = int(np.nanargmin(arr))
+            max_bpm_time = _elapsed_seconds_to_plot_datetimes(np.asarray([t[max_i]], dtype=np.float64))[0]
+            min_bpm_time = _elapsed_seconds_to_plot_datetimes(np.asarray([t[min_i]], dtype=np.float64))[0]
 
             self.fig.add_annotation(
                 x=max_bpm_time,
@@ -1346,7 +1586,6 @@ class Plotter:
                 font=dict(color="#e36f6f"),
                 yref="y2",
             )
-
             self.fig.add_annotation(
                 x=min_bpm_time,
                 y=min_bpm_val,
@@ -1634,6 +1873,61 @@ class Plotter:
         noise_segs = getattr(self, "_noise_event_segments", None) or []
         if noise_segs:
             config_payload["noiseEventSegments"] = noise_segs
+
+        # Pass 3: debug windows for "large gap" state insert (sample indices → seconds)
+        gap_wins = getattr(self, "_pass3_large_gap_windows_samples", None) or []
+        if gap_wins and isinstance(gap_wins, list):
+            out_gap = []
+            try:
+                sr = float(self.sample_rate) if self.sample_rate else None
+            except Exception:
+                sr = None
+            if sr and sr > 0:
+                for w in gap_wins:
+                    if not isinstance(w, dict):
+                        continue
+                    try:
+                        a = int(w.get("start_sample", -1))
+                        b = int(w.get("end_sample", -1))
+                    except Exception:
+                        continue
+                    if a < 0 or b <= a:
+                        continue
+                    d = {"start": float(a) / sr, "end": float(b) / sr}
+                    # Optional extra debug fields for tooltip
+                    for k in ("gap_region_candidate_state", "source_state", "trigger", "bpm_at_mid", "expected_phase_samples", "cycle0_samples", "segment_samples"):
+                        if k in w:
+                            d[k] = w[k]
+                    out_gap.append(d)
+            if out_gap:
+                config_payload["pass3LargeGapSegments"] = out_gap
+
+        # Pass 3: quiet-prefix windows trimmed from gap regions (sample indices → seconds)
+        quiet_wins = getattr(self, "_pass3_gap_quiet_windows_samples", None) or []
+        if quiet_wins and isinstance(quiet_wins, list):
+            out_quiet = []
+            try:
+                srq = float(self.sample_rate) if self.sample_rate else None
+            except Exception:
+                srq = None
+            if srq and srq > 0:
+                for w in quiet_wins:
+                    if not isinstance(w, dict):
+                        continue
+                    try:
+                        a = int(w.get("start_sample", -1))
+                        b = int(w.get("end_sample", -1))
+                    except Exception:
+                        continue
+                    if a < 0 or b <= a:
+                        continue
+                    d = {"start": float(a) / srq, "end": float(b) / srq}
+                    for k in ("gap_region_candidate_state", "trigger"):
+                        if k in w:
+                            d[k] = w[k]
+                    out_quiet.append(d)
+            if out_quiet:
+                config_payload["pass3GapQuietSegments"] = out_quiet
         config_json = json.dumps(config_payload)
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))
