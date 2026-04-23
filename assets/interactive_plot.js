@@ -614,8 +614,6 @@
     if (seg.gap_region_candidate_state) lines.push(`Gap region candidate: ${seg.gap_region_candidate_state}`);
     else if (seg.source_state) lines.push(`Source state: ${seg.source_state}`);
     if (seg.bpm_at_mid !== undefined && seg.bpm_at_mid !== null) lines.push(`BPM@mid: ${Number(seg.bpm_at_mid).toFixed(1)}`);
-    if (seg.expected_phase_samples !== undefined && seg.expected_phase_samples !== null)
-      lines.push(`Expected phase: ${seg.expected_phase_samples} samples`);
     if (seg.cycle0_samples !== undefined && seg.cycle0_samples !== null)
       lines.push(`Nominal cycle: ${seg.cycle0_samples} samples`);
     if (seg.segment_samples !== undefined && seg.segment_samples !== null)

@@ -379,6 +379,7 @@ class Plotter:
         self._pass3_state_boundaries_before = analysis_data.get("pass3_state_boundaries_before") or []
         self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
         self._noise_event_segments = analysis_data.get("noise_event_segments") or []
+        self._pass3_noise_unreliable_windows_samples = analysis_data.get("pass3_noise_unreliable_windows_samples") or []
         self._pass3_large_gap_windows_samples = analysis_data.get("pass3_large_gap_windows_samples") or []
         self._pass3_gap_quiet_windows_samples = analysis_data.get("pass3_gap_quiet_windows_samples") or []
         self._pass3_large_gap_recovered_peaks_insensitive = analysis_data.get("pass3_large_gap_recovered_peaks_insensitive") or []
@@ -1855,7 +1856,29 @@ class Plotter:
             config_payload["pass3SegmentsEncoding"] = getattr(self, "_pass3_state_labels_encoding", {}) or {}
             config_payload["pass3SegmentsDefaultView"] = "after" if segs_after else "before"
         noise_segs = getattr(self, "_noise_event_segments", None) or []
-        if noise_segs:
+        calc_noise_strip = bool(self.params.get("pass3_calculate_noisy_regions", True))
+        p3_noise_ivs = getattr(self, "_pass3_noise_unreliable_windows_samples", None) or []
+        if calc_noise_strip and p3_noise_ivs:
+            try:
+                sr_n = float(self.sample_rate) if self.sample_rate else 0.0
+            except Exception:
+                sr_n = 0.0
+            if sr_n > 0:
+                out_nsegs = []
+                for w in p3_noise_ivs:
+                    if not isinstance(w, dict):
+                        continue
+                    try:
+                        a = int(w.get("start_sample", -1))
+                        b = int(w.get("end_sample", -1))
+                    except Exception:
+                        continue
+                    if a < 0 or b <= a:
+                        continue
+                    out_nsegs.append({"start": float(a) / sr_n, "end": float(b) / sr_n})
+                if out_nsegs:
+                    config_payload["noiseEventSegments"] = out_nsegs
+        if "noiseEventSegments" not in config_payload and noise_segs:
             config_payload["noiseEventSegments"] = noise_segs
 
         # Pass 3: debug windows for "large gap" state insert (sample indices → seconds)
@@ -1879,7 +1902,7 @@ class Plotter:
                         continue
                     d = {"start": float(a) / sr, "end": float(b) / sr}
                     # Optional extra debug fields for tooltip
-                    for k in ("gap_region_candidate_state", "source_state", "trigger", "bpm_at_mid", "expected_phase_samples", "cycle0_samples", "segment_samples"):
+                    for k in ("gap_region_candidate_state", "source_state", "trigger", "bpm_at_mid", "cycle0_samples", "segment_samples"):
                         if k in w:
                             d[k] = w[k]
                     out_gap.append(d)

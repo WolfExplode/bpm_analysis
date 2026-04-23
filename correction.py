@@ -1536,6 +1536,7 @@ def _pass3_insert_missing_states_in_large_gaps(
     debug_windows_out: Optional[List[Dict[str, Any]]] = None,
     quiet_windows_out: Optional[List[Dict[str, Any]]] = None,
     dynamic_noise_floor_series: Optional[pd.Series] = None,
+    dry_run: bool = False,
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
     Pass 3 Step 3 — Insert missing *states* in large gaps.
@@ -1543,8 +1544,12 @@ def _pass3_insert_missing_states_in_large_gaps(
     This replaces the older "insert missing S1 in long RR" event-level logic.
     We operate on the already-generated *state sequence*: if any single state segment is
     long enough to plausibly contain an additional full cardiac cycle (per the same model
-    used by _pass3_rebuild_unknown_runs), we mark the gap region as STATE_UNKNOWN and
+    used by _pass3_rebuild_unknown_runs), we treat the whole segment as a candidate region,
+    run quiet / sensitive-peak trim on it, mark the rebuild window as STATE_UNKNOWN, and
     reuse _pass3_rebuild_unknown_runs to pack in full cycles using the same cursoring.
+
+    When dry_run=True, only fills debug_windows_out / quiet_windows_out; does not mutate
+    state_labels, state_boundaries, or run rebuild (for visualization / diagnostics).
 
     Side notes:
       - This runs after HF-noise repair. In practice, "lack of sound" gaps tend to coincide
@@ -1587,31 +1592,14 @@ def _pass3_insert_missing_states_in_large_gaps(
             return float(fallback_bpm)
         return float(v)
 
-    def _expected_phase_samples(phase: str, t_mid: float, ivs: Dict) -> int:
-        if phase == "S1":
-            sec = float(ivs.get("s1_nominal", 0.040))
-        elif phase == "S2":
-            sec = float(ivs.get("s2_nominal", 0.030))
-        elif phase == "systole":
-            sec = _interp_piecewise_linear(t_mid, measured_systole_t, measured_systole_dur)
-            if sec is None:
-                sec = float(ivs.get("s1_s2_nominal", 0.300))
-        else:  # diastole
-            sec = _interp_piecewise_linear(t_mid, measured_diastole_t, measured_diastole_dur)
-            if sec is None:
-                bpm_here = float(ivs.get("bpm", 0.0)) if isinstance(ivs, dict) else 0.0
-                rr = 60.0 / float(bpm_here) if bpm_here and bpm_here > 0 else 0.75
-                sec = float(ivs.get("s2_s1_nominal", rr - float(ivs.get("s1_s2_nominal", 0.300))))
-        return max(1, int(round(float(sec) * SR)))
-
     changed = False
     new_bd: List[Tuple] = []
     max_cycles_by_gap: Dict[Tuple[int, int], int] = {}
     n_phase_segments = 0
     n_skip_not_wide = 0
-    n_skip_tail_short = 0
+    n_skip_after_trim_short = 0
     # Largest width/need ratio among segments that failed the "extra cycle" width test (for debugging).
-    near_miss: Optional[Tuple[float, str, int, int, int, float]] = None
+    near_miss: Optional[Tuple[float, str, int, int, float]] = None
 
     for seg in state_boundaries:
         a0, a1, name, meta = seg
@@ -1628,12 +1616,6 @@ def _pass3_insert_missing_states_in_large_gaps(
         t_mid = 0.5 * (a0 + a1) / SR
         bpm = _bpm_at_sample(int((a0 + a1) // 2))
         ivs = calculate_bpm_intervals(bpm, params)
-        # stash bpm for _expected_phase_samples diastole fallback
-        try:
-            ivs = dict(ivs)
-            ivs["bpm"] = float(bpm)
-        except Exception:
-            pass
 
         # Compute nominal cycle length (unscaled) the same way rebuild does.
         s1_sec = float(ivs.get("s1_nominal", 0.040))
@@ -1652,32 +1634,20 @@ def _pass3_insert_missing_states_in_large_gaps(
             + max(1, int(round(dia_sec * SR)))
         )
 
-        exp_phase = _expected_phase_samples(name, t_mid, ivs)
-        # "Can fit another cycle" allowing rebuild's ±30% scaling.
+        # Segment must be at least one minimally scaled cycle wide to plausibly hold an extra beat.
         min_extra = int(round((1.0 - MAX_SCALE) * float(max(1, cyc0))))
-        need_wide = exp_phase + max(4, min_extra)
+        need_wide = max(4, min_extra)
         if width < need_wide:
             n_skip_not_wide += 1
             ratio = float(width) / float(need_wide) if need_wide > 0 else 0.0
             if near_miss is None or ratio > near_miss[0]:
-                near_miss = (ratio, name, width, need_wide, exp_phase, float(a0) / SR)
+                near_miss = (ratio, name, width, need_wide, float(a0) / SR)
             new_bd.append(seg)
             continue
 
-        # Gap region candidate:
-        # This phase segment is long enough to plausibly contain extra cycle(s). We keep the
-        # expected phase head and treat the remainder as the gap region (if it is not silent).
-        gap_region_lo = a0 + exp_phase
+        # Whole segment is the candidate; quiet detection may trim a silent prefix.
+        gap_region_lo = a0
         gap_region_hi = a1
-        if gap_region_hi - gap_region_lo < 4:
-            n_skip_tail_short += 1
-            new_bd.append(seg)
-            continue
-
-        # Quiet detection + trim:
-        # - No sensitive peaks anywhere in the gap region => treat the entire region as quiet (no rebuild).
-        # - Otherwise, trim the start of the gap region up to just before the first detected peak
-        #   (with pre-pad) and rebuild only the remainder.
         gap_region_lo_orig = int(gap_region_lo)
         try:
             _pk_sens = _detect_sensitive_peaks_in_large_gap_windows(
@@ -1716,10 +1686,11 @@ def _pass3_insert_missing_states_in_large_gaps(
 
         # Pre-pad: start rebuilding slightly BEFORE the first detected peak.
         # Use half the expected S1 duration (in samples) at this time.
-        s1_expected = int(_expected_phase_samples("S1", t_mid, ivs))
+        s1_sec_nom = float(ivs.get("s1_nominal", 0.040))
+        s1_expected = max(1, int(round(s1_sec_nom * SR)))
         pre_pad = max(0, int(s1_expected // 2))
         new_gap_region_lo = int(first_pk_i) - int(pre_pad)
-        new_gap_region_lo = int(max(int(gap_region_lo), min(int(new_gap_region_lo), int(gap_region_hi))))
+        new_gap_region_lo = int(max(int(a0), min(int(new_gap_region_lo), int(gap_region_hi))))
 
         if new_gap_region_lo > int(gap_region_lo_orig) and quiet_windows_out is not None:
             try:
@@ -1738,6 +1709,7 @@ def _pass3_insert_missing_states_in_large_gaps(
         gap_region_lo = int(new_gap_region_lo)
 
         if gap_region_hi - gap_region_lo < 4:
+            n_skip_after_trim_short += 1
             new_bd.append(seg)
             continue
 
@@ -1750,8 +1722,6 @@ def _pass3_insert_missing_states_in_large_gaps(
             n_sens = 0
         max_cycles_by_gap[(int(gap_region_lo), int(gap_region_hi))] = int(max(0, n_sens))
 
-        changed = True
-        state_labels[gap_region_lo:gap_region_hi] = STATE_UNKNOWN
         if debug_windows_out is not None:
             try:
                 debug_windows_out.append({
@@ -1762,47 +1732,63 @@ def _pass3_insert_missing_states_in_large_gaps(
                     "gap_region_candidate_state": str(name),
                     "trigger": "can_fit_extra_cycle",
                     "bpm_at_mid": float(bpm),
-                    "expected_phase_samples": int(exp_phase),
                     "cycle0_samples": int(cyc0),
                     "segment_samples": int(width),
+                    "dry_run": bool(dry_run),
                 })
             except Exception:
                 pass
 
-        # Keep the truncated original segment.
-        # The reasoning payload has measured_ms baked in from painting time; update it
-        # so hover display reflects the new shorter duration instead of the pre-gap value.
-        new_meta = dict(meta)
-        new_dur_ms = round((gap_region_lo - a0) / float(SR) * 1000)
-        if "reasoning" in new_meta and isinstance(new_meta["reasoning"], dict):
-            r = dict(new_meta["reasoning"])
-            r["measured_ms"] = new_dur_ms
-            new_meta["reasoning"] = r
-        # Also update s1_next for diastole so downstream peak derivation is consistent.
-        if name == "diastole" and "s1_next" in new_meta:
-            new_meta["s1_next"] = int(gap_region_lo)
-        kept = (a0, gap_region_lo, name, new_meta)
-        new_bd.append(kept)
+        if dry_run:
+            new_bd.append((a0, a1, name, meta))
+            continue
+
+        changed = True
+        state_labels[gap_region_lo:gap_region_hi] = STATE_UNKNOWN
+
+        # If quiet trim left a prefix of the original phase, keep it; otherwise the whole
+        # segment is rebuilt and we omit this boundary row.
+        if gap_region_lo > a0:
+            new_meta = dict(meta)
+            new_dur_ms = round((gap_region_lo - a0) / float(SR) * 1000)
+            if "reasoning" in new_meta and isinstance(new_meta["reasoning"], dict):
+                r = dict(new_meta["reasoning"])
+                r["measured_ms"] = new_dur_ms
+                new_meta["reasoning"] = r
+            if name == "diastole" and "s1_next" in new_meta:
+                new_meta["s1_next"] = int(gap_region_lo)
+            new_bd.append((a0, gap_region_lo, name, new_meta))
 
     if not changed:
-        logging.info(
-            "Pass 3 gap insert: no gap regions marked (phase_segments=%d, skipped_not_wide=%d, skipped_short_tail=%d).",
-            n_phase_segments,
-            n_skip_not_wide,
-            n_skip_tail_short,
-        )
-        if near_miss is not None:
-            _r, _nm, _w, _nw, _ep, _t0 = near_miss
+        _n_dbg = len(debug_windows_out or [])
+        _n_q = len(quiet_windows_out or [])
+        if dry_run and (_n_dbg > 0 or _n_q > 0):
             logging.info(
-                "Pass 3 gap insert: closest miss — %s @ %.3fs, width=%d samples, need>=%d "
-                "(exp_phase=%d), %.1f%% of threshold.",
-                _nm, _t0, _w, _nw, _ep, 100.0 * _r,
+                "Pass 3 gap insert: dry-run complete — %d gap window(s), %d quiet/trim window(s) "
+                "(phase_segments=%d, skipped_not_wide=%d, skipped_after_trim_short=%d).",
+                _n_dbg,
+                _n_q,
+                n_phase_segments,
+                n_skip_not_wide,
+                n_skip_after_trim_short,
+            )
+        else:
+            logging.info(
+                "Pass 3 gap insert: no gap regions marked (phase_segments=%d, skipped_not_wide=%d, skipped_after_trim_short=%d).",
+                n_phase_segments,
+                n_skip_not_wide,
+                n_skip_after_trim_short,
+            )
+        if near_miss is not None:
+            _r, _nm, _w, _nw, _t0 = near_miss
+            logging.info(
+                "Pass 3 gap insert: closest miss — %s @ %.3fs, width=%d samples, need>=%d, %.1f%% of threshold.",
+                _nm, _t0, _w, _nw, 100.0 * _r,
             )
         return state_labels, state_boundaries
 
-    # Drop any segments that overlap unknown tails (they may have been truncated above).
-    # Since we only mark tails inside existing segments, a simple filter on label identity
-    # is enough to remove any stale overlaps.
+    # Drop any segments that overlap unknown rebuild windows (prefix-kept segments may
+    # shrink; fully cleared segments were omitted from new_bd).
     filtered: List[Tuple] = []
     for seg in new_bd:
         a0, a1, name, meta = seg
@@ -1815,7 +1801,7 @@ def _pass3_insert_missing_states_in_large_gaps(
         filtered.append(seg)
     filtered.sort(key=lambda t: int(t[0]))
 
-    # Reuse the same rebuild logic + cursoring to fill unknown tails.
+    # Reuse the same rebuild logic + cursoring to fill unknown runs.
     state_labels, rebuilt = _pass3_rebuild_unknown_runs(
         state_labels,
         filtered,
@@ -1935,6 +1921,10 @@ def run_pass3_correction(
       pass3_spectral_context (None),
       pass3_noise_unreliable_windows_samples (when noise_event_segments exist).
       When pass3_enable_noise_repair: labels in HF windows may be cleared and rebuilt.
+      pass3_calculate_large_gaps: when True, scan for large-gap / quiet windows (and optional
+      recovered peaks) for HTML even if pass3_enable_gap_state_insert is False (dry-run; no insert/snap).
+      pass3_calculate_noisy_regions: HTML noise strip prefers pass3_noise_unreliable_windows_samples
+      when set (see plotting).
     """
     if "peak_classifications" not in analysis_data or analysis_data["peak_classifications"] is None:
         analysis_data["peak_classifications"] = {}
@@ -2203,7 +2193,8 @@ def run_pass3_correction(
     _noise_repair_on = bool(
         params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True)),
     )
-    _gap_ins_enabled = bool(params.get("pass3_enable_gap_state_insert", True))
+    _gap_apply = bool(params.get("pass3_enable_gap_state_insert", True))
+    _gap_calc = bool(params.get("pass3_calculate_large_gaps", True))
     _did_noise_repair = bool(_noise_repair_on and noise_ivs_final)
 
     # Always compute and store measured curves from the initially-painted boundaries.
@@ -2265,11 +2256,11 @@ def run_pass3_correction(
         )
         logging.info("Pass 3 rebuild: %d rebuilt beat(s) in noise gap(s).", _n_rebuilt)
 
-    # ── Insert missing states in large gaps (state-level; independent of HF-noise repair) ──
-    # Runs after noise rebuild when that ran; otherwise builds BPM prior + measured rasters here.
-    # Uses the same cursoring + scaling logic as _pass3_rebuild_unknown_runs.
-    if _gap_ins_enabled:
-        # Gap insert should use measured rasters derived from the current boundaries.
+    # ── Large-gap scan / insert (state-level; independent of HF-noise repair) ──
+    # pass3_calculate_large_gaps: populate pass3_large_gap_* debug for HTML strip without mutating timeline.
+    # pass3_enable_gap_state_insert: actually mark unknown + rebuild + optional snap.
+    if _gap_calc or _gap_apply:
+        # Gap logic should use measured rasters derived from the current boundaries.
         # If noise repair ran, boundaries may have changed, so refresh the rasters here.
         try:
             _ms_t_r, _ms_d_r, _md_t_r, _md_d_r = _compute_and_store_measured_phase_curves(
@@ -2309,47 +2300,68 @@ def run_pass3_correction(
             debug_windows_out=_gap_debug,
             quiet_windows_out=_gap_quiet_debug,
             dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
+            dry_run=not _gap_apply,
         )
         if _gap_debug:
             analysis_data["pass3_large_gap_windows_samples"] = list(_gap_debug)
         if _gap_quiet_debug:
             analysis_data["pass3_gap_quiet_windows_samples"] = list(_gap_quiet_debug)
-            # Optional: rerun a more sensitive peak detector inside these large-gap windows.
-            if bool(params.get("pass3_enable_gap_peak_recovery", True)):
-                q_ins = float(params.get("pass3_gap_recovery_peak_prominence_quantile_insensitive", 0.70))
-                q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
-                recovered_ins = _detect_sensitive_peaks_in_large_gap_windows(
-                    audio_envelope,
-                    sample_rate,
-                    analysis_data.get("pass3_large_gap_windows_samples") or [],
-                    params,
-                    prominence_quantile=q_ins,
-                    dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
-                )
-                recovered_sens = _detect_sensitive_peaks_in_large_gap_windows(
-                    audio_envelope,
-                    sample_rate,
-                    analysis_data.get("pass3_large_gap_windows_samples") or [],
-                    params,
-                    prominence_quantile=q_sens,
-                    dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
-                )
-                analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = recovered_ins.tolist()
-                analysis_data["pass3_large_gap_recovered_peaks_sensitive"] = recovered_sens.tolist()
-                _snap_window = int(round(
-                    float(params.get("pass3_gap_snap_window_ms", 80.0)) * sample_rate / 1000.0
-                ))
-                state_labels, state_boundaries = _pass3_snap_rebuilt_states_to_recovered_peaks(
-                    state_labels,
-                    state_boundaries,
-                    recovered_ins,
-                    recovered_sens,
-                    audio_envelope,
-                    sample_rate,
-                    _snap_window,
-                )
+
+        gap_wins_for_peaks = analysis_data.get("pass3_large_gap_windows_samples") or []
+        _gap_peak_apply = bool(params.get("pass3_enable_gap_peak_recovery", True))
+        want_peak_detect = len(gap_wins_for_peaks) > 0 and (
+            _gap_calc or (_gap_apply and _gap_peak_apply)
+        )
+        if not want_peak_detect:
+            analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = []
+            analysis_data["pass3_large_gap_recovered_peaks_sensitive"] = []
+        if want_peak_detect:
+            q_ins = float(params.get("pass3_gap_recovery_peak_prominence_quantile_insensitive", 0.70))
+            q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
+            recovered_ins = _detect_sensitive_peaks_in_large_gap_windows(
+                audio_envelope,
+                sample_rate,
+                gap_wins_for_peaks,
+                params,
+                prominence_quantile=q_ins,
+                dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
+            )
+            recovered_sens = _detect_sensitive_peaks_in_large_gap_windows(
+                audio_envelope,
+                sample_rate,
+                gap_wins_for_peaks,
+                params,
+                prominence_quantile=q_sens,
+                dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
+            )
+            analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = recovered_ins.tolist()
+            analysis_data["pass3_large_gap_recovered_peaks_sensitive"] = recovered_sens.tolist()
+        if _gap_apply and _gap_peak_apply and len(gap_wins_for_peaks) > 0:
+            recovered_ins_snap = np.asarray(
+                analysis_data.get("pass3_large_gap_recovered_peaks_insensitive") or [],
+                dtype=np.int64,
+            )
+            recovered_sens_snap = np.asarray(
+                analysis_data.get("pass3_large_gap_recovered_peaks_sensitive") or [],
+                dtype=np.int64,
+            )
+            _snap_window = int(round(
+                float(params.get("pass3_gap_snap_window_ms", 80.0)) * sample_rate / 1000.0
+            ))
+            state_labels, state_boundaries = _pass3_snap_rebuilt_states_to_recovered_peaks(
+                state_labels,
+                state_boundaries,
+                recovered_ins_snap,
+                recovered_sens_snap,
+                audio_envelope,
+                sample_rate,
+                _snap_window,
+            )
     else:
-        logging.info("Pass 3: gap state insert disabled (pass3_enable_gap_state_insert=False).")
+        logging.info(
+            "Pass 3: large-gap scan and insert disabled "
+            "(pass3_calculate_large_gaps=False and pass3_enable_gap_state_insert=False).",
+        )
 
     # ── Derive peaks_out from state sequence (canonical source of truth) ──────
     # Intent: Pass 3 treats the *state sequence* (pass3_state_labels / pass3_state_boundaries)

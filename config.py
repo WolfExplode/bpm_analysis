@@ -176,14 +176,19 @@ DEFAULT_PARAMS = {
     "pass3_enable_noise_repair": True,
 
     # --- 6.2 Insert missing states in large gaps (state-level) ---
-    "pass3_enable_gap_state_insert": True,  # If True, long single-state spans get surplus tail regenerated via the same logic as noise rebuild.
+    "pass3_enable_gap_state_insert": True,  # If True, long single-state spans can be cleared and rebuilt like noise repair (full-segment candidate + quiet trim).
+    # "Calculate large gaps" (diagnostics): scan for large-gap windows and optional recovered peaks for the HTML strip
+    # without applying insert/snap. If False and pass3_enable_gap_state_insert is False, gap strip data is not computed.
+    "pass3_calculate_large_gaps": True,
+    # "Calculate noisy regions" (HF strip): embed Pass 3 unreliable sample windows on the noise strip when available.
+    "pass3_calculate_noisy_regions": True,
 
     # --- 6.2.1 Large-gap peak recovery + anchor snapping ---
     # Reruns a more sensitive peak detector inside Pass 3 large-gap windows, then shifts
     # rebuilt S1/S2 segment boundaries to align with those recovered peaks (fill first, then shift).
-    "pass3_enable_gap_peak_recovery": True,
+    "pass3_enable_gap_peak_recovery": False,
     "pass3_gap_recovery_peak_prominence_quantile_insensitive": 0.70,  # Higher = fewer peaks, more likely real S1/S2.
-    "pass3_gap_recovery_peak_prominence_quantile_sensitive": 0.40,    # Lower = more peaks; used as an "anything at all here?" scan.
+    "pass3_gap_recovery_peak_prominence_quantile_sensitive": 0.5,    # Lower = more peaks; used as an "anything at all here?" scan.
     "pass3_gap_recovery_height_scale": 0.85,              # Multiply dynamic noise-floor threshold (if available).
     "pass3_gap_snap_window_ms": 100.0,                     # Search radius (ms) around each synthetic S1/S2 center when snapping to a recovered peak.
 
