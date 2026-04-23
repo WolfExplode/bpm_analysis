@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 from confidence_engine import calculate_bpm_intervals
-from hrv import _median_mad_keep_mask_time_window
+from hrv import _median_mad_keep_mask_time_window, filter_interval_durations_by_limits
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1113,13 +1113,18 @@ def _pass3_clean_duration_series(
     noise_ivs: Optional[List[Tuple[int, int]]],
     sample_rate: int,
     params: Optional[Dict] = None,
+    *,
+    duration_kind: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Shared post-processing for measured systole / diastole series:
+      0. Optional: drop durations outside wide systole/diastole clamps (when duration_kind is set).
       1. Drop points whose time falls inside a noise interval.
       2. Local median ± k*MAD in a rolling time window (same helper as systole interval curve).
       3. Gaussian-weighted rolling mean (sigma=1 beat, half-window=3 beats) — light smoothing
          that keeps values close to measured data while removing beat-to-beat jitter.
+
+    When duration_kind is None, step 0 is skipped (used e.g. for BPM series cleaning).
     Input arrays must already be sorted by time.
     """
     if len(t_raw) == 0:
@@ -1128,6 +1133,13 @@ def _pass3_clean_duration_series(
     t = t_raw.copy()
     d = d_raw.copy()
     pc = params or {}
+
+    if duration_kind in ("systole", "diastole"):
+        t, d = filter_interval_durations_by_limits(
+            t, d, kind=str(duration_kind), params=pc,
+        )
+        if len(t) == 0:
+            return t, d
 
     # 1. Remove points inside noise intervals.
     if noise_ivs:
@@ -1211,7 +1223,9 @@ def _pass3_measured_systole_series_from_boundaries(
     t = np.asarray(t_list, dtype=np.float64)
     d = np.asarray(d_list, dtype=np.float64)
     order = np.argsort(t)
-    return _pass3_clean_duration_series(t[order], d[order], noise_ivs, sample_rate, params=params)
+    return _pass3_clean_duration_series(
+        t[order], d[order], noise_ivs, sample_rate, params=params, duration_kind="systole",
+    )
 
 
 def _pass3_measured_diastole_series_from_boundaries(
@@ -1244,7 +1258,9 @@ def _pass3_measured_diastole_series_from_boundaries(
     t = np.asarray(t_list, dtype=np.float64)
     d = np.asarray(d_list, dtype=np.float64)
     order = np.argsort(t)
-    return _pass3_clean_duration_series(t[order], d[order], noise_ivs, sample_rate, params=params)
+    return _pass3_clean_duration_series(
+        t[order], d[order], noise_ivs, sample_rate, params=params, duration_kind="diastole",
+    )
 
 
 def _interp_piecewise_linear(
@@ -1658,9 +1674,10 @@ def _pass3_insert_missing_states_in_large_gaps(
             new_bd.append(seg)
             continue
 
-        # Cull-first (block filling until sensitive peak detector sees anything):
-        # If the sensitive pass sees no peaks at all in this gap region, treat it as
-        # "silent" and do not create STATE_UNKNOWN here (so rebuild never touches it).
+        # Quiet detection + trim:
+        # - No sensitive peaks anywhere in the gap region => treat the entire region as quiet (no rebuild).
+        # - Otherwise, trim the start of the gap region up to just before the first detected peak
+        #   (with pre-pad) and rebuild only the remainder.
         gap_region_lo_orig = int(gap_region_lo)
         try:
             _pk_sens = _detect_sensitive_peaks_in_large_gap_windows(
@@ -1675,28 +1692,33 @@ def _pass3_insert_missing_states_in_large_gaps(
             _pk_sens = np.asarray([], dtype=np.int64)
 
         if _pk_sens is None or len(_pk_sens) == 0:
+            # Entire gap region is quiet. Do not mark STATE_UNKNOWN (so rebuild generates nothing).
+            if quiet_windows_out is not None:
+                try:
+                    quiet_windows_out.append({
+                        "start_sample": int(gap_region_lo_orig),
+                        "end_sample": int(gap_region_hi),
+                        "gap_region_candidate_state": str(name),
+                        "trigger": "quiet_entire_gap_region",
+                    })
+                except Exception:
+                    pass
             new_bd.append(seg)
             continue
 
         try:
-            first_pk = int(np.min(np.asarray(_pk_sens, dtype=np.int64)))
-        except Exception:
-            first_pk = -1
-        if first_pk < 0:
-            new_bd.append(seg)
-            continue
-
-        # Trim off the leading quiet region: if the first sensitive peak happens later,
-        # do not rebuild from the start of the gap region.
-        try:
-            first_pk_i = int(first_pk)
+            first_pk_i = int(np.min(np.asarray(_pk_sens, dtype=np.int64)))
         except Exception:
             first_pk_i = -1
+        if first_pk_i < 0:
+            new_bd.append(seg)
+            continue
+
         # Pre-pad: start rebuilding slightly BEFORE the first detected peak.
         # Use half the expected S1 duration (in samples) at this time.
         s1_expected = int(_expected_phase_samples("S1", t_mid, ivs))
         pre_pad = max(0, int(s1_expected // 2))
-        new_gap_region_lo = int(first_pk_i) - int(pre_pad) if first_pk_i >= 0 else int(gap_region_lo)
+        new_gap_region_lo = int(first_pk_i) - int(pre_pad)
         new_gap_region_lo = int(max(int(gap_region_lo), min(int(new_gap_region_lo), int(gap_region_hi))))
 
         if new_gap_region_lo > int(gap_region_lo_orig) and quiet_windows_out is not None:
@@ -1735,9 +1757,8 @@ def _pass3_insert_missing_states_in_large_gaps(
                 debug_windows_out.append({
                     "start_sample": int(gap_region_lo),
                     "end_sample": int(gap_region_hi),
-                    "culled_prefix_samples": int(max(0, int(gap_region_lo) - int(gap_region_lo_orig))),
                     "sensitive_peaks_count": int(max(0, n_sens)),
-                    "sensitive_first_peak_sample": int(first_pk),
+                    "sensitive_first_peak_sample": int(first_pk_i),
                     "gap_region_candidate_state": str(name),
                     "trigger": "can_fit_extra_cycle",
                     "bpm_at_mid": float(bpm),
@@ -2141,12 +2162,65 @@ def run_pass3_correction(
             _trimmed.append(_seg)
     state_boundaries = _trimmed
 
+    def _compute_and_store_measured_phase_curves(
+        *,
+        key_prefix: str,
+        boundaries: List[Tuple],
+        noise_ivs: Optional[List[Tuple[int, int]]],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute cleaned (MAD + light smoothing) measured systole/diastole series from boundaries,
+        exclude points inside noise windows, and store both sparse points and dense rasters.
+
+        key_prefix examples:
+          - "pass3_measured_phase_before_repair"
+          - "pass3_measured_phase_final"
+        """
+        _ms_t, _ms_d = _pass3_measured_systole_series_from_boundaries(
+            boundaries, sample_rate, noise_ivs=noise_ivs, params=params,
+        )
+        _md_t, _md_d = _pass3_measured_diastole_series_from_boundaries(
+            boundaries, sample_rate, noise_ivs=noise_ivs, params=params,
+        )
+        _ms_t_r, _ms_d_r = _dense_raster_from_points(
+            _ms_t, _ms_d, n_samples, sample_rate, dt_sec=0.05,
+        )
+        _md_t_r, _md_d_r = _dense_raster_from_points(
+            _md_t, _md_d, n_samples, sample_rate, dt_sec=0.05,
+        )
+
+        analysis_data[f"{key_prefix}_systole_t"] = _ms_t
+        analysis_data[f"{key_prefix}_systole_dur"] = _ms_d
+        analysis_data[f"{key_prefix}_diastole_t"] = _md_t
+        analysis_data[f"{key_prefix}_diastole_dur"] = _md_d
+        analysis_data[f"{key_prefix}_systole_times"] = _ms_t_r
+        analysis_data[f"{key_prefix}_systole"] = _ms_d_r
+        analysis_data[f"{key_prefix}_diastole_times"] = _md_t_r
+        analysis_data[f"{key_prefix}_diastole"] = _md_d_r
+        return _ms_t_r, _ms_d_r, _md_t_r, _md_d_r
+
     # ── HF noise: clear then rebuild cardiac labels in unreliable audio ─────────
     _noise_repair_on = bool(
         params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True)),
     )
     _gap_ins_enabled = bool(params.get("pass3_enable_gap_state_insert", True))
     _did_noise_repair = bool(_noise_repair_on and noise_ivs_final)
+
+    # Always compute and store measured curves from the initially-painted boundaries.
+    # These are the canonical "before repair" curves (repairs may modify boundaries later).
+    _ms_t_r = np.asarray([], dtype=np.float64)
+    _ms_d_r = np.asarray([], dtype=np.float64)
+    _md_t_r = np.asarray([], dtype=np.float64)
+    _md_d_r = np.asarray([], dtype=np.float64)
+    try:
+        _ms_t_r, _ms_d_r, _md_t_r, _md_d_r = _compute_and_store_measured_phase_curves(
+            key_prefix="pass3_measured_phase_before_repair",
+            boundaries=state_boundaries,
+            noise_ivs=list(noise_ivs_final) if noise_ivs_final else [],
+        )
+    except Exception:
+        pass
+
     if not _noise_repair_on:
         logging.info(
             "Pass 3: noise repair disabled — skipping HF-noise clear/rebuild.",
@@ -2156,23 +2230,6 @@ def run_pass3_correction(
             "Pass 3: no HF-noise sample intervals — skipping HF-noise clear/rebuild.",
         )
     if _did_noise_repair:
-        _ms_t, _ms_d = _pass3_measured_systole_series_from_boundaries(
-            state_boundaries, sample_rate, noise_ivs=noise_ivs_final, params=params,
-        )
-        _md_t, _md_d = _pass3_measured_diastole_series_from_boundaries(
-            state_boundaries, sample_rate, noise_ivs=noise_ivs_final, params=params,
-        )
-        # Make measured phase-duration curves continuous-in-time (dense rasters) like the BPM prior.
-        _ms_t_r, _ms_d_r = _dense_raster_from_points(
-            _ms_t, _ms_d, n_samples, sample_rate, dt_sec=0.05,
-        )
-        _md_t_r, _md_d_r = _dense_raster_from_points(
-            _md_t, _md_d, n_samples, sample_rate, dt_sec=0.05,
-        )
-        analysis_data["pass3_measured_systole_times"] = _ms_t_r
-        analysis_data["pass3_measured_systole"] = _ms_d_r
-        analysis_data["pass3_measured_diastole_times"] = _md_t_r
-        analysis_data["pass3_measured_diastole"] = _md_d_r
         # Build a BPM prior from clean RR intervals only (exclude any S1→S1 that intersects noise).
         # This avoids using possibly-corrupted BPM belief inside the noisy spans.
         _lt_clean = _build_lt_bpm_series_from_clean_rr(
@@ -2212,24 +2269,19 @@ def run_pass3_correction(
     # Runs after noise rebuild when that ran; otherwise builds BPM prior + measured rasters here.
     # Uses the same cursoring + scaling logic as _pass3_rebuild_unknown_runs.
     if _gap_ins_enabled:
+        # Gap insert should use measured rasters derived from the current boundaries.
+        # If noise repair ran, boundaries may have changed, so refresh the rasters here.
+        try:
+            _ms_t_r, _ms_d_r, _md_t_r, _md_d_r = _compute_and_store_measured_phase_curves(
+                key_prefix="pass3_measured_phase_for_gap_insert",
+                boundaries=state_boundaries,
+                noise_ivs=list(noise_ivs_final) if noise_ivs_final else [],
+            )
+        except Exception:
+            pass
+
         if not _did_noise_repair:
             _niv_gap = list(noise_ivs_final) if noise_ivs_final else []
-            _ms_t, _ms_d = _pass3_measured_systole_series_from_boundaries(
-                state_boundaries, sample_rate, noise_ivs=_niv_gap, params=params,
-            )
-            _md_t, _md_d = _pass3_measured_diastole_series_from_boundaries(
-                state_boundaries, sample_rate, noise_ivs=_niv_gap, params=params,
-            )
-            _ms_t_r, _ms_d_r = _dense_raster_from_points(
-                _ms_t, _ms_d, n_samples, sample_rate, dt_sec=0.05,
-            )
-            _md_t_r, _md_d_r = _dense_raster_from_points(
-                _md_t, _md_d, n_samples, sample_rate, dt_sec=0.05,
-            )
-            analysis_data["pass3_measured_systole_times"] = _ms_t_r
-            analysis_data["pass3_measured_systole"] = _ms_d_r
-            analysis_data["pass3_measured_diastole_times"] = _md_t_r
-            analysis_data["pass3_measured_diastole"] = _md_d_r
             _lt_clean = _build_lt_bpm_series_from_clean_rr(
                 peaks_out, _niv_gap, sample_rate, n_samples, params=params,
             )
@@ -2315,12 +2367,25 @@ def run_pass3_correction(
         peaks_out = np.asarray(_s1_from_states, dtype=np.int64)
 
     # ── Store results ─────────────────────────────────────────────────────────
-    # Cleaned systole/diastole series (noise-removed + MAD + smoothed) for plotting.
-    if _did_noise_repair:
-        analysis_data["pass3_measured_systole_t"]   = _ms_t
-        analysis_data["pass3_measured_systole_dur"]  = _ms_d
-        analysis_data["pass3_measured_diastole_t"]  = _md_t
-        analysis_data["pass3_measured_diastole_dur"] = _md_d
+    # Final cleaned curves + dense rasters for plotting/debug and for any downstream consumers.
+    # Kept distinct from "before repair" so the dataflow is unambiguous.
+    try:
+        _ms_t_r_f, _ms_d_r_f, _md_t_r_f, _md_d_r_f = _compute_and_store_measured_phase_curves(
+            key_prefix="pass3_measured_phase_final",
+            boundaries=state_boundaries,
+            noise_ivs=list(noise_ivs_final) if noise_ivs_final else [],
+        )
+        analysis_data["pass3_measured_systole_times"] = _ms_t_r_f
+        analysis_data["pass3_measured_systole"] = _ms_d_r_f
+        analysis_data["pass3_measured_diastole_times"] = _md_t_r_f
+        analysis_data["pass3_measured_diastole"] = _md_d_r_f
+        analysis_data["pass3_measured_systole_t"] = analysis_data.get("pass3_measured_phase_final_systole_t")
+        analysis_data["pass3_measured_systole_dur"] = analysis_data.get("pass3_measured_phase_final_systole_dur")
+        analysis_data["pass3_measured_diastole_t"] = analysis_data.get("pass3_measured_phase_final_diastole_t")
+        analysis_data["pass3_measured_diastole_dur"] = analysis_data.get("pass3_measured_phase_final_diastole_dur")
+    except Exception:
+        pass
+
     analysis_data["pass3_state_labels"]          = state_labels
     analysis_data["pass3_state_labels_encoding"] = dict(STATE_LABELS_ENCODING)
     analysis_data["pass3_state_boundaries"]        = state_boundaries

@@ -61,6 +61,42 @@ def _median_mad_keep_mask_global(values: np.ndarray, mad_k: float) -> np.ndarray
     return np.abs(v - med) <= float(mad_k) * mad
 
 
+def filter_interval_durations_by_limits(
+    times_sec: np.ndarray,
+    intervals_sec: np.ndarray,
+    *,
+    kind: str,
+    params: Optional[Dict] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Drop (time, duration) samples outside wide plausible bounds before MAD / other outlier logic.
+
+    kind: "systole" (S1→S2 duration) or "diastole" (S2→next S1 duration).
+
+    Bounds default to very wide values so only obviously broken data is removed.
+    """
+    pc = params or {}
+    t = np.asarray(times_sec, dtype=np.float64)
+    v = np.asarray(intervals_sec, dtype=np.float64)
+    if len(t) == 0 or len(v) == 0 or len(t) != len(v):
+        return t, v
+
+    if kind == "systole":
+        lo = float(pc.get("systole_duration_clamp_min_sec", 0.01))
+        hi = float(pc.get("systole_duration_clamp_max_sec", 8.0))
+    elif kind == "diastole":
+        lo = float(pc.get("diastole_duration_clamp_min_sec", 0.005))
+        hi = float(pc.get("diastole_duration_clamp_max_sec", 180.0))
+    else:
+        return t, v
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        return t, v
+
+    keep = np.isfinite(t) & np.isfinite(v) & (v >= lo) & (v <= hi)
+    return t[keep], v[keep]
+
+
 def _lombscargle_band_powers(
     times_sec: np.ndarray, rr_ms: np.ndarray, include_vlf: bool = False
 ) -> Optional[Dict[str, float]]:
@@ -363,6 +399,12 @@ def compute_systole_interval_curve(
         return None
     obs_times = np.asarray(obs_times, dtype=float)
     obs_intervals = np.asarray(obs_intervals, dtype=float)
+
+    obs_times, obs_intervals = filter_interval_durations_by_limits(
+        obs_times, obs_intervals, kind="systole", params=params,
+    )
+    if len(obs_times) < 3:
+        return None
 
     # Outlier removal: keep point if within median ± k*MAD in local time window
     half_window_sec = float(params.get("systole_outlier_window_sec", params.get("s1_s2_outlier_window_sec", 8.0)))

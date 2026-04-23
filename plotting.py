@@ -1487,17 +1487,18 @@ class Plotter:
                     visible="legendonly",
                 ),
             )
-        # Cleaned & smoothed systole/diastole curves used by noise-repair rebuild.
-        _pre_sys_t   = analysis_data.get("pass3_measured_systole_t")
-        _pre_sys_dur = analysis_data.get("pass3_measured_systole_dur")
-        _pre_dia_t   = analysis_data.get("pass3_measured_diastole_t")
-        _pre_dia_dur = analysis_data.get("pass3_measured_diastole_dur")
+        # Pass 3: cleaned & smoothed measured-phase curves.
+        # "Before repair" is computed immediately after the initial state paint, even if there are no noise windows.
+        _pre_sys_t   = analysis_data.get("pass3_measured_phase_before_repair_systole_t")
+        _pre_sys_dur = analysis_data.get("pass3_measured_phase_before_repair_systole_dur")
+        _pre_dia_t   = analysis_data.get("pass3_measured_phase_before_repair_diastole_t")
+        _pre_dia_dur = analysis_data.get("pass3_measured_phase_before_repair_diastole_dur")
         if _pre_sys_t is not None and len(_pre_sys_t) >= 2:
             self.fig.add_trace(
                 go.Scatter(
                     x=to_dt(_pre_sys_t),
                     y=list(_pre_sys_dur),
-                    name="Measured systole curve (before noise repair)",
+                    name="Measured systole curve (before repair)",
                     line=dict(color="#c87cff", width=2),
                     yaxis="y3",
                     visible="legendonly",
@@ -1508,56 +1509,39 @@ class Plotter:
                 go.Scatter(
                     x=to_dt(_pre_dia_t),
                     y=list(_pre_dia_dur),
-                    name="Measured diastole curve (before noise repair)",
+                    name="Measured diastole curve (before repair)",
                     line=dict(color="#33cc77", width=2),
                     yaxis="y3",
                     visible="legendonly",
                 ),
             )
-        if obs_t:
-            # Outlier removal + Gaussian-smoothed curve (reuses pass1 BPM pattern)
-            fit_data = compute_systole_interval_curve(
-                np.array(obs_t), np.array(obs_iv), self.params
+
+        _post_sys_t   = analysis_data.get("pass3_measured_phase_final_systole_t")
+        _post_sys_dur = analysis_data.get("pass3_measured_phase_final_systole_dur")
+        _post_dia_t   = analysis_data.get("pass3_measured_phase_final_diastole_t")
+        _post_dia_dur = analysis_data.get("pass3_measured_phase_final_diastole_dur")
+        if _post_sys_t is not None and len(_post_sys_t) >= 2:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(_post_sys_t),
+                    y=list(_post_sys_dur),
+                    name="Measured systole curve (final)",
+                    line=dict(color="#b07cff", width=2, dash="dot"),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
             )
-            if fit_data is not None:
-                scatter_t = fit_data["scatter_times"]
-                scatter_iv = fit_data["scatter_intervals"]
-                curve_t = fit_data["curve_times"]
-                curve_iv = fit_data["curve_intervals"]
-                self.fig.add_trace(
-                    go.Scatter(
-                        x=to_dt(curve_t),
-                        y=curve_iv,
-                        name="Systole duration",
-                        line=dict(color="orange", width=2),
-                        yaxis="y3",
-                        visible="legendonly",
-                    ),
-                )
-                self.fig.add_trace(
-                    go.Scatter(
-                        x=to_dt(scatter_t),
-                        y=scatter_iv,
-                        name="Measured systole",
-                        mode="markers",
-                        marker=dict(size=6, color="lime", symbol="circle"),
-                        yaxis="y3",
-                        visible="legendonly",
-                    ),
-                )
-            else:
-                # Fallback: plot raw if curve fit fails (e.g. too few points)
-                self.fig.add_trace(
-                    go.Scatter(
-                        x=to_dt(obs_t),
-                        y=obs_iv,
-                        name="Measured systole",
-                        mode="markers",
-                        marker=dict(size=6, color="lime", symbol="circle"),
-                        yaxis="y3",
-                        visible="legendonly",
-                    ),
-                )
+        if _post_dia_t is not None and len(_post_dia_t) >= 2:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=to_dt(_post_dia_t),
+                    y=list(_post_dia_dur),
+                    name="Measured diastole curve (final)",
+                    line=dict(color="#55d68d", width=2, dash="dot"),
+                    yaxis="y3",
+                    visible="legendonly",
+                ),
+            )
         self._has_systolic_traces = True
 
     def _add_annotations_and_summary(self, bpm_times, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats):
@@ -1922,7 +1906,7 @@ class Plotter:
                     if a < 0 or b <= a:
                         continue
                     d = {"start": float(a) / srq, "end": float(b) / srq}
-                    for k in ("gap_region_candidate_state", "trigger"):
+                    for k in ("gap_region_candidate_state", "trigger", "first_sensitive_peak_sample", "s1_expected_samples", "pre_pad_samples"):
                         if k in w:
                             d[k] = w[k]
                     out_quiet.append(d)
