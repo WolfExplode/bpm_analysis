@@ -182,9 +182,10 @@ DEFAULT_PARAMS = {
     # Reruns a more sensitive peak detector inside Pass 3 large-gap windows, then shifts
     # rebuilt S1/S2 segment boundaries to align with those recovered peaks (fill first, then shift).
     "pass3_enable_gap_peak_recovery": True,
-    "pass3_gap_recovery_peak_prominence_quantile": 0.70,  # Lower = more sensitive (more peaks).
+    "pass3_gap_recovery_peak_prominence_quantile_insensitive": 0.70,  # Higher = fewer peaks, more likely real S1/S2.
+    "pass3_gap_recovery_peak_prominence_quantile_sensitive": 0.40,    # Lower = more peaks; used as an "anything at all here?" scan.
     "pass3_gap_recovery_height_scale": 0.85,              # Multiply dynamic noise-floor threshold (if available).
-    "pass3_gap_snap_window_ms": 80.0,                     # Search radius (ms) around each synthetic S1/S2 center when snapping to a recovered peak.
+    "pass3_gap_snap_window_ms": 100.0,                     # Search radius (ms) around each synthetic S1/S2 center when snapping to a recovered peak.
 
     # --- 6.3 Final state timeline — envelope boundary paint ---
     "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.

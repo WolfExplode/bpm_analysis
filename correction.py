@@ -52,6 +52,8 @@ def _detect_sensitive_peaks_in_large_gap_windows(
     gap_windows_samples: List[Dict[str, Any]],
     params: Dict,
     *,
+    prominence_quantile: Optional[float] = None,
+    height_scale_override: Optional[float] = None,
     dynamic_noise_floor_series: Optional[pd.Series] = None,
 ) -> np.ndarray:
     """
@@ -73,9 +75,15 @@ def _detect_sensitive_peaks_in_large_gap_windows(
     min_peak_dist_samples = int(float(params.get("min_peak_distance_sec", 0.18)) * float(sample_rate))
     min_peak_dist_samples = max(1, int(min_peak_dist_samples))
 
-    q = float(params.get("pass3_gap_recovery_peak_prominence_quantile", 0.50))
+    if prominence_quantile is None:
+        q = float(params.get("pass3_gap_recovery_peak_prominence_quantile", 0.50))
+    else:
+        q = float(prominence_quantile)
     q = float(np.clip(q, 0.0, 1.0))
-    height_scale = float(params.get("pass3_gap_recovery_height_scale", 0.85))
+    if height_scale_override is None:
+        height_scale = float(params.get("pass3_gap_recovery_height_scale", 0.85))
+    else:
+        height_scale = float(height_scale_override)
     height_scale = float(np.clip(height_scale, 0.0, 1.0))
 
     nf = None
@@ -140,7 +148,8 @@ def _detect_sensitive_peaks_in_large_gap_windows(
 def _pass3_snap_rebuilt_states_to_recovered_peaks(
     state_labels: np.ndarray,
     state_boundaries: List[Tuple],
-    recovered_peaks: np.ndarray,
+    recovered_peaks_insensitive: np.ndarray,
+    recovered_peaks_sensitive: np.ndarray,
     audio_envelope: np.ndarray,
     sample_rate: int,
     snap_window_samples: int,
@@ -149,26 +158,47 @@ def _pass3_snap_rebuilt_states_to_recovered_peaks(
     Post-processing: after the gap fill is complete, shift rebuilt S1 and S2 segment
     boundaries to align with acoustically recovered peaks where available.
 
-    "Fill first, then shift": the existing rebuild already produced a valid, non-overlapping
-    partition; this function makes small position adjustments on top of it. The neighboring
-    systole or diastole segment absorbs the shift on each side, so the partition stays
-    contiguous and non-overlapping by construction.
+    "Fill first, then shift": the existing rebuild produced a valid non-overlapping
+    partition; this function makes small position adjustments on top of it. The
+    neighboring systole or diastole segment absorbs the shift on each side, so the
+    partition stays contiguous and non-overlapping by construction.
+
+    Snapping is S1-first and cycle-aware:
+      Pass 1 — all rebuilt S1 segments snap first (forward order), reserving peaks.
+      Pass 2 — rebuilt S2 segments snap to remaining unresolved peaks only, and are
+               also blocked from using any peak within snap_window_samples of the next
+               rebuilt S1 center (first right of refusal), preventing S2 from stealing
+               peaks that should anchor S1s.
+    Each recovered peak is assigned to at most one segment (tracked via used_peaks).
 
     State segments represent durations [start, end). The center of an S1 or S2 segment
     is only used here to locate a nearby recovered peak and compute the shift delta.
 
-    For start_after_s1 gaps the first rebuilt segment is systole (not S1), so the kept
+    For start_after_s1 gaps, the first rebuilt segment is systole (not S1), so the kept
     real S1 anchor before the gap is never touched by this function.
     """
-    if recovered_peaks is None or len(recovered_peaks) == 0:
+    if (
+        (recovered_peaks_insensitive is None or len(recovered_peaks_insensitive) == 0)
+        and (recovered_peaks_sensitive is None or len(recovered_peaks_sensitive) == 0)
+    ):
         return state_labels, state_boundaries
 
-    rec = np.asarray(recovered_peaks, dtype=np.int64)
+    # NOTE: don't use `arr or []` with numpy arrays (ambiguous truth value).
+    rec_ins = np.asarray(
+        recovered_peaks_insensitive if recovered_peaks_insensitive is not None else [],
+        dtype=np.int64,
+    )
+    rec_sens = np.asarray(
+        recovered_peaks_sensitive if recovered_peaks_sensitive is not None else [],
+        dtype=np.int64,
+    )
     n = int(len(state_labels))
     env = np.asarray(audio_envelope, dtype=np.float64)
     sw = int(snap_window_samples)
 
-    def _snap(expected: int) -> Optional[int]:
+    used_peaks: set = set()
+
+    def _snap(expected: int, exclude_near: Optional[int] = None, *, allow_sensitive: bool = False) -> Optional[int]:
         # Due to how gap detection works, there shouldn't be any already-known raw peaks
         # inside the gap; recovered peaks are the only candidate source here.
         # Scoring: closest in time; tie-break by higher envelope amplitude.
@@ -176,8 +206,17 @@ def _pass3_snap_rebuilt_states_to_recovered_peaks(
         # candidates shouldn't appear — the tie-break is just a safety net.
         lo = expected - sw
         hi = expected + sw
-        mask = (rec >= lo) & (rec <= hi)
-        cands = rec[mask]
+        base = rec_ins
+        if allow_sensitive and rec_sens.size:
+            # S2 can use leftover insensitive peaks plus any additional sensitive peaks.
+            base = np.unique(np.concatenate([rec_ins, rec_sens]))
+        mask = (base >= lo) & (base <= hi)
+        cands = base[mask]
+        # Exclude peaks already consumed by a prior snap.
+        cands = cands[np.array([int(c) not in used_peaks for c in cands], dtype=bool)]
+        # Exclude peaks near the next S1 center (first right of refusal for S2 snapping).
+        if exclude_near is not None:
+            cands = cands[np.abs(cands - exclude_near) > sw]
         if len(cands) == 0:
             return None
         dists = np.abs(cands - expected)
@@ -188,32 +227,16 @@ def _pass3_snap_rebuilt_states_to_recovered_peaks(
         amps = env[np.clip(closest, 0, n - 1)]
         return int(closest[np.argmax(amps)])
 
-    # Work on a mutable copy (list-of-lists) sorted by start.
-    segs = [list(s) for s in sorted(state_boundaries, key=lambda t: int(t[0]))]
-    ns = len(segs)
-    changed = False
-
-    for i, seg in enumerate(segs):
-        a0, a1, name, meta = int(seg[0]), int(seg[1]), seg[2], seg[3]
-        if not isinstance(meta, dict):
-            continue
-        if meta.get("rebuild_source") not in ("gap_insert", "noise_repair"):
-            continue
-        if name not in ("S1", "S2"):
-            continue
-
+    def _apply_shift(i: int, snapped: int) -> bool:
+        """Shift segment i to be centered on snapped. Updates segs in place. Returns True if applied."""
+        a0, a1 = int(segs[i][0]), int(segs[i][1])
         width = a1 - a0
         if width <= 0:
-            continue
+            return False
         center = (a0 + a1) // 2
-
-        snapped = _snap(center)
-        if snapped is None:
-            continue
-
         delta = snapped - center
         if delta == 0:
-            continue
+            return False
 
         new_a0 = a0 + delta
         new_a1 = a1 + delta  # = new_a0 + width (segment width is preserved)
@@ -227,17 +250,29 @@ def _pass3_snap_rebuilt_states_to_recovered_peaks(
         next_end = int(segs[i + 1][1]) if i + 1 < ns else a1
         if new_a1 >= next_end:
             # Not enough room after the shift; keep synthetic placement.
-            continue
+            return False
 
         if new_a1 <= new_a0:
-            continue
+            return False
 
-        # Apply shift to this segment.
         segs[i][0] = new_a0
         segs[i][1] = new_a1
-        new_meta = dict(meta)
+        name = segs[i][2]
+        new_meta = dict(segs[i][3])
         new_meta["s1" if name == "S1" else "s2"] = snapped
         new_meta["snapped"] = True
+        try:
+            if isinstance(new_meta.get("reasoning"), dict):
+                r = dict(new_meta["reasoning"])
+                notes = r.get("notes")
+                if not isinstance(notes, list):
+                    notes = []
+                notes = list(notes)
+                notes.append("Shifted to recovered peak at gap.")
+                r["notes"] = notes
+                new_meta["reasoning"] = r
+        except Exception:
+            pass
         segs[i][3] = new_meta
 
         # Adjacent segments absorb the shift on each side.
@@ -245,8 +280,49 @@ def _pass3_snap_rebuilt_states_to_recovered_peaks(
             segs[i - 1][1] = new_a0
         if i + 1 < ns:
             segs[i + 1][0] = new_a1
+        return True
 
-        changed = True
+    # Work on a mutable copy (list-of-lists) sorted by start.
+    segs = [list(s) for s in sorted(state_boundaries, key=lambda t: int(t[0]))]
+    ns = len(segs)
+    changed = False
+
+    def _is_rebuilt(i: int) -> bool:
+        m = segs[i][3]
+        return isinstance(m, dict) and m.get("rebuild_source") in ("gap_insert", "noise_repair")
+
+    # --- Pass 1: Snap all rebuilt S1 segments first ---
+    # S1 is the primary cardiac anchor; it gets first pick of recovered peaks.
+    for i in range(ns):
+        if segs[i][2] != "S1" or not _is_rebuilt(i):
+            continue
+        center = (int(segs[i][0]) + int(segs[i][1])) // 2
+        snapped = _snap(center, allow_sensitive=False)
+        if snapped is None:
+            continue
+        if _apply_shift(i, snapped):
+            used_peaks.add(snapped)
+            changed = True
+
+    # --- Pass 2: Snap rebuilt S2 segments using only remaining peaks ---
+    # Build rebuilt S1 centers (post-Pass-1 positions) for first-right-of-refusal:
+    # any peak within snap_window_samples of a future S1 center is off-limits for S2.
+    rebuilt_s1_centers = [
+        (int(segs[i][0]) + int(segs[i][1])) // 2
+        for i in range(ns)
+        if segs[i][2] == "S1" and _is_rebuilt(i)
+    ]
+    for i in range(ns):
+        if segs[i][2] != "S2" or not _is_rebuilt(i):
+            continue
+        center = (int(segs[i][0]) + int(segs[i][1])) // 2
+        next_s1_center = next((c for c in rebuilt_s1_centers if c > center), None)
+        snapped = _snap(center, exclude_near=next_s1_center, allow_sensitive=True)
+        if snapped is None:
+            continue
+        if _apply_shift(i, snapped):
+            used_peaks.add(snapped)
+            changed = True
 
     if not changed:
         return state_labels, state_boundaries
@@ -1027,7 +1103,7 @@ def _pass3_gap_insert_rebuild_reasoning(
 ) -> Dict[str, Any]:
     return _pass3_rebuild_reasoning(
         phase, ivs, sample_rate, lo, hi,
-        "Inserted missing cardiac cycle(s) in a large gap (gap repair).",
+        "Inserted missing cardiac cycle(s) in a large gap.",
     )
 
 
@@ -1200,6 +1276,7 @@ def _pass3_rebuild_unknown_runs(
     measured_diastole_dur: Optional[np.ndarray] = None,
     *,
     rebuild_source: str = "noise_repair",
+    max_cycles_by_gap: Optional[Dict[Tuple[int, int], int]] = None,
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
     Fill every STATE_UNKNOWN run in *state_labels* with a scaled cardiac sequence.
@@ -1290,7 +1367,21 @@ def _pass3_rebuild_unknown_runs(
         base_len = part0 if start_after_s1 else 0
         # Candidate K around gap_width / cyc0 (plus a few neighbors).
         k_center = int(max(0, round(max(0.0, (gap_width - base_len) / float(max(1, cyc0)))))) if cyc0 > 0 else 0
-        for K in range(max(0, k_center - 2), k_center + 3):
+        # Optional safety cap: if the sensitive peak detector saw N peaks in this gap window,
+        # do not generate more than N cardiac cycles. (Computed upstream before any states are generated.)
+        k_cap = None
+        if max_cycles_by_gap is not None:
+            try:
+                k_cap = int(max_cycles_by_gap.get((int(gap_lo), int(gap_hi))))
+            except Exception:
+                k_cap = None
+        k_lo = max(0, k_center - 2)
+        k_hi = k_center + 3
+        if k_cap is not None and k_cap >= 0:
+            # Hard cap: cycles <= n_sensitive_peaks for this gap window.
+            k_lo = min(k_lo, k_cap)
+            k_hi = min(k_hi, k_cap + 1)
+        for K in range(k_lo, k_hi):
             pat0 = base_len + K * cyc0
             if pat0 <= 0:
                 continue
@@ -1420,12 +1511,15 @@ def _pass3_insert_missing_states_in_large_gaps(
     fallback_bpm: float,
     sample_rate: int,
     params: Dict,
+    audio_envelope: np.ndarray,
     *,
     measured_systole_t: Optional[np.ndarray] = None,
     measured_systole_dur: Optional[np.ndarray] = None,
     measured_diastole_t: Optional[np.ndarray] = None,
     measured_diastole_dur: Optional[np.ndarray] = None,
     debug_windows_out: Optional[List[Dict[str, Any]]] = None,
+    quiet_windows_out: Optional[List[Dict[str, Any]]] = None,
+    dynamic_noise_floor_series: Optional[pd.Series] = None,
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
     Pass 3 Step 3 — Insert missing *states* in large gaps.
@@ -1433,7 +1527,7 @@ def _pass3_insert_missing_states_in_large_gaps(
     This replaces the older "insert missing S1 in long RR" event-level logic.
     We operate on the already-generated *state sequence*: if any single state segment is
     long enough to plausibly contain an additional full cardiac cycle (per the same model
-    used by _pass3_rebuild_unknown_runs), we mark the surplus tail as STATE_UNKNOWN and
+    used by _pass3_rebuild_unknown_runs), we mark the gap region as STATE_UNKNOWN and
     reuse _pass3_rebuild_unknown_runs to pack in full cycles using the same cursoring.
 
     Side notes:
@@ -1461,9 +1555,10 @@ def _pass3_insert_missing_states_in_large_gaps(
 
     SR = float(sample_rate)
     MAX_SCALE = 0.30  # must match _pass3_rebuild_unknown_runs
+    _q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
 
     logging.info(
-        "Pass 3 gap insert: scanning %d boundary segment(s) for extra-cycle surplus tails.",
+        "Pass 3 gap insert: scanning %d boundary segment(s) for extra-cycle gap region candidates.",
         len(state_boundaries),
     )
 
@@ -1495,6 +1590,7 @@ def _pass3_insert_missing_states_in_large_gaps(
 
     changed = False
     new_bd: List[Tuple] = []
+    max_cycles_by_gap: Dict[Tuple[int, int], int] = {}
     n_phase_segments = 0
     n_skip_not_wide = 0
     n_skip_tail_short = 0
@@ -1552,22 +1648,97 @@ def _pass3_insert_missing_states_in_large_gaps(
             new_bd.append(seg)
             continue
 
-        # Mark the surplus tail as unknown; keep the expected head of the segment.
-        tail_lo = a0 + exp_phase
-        tail_hi = a1
-        if tail_hi - tail_lo < 4:
+        # Gap region candidate:
+        # This phase segment is long enough to plausibly contain extra cycle(s). We keep the
+        # expected phase head and treat the remainder as the gap region (if it is not silent).
+        gap_region_lo = a0 + exp_phase
+        gap_region_hi = a1
+        if gap_region_hi - gap_region_lo < 4:
             n_skip_tail_short += 1
             new_bd.append(seg)
             continue
 
+        # Cull-first (block filling until sensitive peak detector sees anything):
+        # If the sensitive pass sees no peaks at all in this gap region, treat it as
+        # "silent" and do not create STATE_UNKNOWN here (so rebuild never touches it).
+        gap_region_lo_orig = int(gap_region_lo)
+        try:
+            _pk_sens = _detect_sensitive_peaks_in_large_gap_windows(
+                audio_envelope,
+                sample_rate,
+                [{"start_sample": int(gap_region_lo), "end_sample": int(gap_region_hi)}],
+                params,
+                prominence_quantile=_q_sens,
+                dynamic_noise_floor_series=dynamic_noise_floor_series,
+            )
+        except Exception:
+            _pk_sens = np.asarray([], dtype=np.int64)
+
+        if _pk_sens is None or len(_pk_sens) == 0:
+            new_bd.append(seg)
+            continue
+
+        try:
+            first_pk = int(np.min(np.asarray(_pk_sens, dtype=np.int64)))
+        except Exception:
+            first_pk = -1
+        if first_pk < 0:
+            new_bd.append(seg)
+            continue
+
+        # Trim off the leading quiet region: if the first sensitive peak happens later,
+        # do not rebuild from the start of the gap region.
+        try:
+            first_pk_i = int(first_pk)
+        except Exception:
+            first_pk_i = -1
+        # Pre-pad: start rebuilding slightly BEFORE the first detected peak.
+        # Use half the expected S1 duration (in samples) at this time.
+        s1_expected = int(_expected_phase_samples("S1", t_mid, ivs))
+        pre_pad = max(0, int(s1_expected // 2))
+        new_gap_region_lo = int(first_pk_i) - int(pre_pad) if first_pk_i >= 0 else int(gap_region_lo)
+        new_gap_region_lo = int(max(int(gap_region_lo), min(int(new_gap_region_lo), int(gap_region_hi))))
+
+        if new_gap_region_lo > int(gap_region_lo_orig) and quiet_windows_out is not None:
+            try:
+                quiet_windows_out.append({
+                    "start_sample": int(gap_region_lo_orig),
+                    "end_sample": int(new_gap_region_lo),
+                    "gap_region_candidate_state": str(name),
+                    "trigger": "trim_quiet_prefix",
+                    "first_sensitive_peak_sample": int(first_pk_i),
+                    "s1_expected_samples": int(s1_expected),
+                    "pre_pad_samples": int(pre_pad),
+                })
+            except Exception:
+                pass
+
+        gap_region_lo = int(new_gap_region_lo)
+
+        if gap_region_hi - gap_region_lo < 4:
+            new_bd.append(seg)
+            continue
+
+        # If the sensitive detector saw N peaks in this gap region,
+        # do not generate more than N cardiac cycles when rebuilding it.
+        try:
+            _pk_sens_arr = np.asarray(_pk_sens, dtype=np.int64)
+            n_sens = int(np.sum((_pk_sens_arr >= int(gap_region_lo)) & (_pk_sens_arr < int(gap_region_hi))))
+        except Exception:
+            n_sens = 0
+        max_cycles_by_gap[(int(gap_region_lo), int(gap_region_hi))] = int(max(0, n_sens))
+
         changed = True
-        state_labels[tail_lo:tail_hi] = STATE_UNKNOWN
+        state_labels[gap_region_lo:gap_region_hi] = STATE_UNKNOWN
         if debug_windows_out is not None:
             try:
                 debug_windows_out.append({
-                    "start_sample": int(tail_lo),
-                    "end_sample": int(tail_hi),
-                    "source_state": str(name),
+                    "start_sample": int(gap_region_lo),
+                    "end_sample": int(gap_region_hi),
+                    "culled_prefix_samples": int(max(0, int(gap_region_lo) - int(gap_region_lo_orig))),
+                    "sensitive_peaks_count": int(max(0, n_sens)),
+                    "sensitive_first_peak_sample": int(first_pk),
+                    "gap_region_candidate_state": str(name),
                     "trigger": "can_fit_extra_cycle",
                     "bpm_at_mid": float(bpm),
                     "expected_phase_samples": int(exp_phase),
@@ -1581,20 +1752,20 @@ def _pass3_insert_missing_states_in_large_gaps(
         # The reasoning payload has measured_ms baked in from painting time; update it
         # so hover display reflects the new shorter duration instead of the pre-gap value.
         new_meta = dict(meta)
-        new_dur_ms = round((tail_lo - a0) / float(SR) * 1000)
+        new_dur_ms = round((gap_region_lo - a0) / float(SR) * 1000)
         if "reasoning" in new_meta and isinstance(new_meta["reasoning"], dict):
             r = dict(new_meta["reasoning"])
             r["measured_ms"] = new_dur_ms
             new_meta["reasoning"] = r
         # Also update s1_next for diastole so downstream peak derivation is consistent.
         if name == "diastole" and "s1_next" in new_meta:
-            new_meta["s1_next"] = int(tail_lo)
-        kept = (a0, tail_lo, name, new_meta)
+            new_meta["s1_next"] = int(gap_region_lo)
+        kept = (a0, gap_region_lo, name, new_meta)
         new_bd.append(kept)
 
     if not changed:
         logging.info(
-            "Pass 3 gap insert: no surplus tails marked (phase_segments=%d, skipped_not_wide=%d, skipped_short_tail=%d).",
+            "Pass 3 gap insert: no gap regions marked (phase_segments=%d, skipped_not_wide=%d, skipped_short_tail=%d).",
             n_phase_segments,
             n_skip_not_wide,
             n_skip_tail_short,
@@ -1637,13 +1808,14 @@ def _pass3_insert_missing_states_in_large_gaps(
         measured_diastole_t=measured_diastole_t,
         measured_diastole_dur=measured_diastole_dur,
         rebuild_source="gap_insert",
+        max_cycles_by_gap=max_cycles_by_gap,
     )
     _gap_ins = sum(
         1 for s in rebuilt
         if s[2] == "S1" and isinstance(s[3], dict) and s[3].get("rebuild_source") == "gap_insert"
     )
     logging.info(
-        "Pass 3 gap insert: rebuild done (%d surplus tail window(s), %d rebuilt S1 from gap_insert).",
+        "Pass 3 gap insert: rebuild done (%d gap region window(s), %d rebuilt S1 from gap_insert).",
         len(debug_windows_out or []),
         _gap_ins,
     )
@@ -2068,6 +2240,7 @@ def run_pass3_correction(
             analysis_data["pass3_bpm_prior_times"] = _bpm_prior_t
             analysis_data["pass3_bpm_prior"] = _bpm_prior
         _gap_debug: List[Dict[str, Any]] = []
+        _gap_quiet_debug: List[Dict[str, Any]] = []
         state_labels, state_boundaries = _pass3_insert_missing_states_in_large_gaps(
             state_labels,
             state_boundaries,
@@ -2076,29 +2249,52 @@ def run_pass3_correction(
             fallback_bpm,
             sample_rate,
             params,
+            audio_envelope,
             measured_systole_t=_ms_t_r,
             measured_systole_dur=_ms_d_r,
             measured_diastole_t=_md_t_r,
             measured_diastole_dur=_md_d_r,
             debug_windows_out=_gap_debug,
+            quiet_windows_out=_gap_quiet_debug,
+            dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
         )
         if _gap_debug:
             analysis_data["pass3_large_gap_windows_samples"] = list(_gap_debug)
+        if _gap_quiet_debug:
+            analysis_data["pass3_gap_quiet_windows_samples"] = list(_gap_quiet_debug)
             # Optional: rerun a more sensitive peak detector inside these large-gap windows.
             if bool(params.get("pass3_enable_gap_peak_recovery", True)):
-                recovered = _detect_sensitive_peaks_in_large_gap_windows(
+                q_ins = float(params.get("pass3_gap_recovery_peak_prominence_quantile_insensitive", 0.70))
+                q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
+                recovered_ins = _detect_sensitive_peaks_in_large_gap_windows(
                     audio_envelope,
                     sample_rate,
                     analysis_data.get("pass3_large_gap_windows_samples") or [],
                     params,
+                    prominence_quantile=q_ins,
                     dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
                 )
-                analysis_data["pass3_large_gap_recovered_peaks"] = recovered.tolist()
+                recovered_sens = _detect_sensitive_peaks_in_large_gap_windows(
+                    audio_envelope,
+                    sample_rate,
+                    analysis_data.get("pass3_large_gap_windows_samples") or [],
+                    params,
+                    prominence_quantile=q_sens,
+                    dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
+                )
+                analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = recovered_ins.tolist()
+                analysis_data["pass3_large_gap_recovered_peaks_sensitive"] = recovered_sens.tolist()
                 _snap_window = int(round(
                     float(params.get("pass3_gap_snap_window_ms", 80.0)) * sample_rate / 1000.0
                 ))
                 state_labels, state_boundaries = _pass3_snap_rebuilt_states_to_recovered_peaks(
-                    state_labels, state_boundaries, recovered, audio_envelope, sample_rate, _snap_window,
+                    state_labels,
+                    state_boundaries,
+                    recovered_ins,
+                    recovered_sens,
+                    audio_envelope,
+                    sample_rate,
+                    _snap_window,
                 )
     else:
         logging.info("Pass 3: gap state insert disabled (pass3_enable_gap_state_insert=False).")

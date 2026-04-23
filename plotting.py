@@ -380,7 +380,9 @@ class Plotter:
         self._pass3_state_labels_encoding = analysis_data.get("pass3_state_labels_encoding") or {}
         self._noise_event_segments = analysis_data.get("noise_event_segments") or []
         self._pass3_large_gap_windows_samples = analysis_data.get("pass3_large_gap_windows_samples") or []
-        self._pass3_large_gap_recovered_peaks = analysis_data.get("pass3_large_gap_recovered_peaks") or []
+        self._pass3_gap_quiet_windows_samples = analysis_data.get("pass3_gap_quiet_windows_samples") or []
+        self._pass3_large_gap_recovered_peaks_insensitive = analysis_data.get("pass3_large_gap_recovered_peaks_insensitive") or []
+        self._pass3_large_gap_recovered_peaks_sensitive = analysis_data.get("pass3_large_gap_recovered_peaks_sensitive") or []
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
@@ -1061,41 +1063,52 @@ class Plotter:
         """Pass 3 debug: markers for peaks re-detected at higher sensitivity inside large-gap windows."""
         if getattr(self, "skip_detailed_debug_traces", False):
             return
-        rec = getattr(self, "_pass3_large_gap_recovered_peaks", None) or []
-        if not rec:
-            return
-        try:
-            indices = np.asarray(rec, dtype=np.int64)
-        except Exception:
-            return
-        if indices.size == 0:
-            return
-        # Clip to array bounds
-        n = int(len(audio_envelope))
-        indices = indices[(indices >= 0) & (indices < n)]
-        if indices.size == 0:
-            return
-
-        customdata = []
-        for ix in indices.tolist():
+        def _add(rec, name, color):
+            if not rec:
+                return
             try:
-                customdata.append(
-                    "<b>Type:</b> Recovered peak at large gap<br>"
-                    f"<b>Time:</b> {float(ix) / float(self.sample_rate):.2f}s<br>"
-                    f"<b>Amp:</b> {float(audio_envelope[int(ix)]):.0f}"
-                )
+                indices = np.asarray(rec, dtype=np.int64)
             except Exception:
-                customdata.append("<b>Type:</b> Recovered peak at large gap")
-        hovertemplate = "%{customdata}<extra></extra>"
-        self._add_peak_marker_trace(
-            indices=indices.tolist(),
-            customdata=customdata,
-            name="Recovered peaks at large gaps",
-            color="#b07cff",
-            symbol="triangle-up-open",
-            size=8,
-            audio_envelope=audio_envelope,
-            hovertemplate=hovertemplate,
+                return
+            if indices.size == 0:
+                return
+            # Clip to array bounds
+            n = int(len(audio_envelope))
+            indices = indices[(indices >= 0) & (indices < n)]
+            if indices.size == 0:
+                return
+
+            customdata = []
+            for ix in indices.tolist():
+                try:
+                    customdata.append(
+                        f"<b>Type:</b> {name}<br>"
+                        f"<b>Time:</b> {float(ix) / float(self.sample_rate):.2f}s<br>"
+                        f"<b>Amp:</b> {float(audio_envelope[int(ix)]):.0f}"
+                    )
+                except Exception:
+                    customdata.append(f"<b>Type:</b> {name}")
+            hovertemplate = "%{customdata}<extra></extra>"
+            self._add_peak_marker_trace(
+                indices=indices.tolist(),
+                customdata=customdata,
+                name=name,
+                color=color,
+                symbol="triangle-up-open",
+                size=8,
+                audio_envelope=audio_envelope,
+                hovertemplate=hovertemplate,
+            )
+
+        _add(
+            getattr(self, "_pass3_large_gap_recovered_peaks_insensitive", None) or [],
+            "Recovered peaks at large gaps (insensitive)",
+            "#b07cff",
+        )
+        _add(
+            getattr(self, "_pass3_large_gap_recovered_peaks_sensitive", None) or [],
+            "Recovered peaks at large gaps (sensitive)",
+            "#67d1ff",
         )
 
     def _average_prominence_by_time_segment(
@@ -1882,12 +1895,39 @@ class Plotter:
                         continue
                     d = {"start": float(a) / sr, "end": float(b) / sr}
                     # Optional extra debug fields for tooltip
-                    for k in ("source_state", "trigger", "bpm_at_mid", "expected_phase_samples", "cycle0_samples", "segment_samples"):
+                    for k in ("gap_region_candidate_state", "source_state", "trigger", "bpm_at_mid", "expected_phase_samples", "cycle0_samples", "segment_samples"):
                         if k in w:
                             d[k] = w[k]
                     out_gap.append(d)
             if out_gap:
                 config_payload["pass3LargeGapSegments"] = out_gap
+
+        # Pass 3: quiet-prefix windows trimmed from gap regions (sample indices → seconds)
+        quiet_wins = getattr(self, "_pass3_gap_quiet_windows_samples", None) or []
+        if quiet_wins and isinstance(quiet_wins, list):
+            out_quiet = []
+            try:
+                srq = float(self.sample_rate) if self.sample_rate else None
+            except Exception:
+                srq = None
+            if srq and srq > 0:
+                for w in quiet_wins:
+                    if not isinstance(w, dict):
+                        continue
+                    try:
+                        a = int(w.get("start_sample", -1))
+                        b = int(w.get("end_sample", -1))
+                    except Exception:
+                        continue
+                    if a < 0 or b <= a:
+                        continue
+                    d = {"start": float(a) / srq, "end": float(b) / srq}
+                    for k in ("gap_region_candidate_state", "trigger"):
+                        if k in w:
+                            d[k] = w[k]
+                    out_quiet.append(d)
+            if out_quiet:
+                config_payload["pass3GapQuietSegments"] = out_quiet
         config_json = json.dumps(config_payload)
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))

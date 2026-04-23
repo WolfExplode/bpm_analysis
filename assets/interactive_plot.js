@@ -55,6 +55,7 @@
   const noiseStateStripTooltip = document.getElementById("noise-state-strip-tooltip");
   const _rawNoiseSegs = Array.isArray(cfg.noiseEventSegments) ? cfg.noiseEventSegments : [];
   const _rawGapSegs = Array.isArray(cfg.pass3LargeGapSegments) ? cfg.pass3LargeGapSegments : [];
+  const _rawGapQuietSegs = Array.isArray(cfg.pass3GapQuietSegments) ? cfg.pass3GapQuietSegments : [];
   const NOISE_EVENT_SEGMENTS = _rawNoiseSegs
     .slice()
     .sort((a, b) => {
@@ -63,6 +64,13 @@
       return s0 - s1;
     });
   const PASS3_LARGE_GAP_SEGMENTS = _rawGapSegs
+    .slice()
+    .sort((a, b) => {
+      const s0 = typeof a.start === "number" ? a.start : parseFloat(a.start);
+      const s1 = typeof b.start === "number" ? b.start : parseFloat(b.start);
+      return s0 - s1;
+    });
+  const PASS3_GAP_QUIET_SEGMENTS = _rawGapQuietSegs
     .slice()
     .sort((a, b) => {
       const s0 = typeof a.start === "number" ? a.start : parseFloat(a.start);
@@ -370,7 +378,8 @@
     if (!noiseStateStripCanvas || !plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
     if (
       (!NOISE_EVENT_SEGMENTS || NOISE_EVENT_SEGMENTS.length === 0) &&
-      (!PASS3_LARGE_GAP_SEGMENTS || PASS3_LARGE_GAP_SEGMENTS.length === 0)
+      (!PASS3_LARGE_GAP_SEGMENTS || PASS3_LARGE_GAP_SEGMENTS.length === 0) &&
+      (!PASS3_GAP_QUIET_SEGMENTS || PASS3_GAP_QUIET_SEGMENTS.length === 0)
     ) {
       noiseStateStripCanvas.style.display = "none";
       noiseStateStripCanvas.width = 1;
@@ -416,6 +425,7 @@
     const span = x1ms - x0ms;
     const noiseColor = "#c0392b";
     const gapColor = "#f39c12";
+    const gapQuietColor = "#7f8c8d";
     for (const seg of NOISE_EVENT_SEGMENTS) {
       if (!seg) continue;
       const startSec = typeof seg.start === "number" ? seg.start : parseFloat(seg.start);
@@ -452,6 +462,25 @@
       const xEnd = Math.max(0, Math.min(width, px1));
       if (xEnd <= x) continue;
       ctx.fillStyle = gapColor;
+      ctx.fillRect(x, 0, xEnd - x, stripHeight);
+    }
+
+    for (const seg of PASS3_GAP_QUIET_SEGMENTS) {
+      if (!seg) continue;
+      const startSec = typeof seg.start === "number" ? seg.start : parseFloat(seg.start);
+      const endSec = typeof seg.end === "number" ? seg.end : parseFloat(seg.end);
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) continue;
+      const s0 = secondsToDatetime(startSec).getTime();
+      const s1 = secondsToDatetime(endSec).getTime();
+      if (s1 <= x0ms || s0 >= x1ms) continue;
+      const cl0 = Math.max(x0ms, s0);
+      const cl1 = Math.min(x1ms, s1);
+      const px0 = Math.floor(((cl0 - x0ms) / span) * width);
+      const px1 = Math.ceil(((cl1 - x0ms) / span) * width);
+      const x = Math.max(0, Math.min(width, px0));
+      const xEnd = Math.max(0, Math.min(width, px1));
+      if (xEnd <= x) continue;
+      ctx.fillStyle = gapQuietColor;
       ctx.fillRect(x, 0, xEnd - x, stripHeight);
     }
   }
@@ -522,6 +551,20 @@
     return null;
   }
 
+  function _gapQuietSegmentAtTime(tSec) {
+    if (!PASS3_GAP_QUIET_SEGMENTS || PASS3_GAP_QUIET_SEGMENTS.length === 0) return null;
+    let lo = 0;
+    let hi = PASS3_GAP_QUIET_SEGMENTS.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const seg = PASS3_GAP_QUIET_SEGMENTS[mid];
+      if (tSec < seg.start) { hi = mid - 1; }
+      else if (tSec >= seg.end) { lo = mid + 1; }
+      else { return seg; }
+    }
+    return null;
+  }
+
   function _formatNoiseTooltip(seg) {
     if (!seg) return null;
     const t0 = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
@@ -567,8 +610,9 @@
     if (!seg) return null;
     const t0 = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
     const t1 = typeof seg.end === "number" ? seg.end.toFixed(2) : "?";
-    const lines = [`Large gap detected`, `${t0}s – ${t1}s`];
-    if (seg.source_state) lines.push(`Source state: ${seg.source_state}`);
+    const lines = [`Gap region`, `${t0}s – ${t1}s`];
+    if (seg.gap_region_candidate_state) lines.push(`Gap region candidate: ${seg.gap_region_candidate_state}`);
+    else if (seg.source_state) lines.push(`Source state: ${seg.source_state}`);
     if (seg.bpm_at_mid !== undefined && seg.bpm_at_mid !== null) lines.push(`BPM@mid: ${Number(seg.bpm_at_mid).toFixed(1)}`);
     if (seg.expected_phase_samples !== undefined && seg.expected_phase_samples !== null)
       lines.push(`Expected phase: ${seg.expected_phase_samples} samples`);
@@ -576,6 +620,16 @@
       lines.push(`Nominal cycle: ${seg.cycle0_samples} samples`);
     if (seg.segment_samples !== undefined && seg.segment_samples !== null)
       lines.push(`Segment: ${seg.segment_samples} samples`);
+    return lines.join("\n");
+  }
+
+  function _formatGapQuietTooltip(seg) {
+    if (!seg) return null;
+    const t0 = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
+    const t1 = typeof seg.end === "number" ? seg.end.toFixed(2) : "?";
+    const lines = [`Quiet (trimmed from gap region)`, `${t0}s – ${t1}s`];
+    if (seg.gap_region_candidate_state) lines.push(`Gap region candidate: ${seg.gap_region_candidate_state}`);
+    if (seg.trigger) lines.push(`Trigger: ${seg.trigger}`);
     return lines.join("\n");
   }
 
@@ -613,8 +667,9 @@
         const x1ms = new Date(xAxisRange[1]).getTime();
         const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms)) / 1000;
         const gapSeg = _gapSegmentAtTime(tSec);
+        const quietSeg = _gapQuietSegmentAtTime(tSec);
         const noiseSeg = _noiseSegmentAtTime(tSec);
-        const text = _formatGapTooltip(gapSeg) || _formatNoiseTooltip(noiseSeg);
+        const text = _formatGapTooltip(gapSeg) || _formatGapQuietTooltip(quietSeg) || _formatNoiseTooltip(noiseSeg);
         if (!text) {
           noiseStateStripTooltip.classList.add("hidden");
           return;
