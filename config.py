@@ -29,10 +29,15 @@ DEFAULT_PARAMS = {
 
     "envelope_smooth_window_ms": 40,      # Rolling window (ms) for smoothing Hilbert envelope after abs(analytic). Matches common PCG practice (e.g. 50 ms).
 
-    # HF noise strip: merge / min-duration only (threshold quantile is hardcoded in noise_segments.py).
+    # HF noise strip (inverse-band envelope): gate + merge / min-duration / pad.
+    # Higher noise_segment_gate_quantile or noise_segment_gate_min_amplitude → fewer samples exceed the gate → fewer noisy regions (noise strip + pass3_noise_unreliable_windows when pass3_calculate_noisy_regions).
+    "noise_segment_gate_quantile": 0.90,    # File-local quantile of HF envelope; only at/above this level can count as noisy (was 0.85 hardcoded).
+    "noise_segment_gate_min_amplitude": 0.03,  # Absolute floor on envelope; raise with quantile to be stricter (was 0.02 hardcoded).
     "noise_segment_merge_gap_ms": 500.0,    # Merge if gap < this before expand_ms and again after (expanded time).
     "noise_segment_min_duration_ms": 20.0,  # Drop shorter noisy blips after merge.
     "noise_segment_expand_ms": 100.0,       # Pad each segment start/end by this (quantile gate tends to clip early/late).
+    # If merged+expanded HF-noise intervals cover more than this fraction of the file, discard all segments (unreliable gate: clipping, overload, low Nyquist).
+    "noise_segment_max_coverage": 0.40,
 
     # =================================================================================
     # 2. Signal Feature Detection
@@ -172,7 +177,7 @@ DEFAULT_PARAMS = {
     # =================================================================================
 
     # --- 6.1 Noise repair (global modifier after the initial timeline exists) ---
-    "pass3_calculate_noisy_regions": True, # "Calculate noisy regions" (HF strip): embed Pass 3 unreliable sample windows on the noise strip when available.
+    "pass3_calculate_noisy_regions": True,  # HF strip: prefer pass3 windows from noise_event_segments. Sensitivity is noise_segment_gate_quantile / noise_segment_gate_min_amplitude (not this flag alone).
     # If enabled and HF-noise windows exist: clear state labels inside those spans and rebuild the full S1→systole→S2→diastole sequence.
     "pass3_enable_noise_repair": True,
 
@@ -205,7 +210,7 @@ DEFAULT_PARAMS = {
     # 7. Output, HRV & Reporting
     # Controls for final calculations, reports, and plots
     # =================================================================================
-    "output_smoothing_window_sec": 5,        # Time window (seconds) for smoothing the final BPM curve for display.
+    "output_smoothing_window_sec": 3,        # Time window (seconds) for smoothing the final BPM curve for display (Gaussian σ ≈ window/3; lower = less smoothing).
     "hrv_window_size_beats": 40,             # Sliding window size (in beats) for HRV calculation.
     "hrv_step_size_beats": 5,                # How many beats the HRV window moves in each step.
     "enable_hrv_frequency_domain": True,     # If True, compute Lomb-Scargle LF/HF and optional global VLF/LF/HF.
