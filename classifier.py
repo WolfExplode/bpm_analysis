@@ -48,7 +48,8 @@ class PeakClassifier:
                  start_bpm_hint: Optional[float], precomputed_noise_floor: pd.Series,
                  precomputed_troughs: np.ndarray, peak_bpm_time_sec: Optional[float],
                  recovery_end_time_sec: Optional[float],
-                 pass1_bpm_prior: Optional[Callable[[float], float]] = None):
+                 pass1_bpm_prior: Optional[Callable[[float], float]] = None,
+                 raw_peaks_override: Optional[np.ndarray] = None):
 
         self.audio_envelope = audio_envelope
         self.sample_rate = sample_rate
@@ -65,31 +66,46 @@ class PeakClassifier:
         )
 
         self.state = self._initialize_state(
-            start_bpm_hint, precomputed_noise_floor, precomputed_troughs, pass1_bpm_prior
+            start_bpm_hint, precomputed_noise_floor, precomputed_troughs, pass1_bpm_prior,
+            raw_peaks_override=raw_peaks_override,
         )
 
-    def _initialize_state(self, start_bpm_hint, precomputed_noise_floor, precomputed_troughs, pass1_bpm_prior=None) -> AnalysisState:
+    def _initialize_state(
+        self,
+        start_bpm_hint,
+        precomputed_noise_floor,
+        precomputed_troughs,
+        pass1_bpm_prior=None,
+        raw_peaks_override: Optional[np.ndarray] = None,
+    ) -> AnalysisState:
         """Pre-calculates all necessary data and initializes the state for the peak finding loop."""
         analysis_data: Dict[str, Any] = {}
         dynamic_noise_floor, trough_indices = precomputed_noise_floor, precomputed_troughs
-        all_peaks = self._find_raw_peaks(dynamic_noise_floor.values)
-        all_peaks = self._refine_peaks_by_center_of_mass(all_peaks)
+        if raw_peaks_override is not None and len(np.asarray(raw_peaks_override)) > 0:
+            all_peaks = np.sort(np.unique(np.asarray(raw_peaks_override, dtype=np.int64)))
+            all_peaks = self._refine_peaks_by_center_of_mass(all_peaks)
+        else:
+            all_peaks = self._find_raw_peaks(dynamic_noise_floor.values)
+            all_peaks = self._refine_peaks_by_center_of_mass(all_peaks)
 
         analysis_data["dynamic_noise_floor_series"] = dynamic_noise_floor
         analysis_data["trough_indices"] = trough_indices
 
-        noise_floor_at_peaks = dynamic_noise_floor.reindex(all_peaks, method='nearest').values
-        peak_strengths = self.audio_envelope[all_peaks] - noise_floor_at_peaks
-        peak_strengths[peak_strengths < 0] = 0
-        normalized_deviations = np.abs(np.diff(peak_strengths)) / (
-            np.maximum(peak_strengths[:-1], peak_strengths[1:]) + 1e-9
-        )
-        deviation_times = (all_peaks[:-1] + all_peaks[1:]) / 2 / self.sample_rate
-        deviation_series = pd.Series(normalized_deviations, index=deviation_times)
-        smoothing_window = max(5, int(len(deviation_series) * self.params['deviation_smoothing_factor']))
-        smoothed_dev_series = deviation_series.rolling(
-            window=smoothing_window, min_periods=1, center=True
-        ).mean()
+        if len(all_peaks) < 2:
+            smoothed_dev_series = pd.Series([], dtype=np.float64)
+        else:
+            noise_floor_at_peaks = dynamic_noise_floor.reindex(all_peaks, method='nearest').values
+            peak_strengths = self.audio_envelope[all_peaks] - noise_floor_at_peaks
+            peak_strengths[peak_strengths < 0] = 0
+            normalized_deviations = np.abs(np.diff(peak_strengths)) / (
+                np.maximum(peak_strengths[:-1], peak_strengths[1:]) + 1e-9
+            )
+            deviation_times = (all_peaks[:-1] + all_peaks[1:]) / 2 / self.sample_rate
+            deviation_series = pd.Series(normalized_deviations, index=deviation_times)
+            smoothing_window = max(5, int(len(deviation_series) * self.params['deviation_smoothing_factor']))
+            smoothed_dev_series = deviation_series.rolling(
+                window=smoothing_window, min_periods=1, center=True
+            ).mean()
         analysis_data["deviation_series"] = smoothed_dev_series
 
         long_term_bpm = float(start_bpm_hint) if start_bpm_hint else 80.0
@@ -116,8 +132,19 @@ class PeakClassifier:
 
     def classify_peaks(self) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """Main classification loop to iterate through all raw peaks."""
-        if len(self.state.all_peaks) < 2:
+        p3_lg = bool(getattr(self, "_pass3_large_gap", False))
+        n_all = len(self.state.all_peaks)
+        if n_all == 0:
             return self.state.all_peaks, self.state.all_peaks, {"peak_classifications": {}}
+        if n_all == 1:
+            if not p3_lg:
+                return self.state.all_peaks, self.state.all_peaks, {"peak_classifications": {}}
+            current_peak_idx = int(self.state.all_peaks[0])
+            current_time_sec = current_peak_idx / self.sample_rate
+            if self.state.pass1_bpm_prior is not None:
+                self.state.long_term_bpm = float(self.state.pass1_bpm_prior(current_time_sec))
+            self._classify_lone_peak(current_peak_idx, [])
+            return self._finalize_results()
 
         while self.state.loop_idx < len(self.state.all_peaks):
             current_peak_idx = self.state.all_peaks[self.state.loop_idx]
@@ -130,7 +157,11 @@ class PeakClassifier:
             is_last_peak = self.state.loop_idx >= len(self.state.all_peaks) - 1
 
             if is_last_peak:
-                self._handle_last_peak(current_peak_idx)
+                if p3_lg:
+                    self._classify_lone_peak(current_peak_idx, [])
+                    self.state.loop_idx += 1
+                else:
+                    self._handle_last_peak(current_peak_idx)
             else:
                 self._process_peak_pair(current_peak_idx, pairing_ratio)
 

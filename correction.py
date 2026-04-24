@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+from classifier import PeakClassifier
 from confidence_engine import calculate_bpm_intervals
 from hrv import _median_mad_keep_mask_time_window, filter_interval_durations_by_limits
 
@@ -1278,6 +1279,478 @@ def _interp_piecewise_linear(
     return val
 
 
+def _pass3_trim_diastole_ends_on_next_s1(state_boundaries: List[Tuple]) -> List[Tuple]:
+    """Shorten diastole segment ends so they do not overlap the next S1 segment (same as main Pass 3 trim)."""
+    _trimmed: List[Tuple] = []
+    for _bi, _seg in enumerate(state_boundaries):
+        if _seg[2] == "diastole":
+            _dia_start, _dia_end, _dia_name, _dia_meta = _seg
+            _next_s1_start = _dia_end
+            for _fwd in range(_bi + 1, len(state_boundaries)):
+                if state_boundaries[_fwd][2] == "S1":
+                    _next_s1_start = state_boundaries[_fwd][0]
+                    break
+            _new_end = min(_dia_end, _next_s1_start)
+            if _new_end > _dia_start:
+                _trimmed.append((_dia_start, _new_end, _dia_name, _dia_meta))
+        else:
+            _trimmed.append(_seg)
+    return _trimmed
+
+
+def _pass3_remove_boundaries_overlapping_span(
+    state_boundaries: List[Tuple], lo: int, hi: int,
+) -> List[Tuple]:
+    out: List[Tuple] = []
+    for seg in state_boundaries:
+        a0, a1 = int(seg[0]), int(seg[1])
+        if a0 < hi and a1 > lo:
+            continue
+        out.append(seg)
+    return out
+
+
+def _pass3_find_gap_windows(
+    state_boundaries: List[Tuple],
+    n_samples: int,
+    bpm_prior_raster: Tuple[np.ndarray, np.ndarray],
+    fallback_bpm: float,
+    sample_rate: int,
+    params: Dict,
+    audio_envelope: np.ndarray,
+    *,
+    measured_systole_t: Optional[np.ndarray] = None,
+    measured_systole_dur: Optional[np.ndarray] = None,
+    measured_diastole_t: Optional[np.ndarray] = None,
+    measured_diastole_dur: Optional[np.ndarray] = None,
+    dynamic_noise_floor_series: Optional[pd.Series] = None,
+    quiet_windows_out: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Identify candidate gap windows from state_boundaries using the richer extra-cycle
+    width test and quiet/sensitive-peak prefix trim. Does NOT mutate state_labels.
+    No wall-time duration filter is applied here — callers filter by
+    gap_region_duration_sec (> threshold for labeling path, <= threshold for insert path).
+
+    Returned dict keys per window:
+      start_sample            — trimmed gap_region_lo (after quiet prefix trim)
+      end_sample              — gap_region_hi (= source segment end, before trim)
+      source_seg_start        — original segment start (a0)
+      source_seg_end          — original segment end (a1)
+      segment_name            — phase name
+      segment_duration_sec    — wall duration of original segment
+      gap_region_duration_sec — wall duration of trimmed window
+      bpm_at_mid              — BPM at segment midpoint
+      cyc0_samples            — nominal cycle length in samples
+      n_sensitive_peaks       — sensitive peaks inside trimmed window (used to cap rebuild cycles)
+      first_sensitive_peak_sample
+      meta                    — original boundary meta dict
+      s1_right                — meta["s1_next"] if present (next S1 anchor for labeling path)
+    """
+    if n_samples <= 0 or sample_rate <= 0:
+        return []
+
+    t_r, bpm_r = bpm_prior_raster
+    t_r = np.asarray(t_r, dtype=np.float64)
+    bpm_r = np.asarray(bpm_r, dtype=np.float64)
+    if len(t_r) < 2 or len(t_r) != len(bpm_r):
+        return []
+
+    SR = float(sample_rate)
+    MAX_SCALE = 0.30  # must match _pass3_rebuild_unknown_runs
+    _q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
+
+    def _bpm_at_sample(ix: int) -> float:
+        t = float(ix) / SR
+        v = _interp_piecewise_linear(t, t_r, bpm_r)
+        if v is None:
+            return float(fallback_bpm)
+        if not np.isfinite(v) or v <= 0:
+            return float(fallback_bpm)
+        return float(v)
+
+    result: List[Dict[str, Any]] = []
+
+    for seg in state_boundaries:
+        a0, a1, name, meta = seg
+        a0 = int(max(0, min(int(a0), n_samples)))
+        a1 = int(max(0, min(int(a1), n_samples)))
+        if a1 <= a0:
+            continue
+        if name not in ("S1", "systole", "S2", "diastole"):
+            continue
+
+        seg_dur_sec = (a1 - a0) / SR
+        width = a1 - a0
+        t_mid = 0.5 * (a0 + a1) / SR
+        bpm = _bpm_at_sample(int((a0 + a1) // 2))
+        ivs = calculate_bpm_intervals(bpm, params)
+
+        s1_sec = float(ivs.get("s1_nominal", 0.040))
+        s2_sec = float(ivs.get("s2_nominal", 0.030))
+        sys_sec = _interp_piecewise_linear(t_mid, measured_systole_t, measured_systole_dur)
+        if sys_sec is None:
+            sys_sec = float(ivs.get("s1_s2_nominal", 0.300))
+        dia_sec = _interp_piecewise_linear(t_mid, measured_diastole_t, measured_diastole_dur)
+        if dia_sec is None:
+            rr_sec = 60.0 / bpm if bpm > 0 else 0.75
+            dia_sec = float(ivs.get("s2_s1_nominal", max(0.0, rr_sec - float(sys_sec))))
+        cyc0 = (
+            max(1, int(round(s1_sec * SR)))
+            + max(1, int(round(sys_sec * SR)))
+            + max(1, int(round(s2_sec * SR)))
+            + max(1, int(round(dia_sec * SR)))
+        )
+
+        min_extra = int(round((1.0 - MAX_SCALE) * float(max(1, cyc0))))
+        need_wide = max(4, min_extra)
+        if width < need_wide:
+            continue
+
+        gap_region_lo = a0
+        gap_region_hi = a1
+        gap_region_lo_orig = int(gap_region_lo)
+
+        try:
+            _pk_sens = _detect_sensitive_peaks_in_large_gap_windows(
+                audio_envelope, sample_rate,
+                [{"start_sample": int(gap_region_lo), "end_sample": int(gap_region_hi)}],
+                params,
+                prominence_quantile=_q_sens,
+                dynamic_noise_floor_series=dynamic_noise_floor_series,
+            )
+        except Exception:
+            _pk_sens = np.asarray([], dtype=np.int64)
+
+        if _pk_sens is None or len(_pk_sens) == 0:
+            if quiet_windows_out is not None:
+                try:
+                    quiet_windows_out.append({
+                        "start_sample": int(gap_region_lo_orig),
+                        "end_sample": int(gap_region_hi),
+                        "gap_region_candidate_state": str(name),
+                        "trigger": "quiet_entire_gap_region",
+                    })
+                except Exception:
+                    pass
+            continue
+
+        try:
+            first_pk_i = int(np.min(np.asarray(_pk_sens, dtype=np.int64)))
+        except Exception:
+            continue
+
+        s1_sec_nom = float(ivs.get("s1_nominal", 0.040))
+        s1_expected = max(1, int(round(s1_sec_nom * SR)))
+        pre_pad = max(0, int(s1_expected // 2))
+        new_gap_region_lo = int(first_pk_i) - int(pre_pad)
+        new_gap_region_lo = int(max(int(a0), min(int(new_gap_region_lo), int(gap_region_hi))))
+
+        if new_gap_region_lo > gap_region_lo_orig and quiet_windows_out is not None:
+            try:
+                quiet_windows_out.append({
+                    "start_sample": int(gap_region_lo_orig),
+                    "end_sample": int(new_gap_region_lo),
+                    "gap_region_candidate_state": str(name),
+                    "trigger": "trim_quiet_prefix",
+                    "first_sensitive_peak_sample": int(first_pk_i),
+                    "s1_expected_samples": int(s1_expected),
+                    "pre_pad_samples": int(pre_pad),
+                })
+            except Exception:
+                pass
+
+        gap_region_lo = int(new_gap_region_lo)
+
+        if gap_region_hi - gap_region_lo < 4:
+            continue
+
+        try:
+            _pk_sens_arr = np.asarray(_pk_sens, dtype=np.int64)
+            n_sens = int(np.sum(
+                (_pk_sens_arr >= int(gap_region_lo)) & (_pk_sens_arr < int(gap_region_hi))
+            ))
+        except Exception:
+            n_sens = 0
+
+        s1_right: Optional[int] = None
+        if isinstance(meta, dict) and meta.get("s1_next") is not None:
+            s1_right = int(meta["s1_next"])
+
+        gap_dur_sec = (gap_region_hi - gap_region_lo) / SR
+
+        result.append({
+            "start_sample": int(gap_region_lo),
+            "end_sample": int(gap_region_hi),
+            "source_seg_start": int(a0),
+            "source_seg_end": int(a1),
+            "segment_name": str(name),
+            "segment_duration_sec": float(seg_dur_sec),
+            "gap_region_duration_sec": float(gap_dur_sec),
+            "bpm_at_mid": float(bpm),
+            "cyc0_samples": int(cyc0),
+            "n_sensitive_peaks": int(n_sens),
+            "first_sensitive_peak_sample": int(first_pk_i),
+            "meta": dict(meta) if isinstance(meta, dict) else {},
+            "s1_right": s1_right,
+        })
+
+    return result
+
+
+def _pass3_apply_peaks_labeling_in_large_gaps(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    *,
+    gap_windows: List[Dict[str, Any]],
+    n_samples: int,
+    sample_rate: int,
+    params: Dict,
+    audio_envelope: np.ndarray,
+    analysis_data: Dict,
+    s1_list: List[int],
+    lt_pass3: Any,
+    fallback_bpm: float,
+    s1_s2_pairs: List,
+    corrections: List[Dict],
+    before_s2_by_s1: Dict,
+    before_s1next_by_s1: Dict,
+    s1_half: int,
+    s2_half: int,
+    edge_alpha: float,
+    edge_n_exp: float,
+    s1_min_half: int,
+    s1_max_half: int,
+    s2_min_half: int,
+    s2_max_half: int,
+) -> Tuple[np.ndarray, List[Tuple]]:
+    """
+    Pass 3 — for large gaps (> threshold) from the pre-computed gap_windows list, run
+    insensitive peaks + the same S1/S2/Noise labeling as Pass 2, then paint cardiac states
+    into the gap. Runs after noise repair, consuming shared gap windows.
+    """
+    if not bool(params.get("pass3_enable_peaks_labeling_in_large_gaps", True)):
+        return state_labels, state_boundaries
+    if not gap_windows:
+        return state_labels, state_boundaries
+
+    min_sec = float(params.get("pass3_peaks_labeling_in_large_gaps_min_sec", 10.0))
+    nf = analysis_data.get("dynamic_noise_floor_series")
+    tr = analysis_data.get("trough_indices")
+    if nf is None or tr is None or not isinstance(nf, pd.Series):
+        return state_labels, state_boundaries
+    tr_arr = np.asarray(tr, dtype=np.int64)
+    if tr_arr.size == 0:
+        return state_labels, state_boundaries
+
+    # Filter for gaps exceeding the large-gap threshold.
+    large_gaps = [
+        gw for gw in gap_windows
+        if float(gw.get("gap_region_duration_sec", 0.0)) > min_sec
+        and gw.get("s1_right") is not None
+    ]
+    if not large_gaps:
+        return state_labels, state_boundaries
+
+    large_gaps.sort(key=lambda g: int(g.get("start_sample", 0)))
+
+    # Mark all large-gap regions as STATE_UNKNOWN so state_boundaries no longer covers them.
+    for gw in large_gaps:
+        lo = int(gw["start_sample"])
+        hi = int(gw["end_sample"])
+        if hi > lo:
+            state_labels[lo:hi] = STATE_UNKNOWN
+
+    _sr_f = float(sample_rate)
+    _SHIFT_THRESH = int(0.020 * sample_rate)
+    s1_s2_pairs = s1_s2_pairs or []
+    _corrs_by_s1: Dict[int, List[Dict]] = {}
+    for _c in corrections:
+        _ck = _c.get("s1") if _c.get("s1") is not None else _c.get("s1_prev")
+        if _ck is not None:
+            _corrs_by_s1.setdefault(int(_ck), []).append(_c)
+    all_corr_sorted = sorted(
+        [(float(_c.get("s1", _c.get("s1_prev", 0))) / _sr_f, _c) for _c in corrections],
+        key=lambda x: x[0],
+    )
+    q_ins = float(params.get("pass3_gap_recovery_peak_prominence_quantile_insensitive", 0.70))
+    bd: List[Tuple] = list(state_boundaries)
+
+    for gw in large_gaps:
+        lo = int(gw["start_sample"])
+        hi = int(gw["end_sample"])
+        s1_right = int(gw["s1_right"])  # safe: filtered above
+        src_lo = int(gw.get("source_seg_start", lo))
+        src_name = str(gw.get("segment_name", "diastole"))
+        src_meta = dict(gw.get("meta", {}))
+        if hi <= lo or s1_right <= lo:
+            continue
+
+        # Keep quiet-trimmed prefix from the original source segment so boundaries remain
+        # contiguous when labeling starts at trimmed `lo` (common for diastole).
+        prefix_seg: Optional[Tuple] = None
+        if src_lo < lo:
+            prefix_meta = dict(src_meta)
+            if "reasoning" in prefix_meta and isinstance(prefix_meta["reasoning"], dict):
+                _r = dict(prefix_meta["reasoning"])
+                _r["measured_ms"] = round((lo - src_lo) / _sr_f * 1000.0)
+                prefix_meta["reasoning"] = _r
+            if src_name == "diastole" and "s1_next" in prefix_meta:
+                prefix_meta["s1_next"] = int(lo)
+            prefix_seg = (int(src_lo), int(lo), src_name, prefix_meta)
+
+        w = [{"start_sample": lo, "end_sample": hi}]
+        pkins = _detect_sensitive_peaks_in_large_gap_windows(
+            audio_envelope, sample_rate, w, params,
+            prominence_quantile=q_ins,
+            dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
+        )
+        if pkins is None or len(pkins) == 0:
+            bd = _pass3_remove_boundaries_overlapping_span(bd, lo, hi)
+            if prefix_seg is not None and prefix_seg[1] > prefix_seg[0]:
+                bd.append(prefix_seg)
+                _st_prefix = {
+                    "S1": STATE_S1, "systole": STATE_SYSTOLE, "S2": STATE_S2, "diastole": STATE_DIASTOLE,
+                }.get(src_name)
+                if _st_prefix is not None:
+                    state_labels[int(prefix_seg[0]):int(prefix_seg[1])] = _st_prefix
+            bd.append((lo, hi, "unknown", {"rebuild_source": "gap_label_pass3"}))
+            bd = sorted(bd, key=lambda s: s[0])
+            continue
+
+        def _bpm_callable(t_sec: float) -> float:
+            return _bpm_at_time(float(t_sec), lt_pass3, float(fallback_bpm))
+
+        cl = PeakClassifier(
+            audio_envelope,
+            sample_rate,
+            params,
+            float(fallback_bpm),
+            nf,
+            tr_arr,
+            None,
+            None,
+            pass1_bpm_prior=_bpm_callable,
+            raw_peaks_override=pkins,
+        )
+        cl._pass3_large_gap = True
+        cl.classify_peaks()
+
+        s2_by_s1 = {int(a): int(b) for a, b in cl._build_s1_s2_pairs()}
+
+        cand = sorted(
+            {
+                int(x) for x in cl.state.candidate_beats
+                if lo <= int(x) < min(hi, s1_right)
+            }
+        )
+        if not cand:
+            bd = _pass3_remove_boundaries_overlapping_span(bd, lo, hi)
+            if prefix_seg is not None and prefix_seg[1] > prefix_seg[0]:
+                bd.append(prefix_seg)
+                _st_prefix = {
+                    "S1": STATE_S1, "systole": STATE_SYSTOLE, "S2": STATE_S2, "diastole": STATE_DIASTOLE,
+                }.get(src_name)
+                if _st_prefix is not None:
+                    state_labels[int(prefix_seg[0]):int(prefix_seg[1])] = _st_prefix
+            bd.append((lo, hi, "unknown", {"rebuild_source": "gap_label_pass3"}))
+            bd = sorted(bd, key=lambda s: s[0])
+            continue
+
+        chain = [int(x) for x in cand if int(x) < s1_right]
+        if not chain:
+            bd = _pass3_remove_boundaries_overlapping_span(bd, lo, hi)
+            if prefix_seg is not None and prefix_seg[1] > prefix_seg[0]:
+                bd.append(prefix_seg)
+                _st_prefix = {
+                    "S1": STATE_S1, "systole": STATE_SYSTOLE, "S2": STATE_S2, "diastole": STATE_DIASTOLE,
+                }.get(src_name)
+                if _st_prefix is not None:
+                    state_labels[int(prefix_seg[0]):int(prefix_seg[1])] = _st_prefix
+            bd.append((lo, hi, "unknown", {"rebuild_source": "gap_label_pass3"}))
+            bd = sorted(bd, key=lambda s: s[0])
+            continue
+        chain.append(s1_right)
+
+        bd = _pass3_remove_boundaries_overlapping_span(bd, lo, hi)
+        if prefix_seg is not None and prefix_seg[1] > prefix_seg[0]:
+            bd.append(prefix_seg)
+            _st_prefix = {
+                "S1": STATE_S1, "systole": STATE_SYSTOLE, "S2": STATE_S2, "diastole": STATE_DIASTOLE,
+            }.get(src_name)
+            if _st_prefix is not None:
+                state_labels[int(prefix_seg[0]):int(prefix_seg[1])] = _st_prefix
+        new_segs: List[Tuple] = []
+        for j in range(len(chain) - 1):
+            s1 = chain[j]
+            s1_next = chain[j + 1]
+            if s1_next <= s1:
+                continue
+            t_s1 = s1 / _sr_f
+            bpm = _bpm_at_time(t_s1, lt_pass3, float(fallback_bpm))
+            ivs = calculate_bpm_intervals(bpm, params)
+            _cascade: Optional[Dict] = None
+            for _ct, _cc in all_corr_sorted:
+                if _ct >= t_s1 - 0.010:
+                    break
+                if _cc not in _corrs_by_s1.get(s1, []):
+                    _cascade = _cc
+            s2g = s2_by_s1.get(s1)
+            if s2g is None:
+                s2_pred = int(round(s1 + float(ivs.get("s1_s2_nominal", 0.30)) * _sr_f))
+                s2g = int(max(s1 + 1, min(s2_pred, s1_next - 1)))
+            else:
+                s2g = int(max(s1 + 1, min(int(s2g), s1_next - 1)))
+
+            s1_start, s1_end, s2_start, s2_end = _paint_state_boundaries(
+                s1, s2g, s1_next, s1_half, s2_half, n_samples,
+                audio_envelope=audio_envelope,
+                edge_alpha=edge_alpha, edge_n_exp=edge_n_exp,
+                min_s1_half=s1_min_half, max_s1_half=s1_max_half,
+                min_s2_half=s2_min_half, max_s2_half=s2_max_half,
+                use_transient_detection=True,
+            )
+            if j == 0 and s1_start > lo:
+                _rs_p = {
+                    "s1": s1, "s2": s2g, "s1_next": s1,
+                    "rebuild_source": "gap_label_pass3",
+                }
+                new_segs.append(
+                    (lo, min(s1_start, n_samples), "diastole", _rs_p),
+                )
+                if min(s1_start, n_samples) > lo:
+                    state_labels[lo:min(s1_start, n_samples)] = STATE_DIASTOLE
+            _reasoning = _build_reasoning_payload(
+                s1, s1_start, s1_end, s2g, s2_start, s2_end, s1_next,
+                ivs, _corrs_by_s1.get(s1, []), _cascade,
+                before_s2_by_s1.get(s1), before_s1next_by_s1.get(s1),
+                _sr_f, _SHIFT_THRESH,
+                hover_debug_geometry=True, hover_s1_s2_pairs=s1_s2_pairs, hover_s1_half=s1_half, hover_s2_half=s2_half, hover_n_samples=n_samples,
+            )
+            _st_code = {
+                "S1": STATE_S1, "systole": STATE_SYSTOLE, "S2": STATE_S2, "diastole": STATE_DIASTOLE,
+            }
+            for ph in (
+                (s1_start, s1_end, "S1", {"s1": s1, "reasoning": _reasoning["S1"], "rebuild_source": "gap_label_pass3"}),
+                (s1_end, s2_start, "systole", {"s1": s1, "s2": s2g, "reasoning": _reasoning["systole"], "rebuild_source": "gap_label_pass3"}),
+                (s2_start, s2_end, "S2", {"s1": s1, "s2": s2g, "reasoning": _reasoning["S2"], "rebuild_source": "gap_label_pass3"}),
+                (s2_end, s1_next, "diastole", {
+                    "s1": s1, "s2": s2g, "s1_next": s1_next, "reasoning": _reasoning["diastole"], "rebuild_source": "gap_label_pass3",
+                }),
+            ):
+                a, b, nm, m = ph
+                if b > a:
+                    new_segs.append((a, b, nm, m))
+                    c0 = _st_code.get(nm)
+                    if c0 is not None:
+                        state_labels[a:min(b, n_samples)] = c0
+        bd.extend(new_segs)
+        bd = sorted(bd, key=lambda s: s[0])
+        bd = _pass3_trim_diastole_ends_on_next_s1(bd)
+
+    return state_labels, bd
+
+
 def _pass3_rebuild_unknown_runs(
     state_labels: np.ndarray,
     state_boundaries: List[Tuple],
@@ -1527,35 +2000,23 @@ def _pass3_insert_missing_states_in_large_gaps(
     fallback_bpm: float,
     sample_rate: int,
     params: Dict,
-    audio_envelope: np.ndarray,
+    gap_windows: List[Dict[str, Any]],
     *,
     measured_systole_t: Optional[np.ndarray] = None,
     measured_systole_dur: Optional[np.ndarray] = None,
     measured_diastole_t: Optional[np.ndarray] = None,
     measured_diastole_dur: Optional[np.ndarray] = None,
     debug_windows_out: Optional[List[Dict[str, Any]]] = None,
-    quiet_windows_out: Optional[List[Dict[str, Any]]] = None,
-    dynamic_noise_floor_series: Optional[pd.Series] = None,
     dry_run: bool = False,
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
-    Pass 3 Step 3 — Insert missing *states* in large gaps.
+    Pass 3 Step 3 — Insert missing *states* in small-to-medium gaps (≤ threshold).
 
-    This replaces the older "insert missing S1 in long RR" event-level logic.
-    We operate on the already-generated *state sequence*: if any single state segment is
-    long enough to plausibly contain an additional full cardiac cycle (per the same model
-    used by _pass3_rebuild_unknown_runs), we treat the whole segment as a candidate region,
-    run quiet / sensitive-peak trim on it, mark the rebuild window as STATE_UNKNOWN, and
-    reuse _pass3_rebuild_unknown_runs to pack in full cycles using the same cursoring.
+    Consumes pre-computed gap_windows from _pass3_find_gap_windows and filters for
+    windows whose gap_region_duration_sec is at or below pass3_peaks_labeling_in_large_gaps_min_sec.
+    Marks those regions STATE_UNKNOWN then rebuilds via _pass3_rebuild_unknown_runs.
 
-    When dry_run=True, only fills debug_windows_out / quiet_windows_out; does not mutate
-    state_labels, state_boundaries, or run rebuild (for visualization / diagnostics).
-
-    Side notes:
-      - This runs after HF-noise repair. In practice, "lack of sound" gaps tend to coincide
-        with regions already cleared by noise repair, so the two usually do not overlap.
-      - Although we do not target any specific phase, the only segment that should commonly
-        be able to absorb extra cycles is diastole (the leftover) if upstream timing is sane.
+    When dry_run=True, only fills debug_windows_out; does not mutate state_labels or run rebuild.
     """
     if n_samples <= 0 or sample_rate <= 0:
         logging.info(
@@ -1575,233 +2036,90 @@ def _pass3_insert_missing_states_in_large_gaps(
         return state_labels, state_boundaries
 
     SR = float(sample_rate)
-    MAX_SCALE = 0.30  # must match _pass3_rebuild_unknown_runs
-    _q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
+    _gap_insert_max_sec = float(params.get("pass3_peaks_labeling_in_large_gaps_min_sec", 10.0))
+    if not np.isfinite(_gap_insert_max_sec) or _gap_insert_max_sec <= 0:
+        _gap_insert_max_sec = 10.0
+
+    # Filter for windows at or below the threshold (insert path handles ≤ threshold).
+    insert_windows = [
+        gw for gw in gap_windows
+        if float(gw.get("gap_region_duration_sec", 0.0)) <= _gap_insert_max_sec
+    ]
 
     logging.info(
-        "Pass 3 gap insert: scanning %d boundary segment(s) for extra-cycle gap region candidates.",
-        len(state_boundaries),
+        "Pass 3 gap insert: %d candidate window(s) (≤ %.1fs) from %d total gap windows.",
+        len(insert_windows), _gap_insert_max_sec, len(gap_windows),
     )
 
-    def _bpm_at_sample(ix: int) -> float:
-        t = float(ix) / SR
-        v = _interp_piecewise_linear(t, t_r, bpm_r)
-        if v is None:
-            return float(fallback_bpm)
-        if not np.isfinite(v) or v <= 0:
-            return float(fallback_bpm)
-        return float(v)
-
-    changed = False
-    new_bd: List[Tuple] = []
-    max_cycles_by_gap: Dict[Tuple[int, int], int] = {}
-    n_phase_segments = 0
-    n_skip_not_wide = 0
-    n_skip_after_trim_short = 0
-    # Largest width/need ratio among segments that failed the "extra cycle" width test (for debugging).
-    near_miss: Optional[Tuple[float, str, int, int, float]] = None
-
-    for seg in state_boundaries:
-        a0, a1, name, meta = seg
-        a0 = int(max(0, min(int(a0), n_samples)))
-        a1 = int(max(0, min(int(a1), n_samples)))
-        if a1 <= a0:
-            continue
-        if name not in ("S1", "systole", "S2", "diastole"):
-            new_bd.append(seg)
-            continue
-
-        n_phase_segments += 1
-        width = a1 - a0
-        t_mid = 0.5 * (a0 + a1) / SR
-        bpm = _bpm_at_sample(int((a0 + a1) // 2))
-        ivs = calculate_bpm_intervals(bpm, params)
-
-        # Compute nominal cycle length (unscaled) the same way rebuild does.
-        s1_sec = float(ivs.get("s1_nominal", 0.040))
-        s2_sec = float(ivs.get("s2_nominal", 0.030))
-        sys_sec = _interp_piecewise_linear(t_mid, measured_systole_t, measured_systole_dur)
-        if sys_sec is None:
-            sys_sec = float(ivs.get("s1_s2_nominal", 0.300))
-        dia_sec = _interp_piecewise_linear(t_mid, measured_diastole_t, measured_diastole_dur)
-        if dia_sec is None:
-            rr_sec = 60.0 / bpm if bpm > 0 else 0.75
-            dia_sec = float(ivs.get("s2_s1_nominal", max(0.0, rr_sec - float(sys_sec))))
-        cyc0 = (
-            max(1, int(round(s1_sec * SR)))
-            + max(1, int(round(sys_sec * SR)))
-            + max(1, int(round(s2_sec * SR)))
-            + max(1, int(round(dia_sec * SR)))
-        )
-
-        # Segment must be at least one minimally scaled cycle wide to plausibly hold an extra beat.
-        min_extra = int(round((1.0 - MAX_SCALE) * float(max(1, cyc0))))
-        need_wide = max(4, min_extra)
-        if width < need_wide:
-            n_skip_not_wide += 1
-            ratio = float(width) / float(need_wide) if need_wide > 0 else 0.0
-            if near_miss is None or ratio > near_miss[0]:
-                near_miss = (ratio, name, width, need_wide, float(a0) / SR)
-            new_bd.append(seg)
-            continue
-
-        # Whole segment is the candidate; quiet detection may trim a silent prefix.
-        gap_region_lo = a0
-        gap_region_hi = a1
-        gap_region_lo_orig = int(gap_region_lo)
-        try:
-            _pk_sens = _detect_sensitive_peaks_in_large_gap_windows(
-                audio_envelope,
-                sample_rate,
-                [{"start_sample": int(gap_region_lo), "end_sample": int(gap_region_hi)}],
-                params,
-                prominence_quantile=_q_sens,
-                dynamic_noise_floor_series=dynamic_noise_floor_series,
-            )
-        except Exception:
-            _pk_sens = np.asarray([], dtype=np.int64)
-
-        if _pk_sens is None or len(_pk_sens) == 0:
-            # Entire gap region is quiet. Do not mark STATE_UNKNOWN (so rebuild generates nothing).
-            if quiet_windows_out is not None:
-                try:
-                    quiet_windows_out.append({
-                        "start_sample": int(gap_region_lo_orig),
-                        "end_sample": int(gap_region_hi),
-                        "gap_region_candidate_state": str(name),
-                        "trigger": "quiet_entire_gap_region",
-                    })
-                except Exception:
-                    pass
-            new_bd.append(seg)
-            continue
-
-        try:
-            first_pk_i = int(np.min(np.asarray(_pk_sens, dtype=np.int64)))
-        except Exception:
-            first_pk_i = -1
-        if first_pk_i < 0:
-            new_bd.append(seg)
-            continue
-
-        # Pre-pad: start rebuilding slightly BEFORE the first detected peak.
-        # Use half the expected S1 duration (in samples) at this time.
-        s1_sec_nom = float(ivs.get("s1_nominal", 0.040))
-        s1_expected = max(1, int(round(s1_sec_nom * SR)))
-        pre_pad = max(0, int(s1_expected // 2))
-        new_gap_region_lo = int(first_pk_i) - int(pre_pad)
-        new_gap_region_lo = int(max(int(a0), min(int(new_gap_region_lo), int(gap_region_hi))))
-
-        if new_gap_region_lo > int(gap_region_lo_orig) and quiet_windows_out is not None:
-            try:
-                quiet_windows_out.append({
-                    "start_sample": int(gap_region_lo_orig),
-                    "end_sample": int(new_gap_region_lo),
-                    "gap_region_candidate_state": str(name),
-                    "trigger": "trim_quiet_prefix",
-                    "first_sensitive_peak_sample": int(first_pk_i),
-                    "s1_expected_samples": int(s1_expected),
-                    "pre_pad_samples": int(pre_pad),
-                })
-            except Exception:
-                pass
-
-        gap_region_lo = int(new_gap_region_lo)
-
-        if gap_region_hi - gap_region_lo < 4:
-            n_skip_after_trim_short += 1
-            new_bd.append(seg)
-            continue
-
-        # If the sensitive detector saw N peaks in this gap region,
-        # do not generate more than N cardiac cycles when rebuilding it.
-        try:
-            _pk_sens_arr = np.asarray(_pk_sens, dtype=np.int64)
-            n_sens = int(np.sum((_pk_sens_arr >= int(gap_region_lo)) & (_pk_sens_arr < int(gap_region_hi))))
-        except Exception:
-            n_sens = 0
-        max_cycles_by_gap[(int(gap_region_lo), int(gap_region_hi))] = int(max(0, n_sens))
-
-        if debug_windows_out is not None:
+    if debug_windows_out is not None:
+        for gw in insert_windows:
             try:
                 debug_windows_out.append({
-                    "start_sample": int(gap_region_lo),
-                    "end_sample": int(gap_region_hi),
-                    "sensitive_peaks_count": int(max(0, n_sens)),
-                    "sensitive_first_peak_sample": int(first_pk_i),
-                    "gap_region_candidate_state": str(name),
+                    "start_sample": int(gw["start_sample"]),
+                    "end_sample": int(gw["end_sample"]),
+                    "sensitive_peaks_count": int(gw.get("n_sensitive_peaks", 0)),
+                    "sensitive_first_peak_sample": int(gw.get("first_sensitive_peak_sample", -1)),
+                    "gap_region_candidate_state": str(gw.get("segment_name", "")),
                     "trigger": "can_fit_extra_cycle",
-                    "bpm_at_mid": float(bpm),
-                    "cycle0_samples": int(cyc0),
-                    "segment_samples": int(width),
+                    "bpm_at_mid": float(gw.get("bpm_at_mid", 0.0)),
+                    "cycle0_samples": int(gw.get("cyc0_samples", 0)),
+                    "segment_samples": int(
+                        int(gw.get("source_seg_end", 0)) - int(gw.get("source_seg_start", 0))
+                    ),
                     "dry_run": bool(dry_run),
                 })
             except Exception:
                 pass
 
-        if dry_run:
-            new_bd.append((a0, a1, name, meta))
+    if not insert_windows:
+        logging.info("Pass 3 gap insert: no qualifying windows — nothing to insert.")
+        return state_labels, state_boundaries
+
+    if dry_run:
+        logging.info(
+            "Pass 3 gap insert: dry-run complete — %d gap window(s).",
+            len(insert_windows),
+        )
+        return state_labels, state_boundaries
+
+    # Mark each qualifying window as STATE_UNKNOWN and build prefix segments for quiet-trimmed starts.
+    max_cycles_by_gap: Dict[Tuple[int, int], int] = {}
+    prefix_segs: List[Tuple] = []
+
+    for gw in insert_windows:
+        lo = int(gw["start_sample"])
+        hi = int(gw["end_sample"])
+        if hi <= lo:
             continue
+        state_labels[lo:hi] = STATE_UNKNOWN
+        max_cycles_by_gap[(lo, hi)] = int(max(0, int(gw.get("n_sensitive_peaks", 0))))
 
-        changed = True
-        state_labels[gap_region_lo:gap_region_hi] = STATE_UNKNOWN
-
-        # If quiet trim left a prefix of the original phase, keep it; otherwise the whole
-        # segment is rebuilt and we omit this boundary row.
-        if gap_region_lo > a0:
+        a0 = int(gw["source_seg_start"])
+        name = str(gw["segment_name"])
+        meta = dict(gw.get("meta", {}))
+        if lo > a0:
             new_meta = dict(meta)
-            new_dur_ms = round((gap_region_lo - a0) / float(SR) * 1000)
+            new_dur_ms = round((lo - a0) / SR * 1000)
             if "reasoning" in new_meta and isinstance(new_meta["reasoning"], dict):
                 r = dict(new_meta["reasoning"])
                 r["measured_ms"] = new_dur_ms
                 new_meta["reasoning"] = r
             if name == "diastole" and "s1_next" in new_meta:
-                new_meta["s1_next"] = int(gap_region_lo)
-            new_bd.append((a0, gap_region_lo, name, new_meta))
+                new_meta["s1_next"] = lo
+            prefix_segs.append((a0, lo, name, new_meta))
 
-    if not changed:
-        _n_dbg = len(debug_windows_out or [])
-        _n_q = len(quiet_windows_out or [])
-        if dry_run and (_n_dbg > 0 or _n_q > 0):
-            logging.info(
-                "Pass 3 gap insert: dry-run complete — %d gap window(s), %d quiet/trim window(s) "
-                "(phase_segments=%d, skipped_not_wide=%d, skipped_after_trim_short=%d).",
-                _n_dbg,
-                _n_q,
-                n_phase_segments,
-                n_skip_not_wide,
-                n_skip_after_trim_short,
-            )
-        else:
-            logging.info(
-                "Pass 3 gap insert: no gap regions marked (phase_segments=%d, skipped_not_wide=%d, skipped_after_trim_short=%d).",
-                n_phase_segments,
-                n_skip_not_wide,
-                n_skip_after_trim_short,
-            )
-        if near_miss is not None:
-            _r, _nm, _w, _nw, _t0 = near_miss
-            logging.info(
-                "Pass 3 gap insert: closest miss — %s @ %.3fs, width=%d samples, need>=%d, %.1f%% of threshold.",
-                _nm, _t0, _w, _nw, 100.0 * _r,
-            )
-        return state_labels, state_boundaries
-
-    # Drop any segments that overlap unknown rebuild windows (prefix-kept segments may
-    # shrink; fully cleared segments were omitted from new_bd).
+    # Drop any existing segments overlapping STATE_UNKNOWN regions, then add prefix remnants.
     filtered: List[Tuple] = []
-    for seg in new_bd:
-        a0, a1, name, meta = seg
-        a0 = int(max(0, min(int(a0), n_samples)))
-        a1 = int(max(0, min(int(a1), n_samples)))
-        if a1 <= a0:
+    for seg in state_boundaries:
+        a0_, a1_ = int(max(0, min(int(seg[0]), n_samples))), int(max(0, min(int(seg[1]), n_samples)))
+        if a1_ <= a0_:
             continue
-        if np.any(state_labels[a0:a1] == STATE_UNKNOWN):
+        if np.any(state_labels[a0_:a1_] == STATE_UNKNOWN):
             continue
         filtered.append(seg)
+    filtered.extend(prefix_segs)
     filtered.sort(key=lambda t: int(t[0]))
 
-    # Reuse the same rebuild logic + cursoring to fill unknown runs.
     state_labels, rebuilt = _pass3_rebuild_unknown_runs(
         state_labels,
         filtered,
@@ -1822,8 +2140,8 @@ def _pass3_insert_missing_states_in_large_gaps(
         if s[2] == "S1" and isinstance(s[3], dict) and s[3].get("rebuild_source") == "gap_insert"
     )
     logging.info(
-        "Pass 3 gap insert: rebuild done (%d gap region window(s), %d rebuilt S1 from gap_insert).",
-        len(debug_windows_out or []),
+        "Pass 3 gap insert: rebuild done (%d window(s), %d rebuilt S1 from gap_insert).",
+        len(insert_windows),
         _gap_ins,
     )
     return state_labels, rebuilt
@@ -1991,6 +2309,15 @@ def run_pass3_correction(
         n_samples,
         params=params,
     )
+
+    # Build BPM prior raster unconditionally here — needed by noise repair, gap labeling,
+    # and gap insert. All three paths consume (_bpm_prior_t, _bpm_prior) set below.
+    _lt_for_raster = lt_pass3
+    _bpm_prior_t, _bpm_prior = _dense_bpm_raster_from_series(
+        _lt_for_raster, n_samples, sample_rate, fallback_bpm, dt_sec=0.05,
+    )
+    analysis_data["pass3_bpm_prior_times"] = _bpm_prior_t
+    analysis_data["pass3_bpm_prior"] = _bpm_prior
 
     # ── S2 placement: Pass 2 pair seed → nominal fallback (_rebuild_s2_events) ─
     _pairs = analysis_data.get("s1_s2_pairs") or []
@@ -2221,18 +2548,7 @@ def run_pass3_correction(
             "Pass 3: no HF-noise sample intervals — skipping HF-noise clear/rebuild.",
         )
     if _did_noise_repair:
-        # Build a BPM prior from clean RR intervals only (exclude any S1→S1 that intersects noise).
-        # This avoids using possibly-corrupted BPM belief inside the noisy spans.
-        _lt_clean = _build_lt_bpm_series_from_clean_rr(
-            peaks_out, noise_ivs_final, sample_rate, n_samples, params=params,
-        )
-        # Store a dense raster for plotting/debug + use it as the rebuild prior.
-        _lt_for_raster = _lt_clean if _lt_clean is not None else lt_pass3
-        _bpm_prior_t, _bpm_prior = _dense_bpm_raster_from_series(
-            _lt_for_raster, n_samples, sample_rate, fallback_bpm, dt_sec=0.05,
-        )
-        analysis_data["pass3_bpm_prior_times"] = _bpm_prior_t
-        analysis_data["pass3_bpm_prior"] = _bpm_prior
+        # BPM prior raster was already computed unconditionally above; reuse it here.
         state_labels, state_boundaries = _pass3_clear_states_in_hf_noise(
             state_labels, state_boundaries, noise_ivs_final, n_samples, peaks_out,
         )
@@ -2256,12 +2572,14 @@ def run_pass3_correction(
         )
         logging.info("Pass 3 rebuild: %d rebuilt beat(s) in noise gap(s).", _n_rebuilt)
 
-    # ── Large-gap scan / insert (state-level; independent of HF-noise repair) ──
-    # pass3_calculate_large_gaps: populate pass3_large_gap_* debug for HTML strip without mutating timeline.
-    # pass3_enable_gap_state_insert: actually mark unknown + rebuild + optional snap.
-    if _gap_calc or _gap_apply:
-        # Gap logic should use measured rasters derived from the current boundaries.
-        # If noise repair ran, boundaries may have changed, so refresh the rasters here.
+    # ── Gap logic: detect windows once, then route to labeling (>threshold) and insert (≤threshold) ──
+    # _pass3_find_gap_windows runs once on post-repair boundaries and is the canonical source
+    # for both paths. BPM prior raster was already computed unconditionally above.
+    _lg_label_on = bool(params.get("pass3_enable_peaks_labeling_in_large_gaps", True))
+    _gap_peak_apply = bool(params.get("pass3_enable_gap_snap_to_peaks", True))
+
+    if _gap_calc or _gap_apply or _lg_label_on:
+        # Refresh measured rasters from post-repair boundaries.
         try:
             _ms_t_r, _ms_d_r, _md_t_r, _md_d_r = _compute_and_store_measured_phase_curves(
                 key_prefix="pass3_measured_phase_for_gap_insert",
@@ -2271,21 +2589,9 @@ def run_pass3_correction(
         except Exception:
             pass
 
-        if not _did_noise_repair:
-            _niv_gap = list(noise_ivs_final) if noise_ivs_final else []
-            _lt_clean = _build_lt_bpm_series_from_clean_rr(
-                peaks_out, _niv_gap, sample_rate, n_samples, params=params,
-            )
-            _lt_for_raster = _lt_clean if _lt_clean is not None else lt_pass3
-            _bpm_prior_t, _bpm_prior = _dense_bpm_raster_from_series(
-                _lt_for_raster, n_samples, sample_rate, fallback_bpm, dt_sec=0.05,
-            )
-            analysis_data["pass3_bpm_prior_times"] = _bpm_prior_t
-            analysis_data["pass3_bpm_prior"] = _bpm_prior
-        _gap_debug: List[Dict[str, Any]] = []
+        # ── Single canonical gap detection ────────────────────────────────────
         _gap_quiet_debug: List[Dict[str, Any]] = []
-        state_labels, state_boundaries = _pass3_insert_missing_states_in_large_gaps(
-            state_labels,
+        _gap_windows: List[Dict[str, Any]] = _pass3_find_gap_windows(
             state_boundaries,
             n_samples,
             (_bpm_prior_t, _bpm_prior),
@@ -2297,20 +2603,72 @@ def run_pass3_correction(
             measured_systole_dur=_ms_d_r,
             measured_diastole_t=_md_t_r,
             measured_diastole_dur=_md_d_r,
-            debug_windows_out=_gap_debug,
-            quiet_windows_out=_gap_quiet_debug,
             dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
-            dry_run=not _gap_apply,
+            quiet_windows_out=_gap_quiet_debug,
         )
-        if _gap_debug:
-            analysis_data["pass3_large_gap_windows_samples"] = list(_gap_debug)
+
+        # Populate debug keys from canonical list (exclude the raw meta dict).
+        if _gap_windows:
+            analysis_data["pass3_large_gap_windows_samples"] = [
+                {k: v for k, v in gw.items() if k != "meta"}
+                for gw in _gap_windows
+            ]
+        else:
+            analysis_data.setdefault("pass3_large_gap_windows_samples", [])
         if _gap_quiet_debug:
             analysis_data["pass3_gap_quiet_windows_samples"] = list(_gap_quiet_debug)
 
+        # ── Large-gap peaks labeling (> threshold) ────────────────────────────
+        if _lg_label_on:
+            state_labels, state_boundaries = _pass3_apply_peaks_labeling_in_large_gaps(
+                state_labels,
+                state_boundaries,
+                gap_windows=_gap_windows,
+                n_samples=n_samples,
+                sample_rate=sample_rate,
+                params=params,
+                audio_envelope=audio_envelope,
+                analysis_data=analysis_data,
+                s1_list=s1_list,
+                lt_pass3=lt_pass3,
+                fallback_bpm=fallback_bpm,
+                s1_s2_pairs=_pairs,
+                corrections=corrections,
+                before_s2_by_s1=_before_s2_by_s1,
+                before_s1next_by_s1=_before_s1next_by_s1,
+                s1_half=s1_half,
+                s2_half=s2_half,
+                edge_alpha=edge_alpha,
+                edge_n_exp=edge_n_exp,
+                s1_min_half=s1_min_half,
+                s1_max_half=s1_max_half,
+                s2_min_half=s2_min_half,
+                s2_max_half=s2_max_half,
+            )
+
+        # ── Regular gap state insert (≤ threshold) ────────────────────────────
+        _gap_debug: List[Dict[str, Any]] = []
+        state_labels, state_boundaries = _pass3_insert_missing_states_in_large_gaps(
+            state_labels,
+            state_boundaries,
+            n_samples,
+            (_bpm_prior_t, _bpm_prior),
+            fallback_bpm,
+            sample_rate,
+            params,
+            _gap_windows,
+            measured_systole_t=_ms_t_r,
+            measured_systole_dur=_ms_d_r,
+            measured_diastole_t=_md_t_r,
+            measured_diastole_dur=_md_d_r,
+            debug_windows_out=_gap_debug,
+            dry_run=not _gap_apply,
+        )
+
+        # ── Recovered peaks for HTML strip (all gap windows) ──────────────────
         gap_wins_for_peaks = analysis_data.get("pass3_large_gap_windows_samples") or []
-        _gap_peak_apply = bool(params.get("pass3_enable_gap_peak_recovery", True))
         want_peak_detect = len(gap_wins_for_peaks) > 0 and (
-            _gap_calc or (_gap_apply and _gap_peak_apply)
+            _gap_calc or (_gap_apply and _gap_peak_apply) or _lg_label_on
         )
         if not want_peak_detect:
             analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = []
@@ -2319,23 +2677,23 @@ def run_pass3_correction(
             q_ins = float(params.get("pass3_gap_recovery_peak_prominence_quantile_insensitive", 0.70))
             q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
             recovered_ins = _detect_sensitive_peaks_in_large_gap_windows(
-                audio_envelope,
-                sample_rate,
-                gap_wins_for_peaks,
-                params,
+                audio_envelope, sample_rate, gap_wins_for_peaks, params,
                 prominence_quantile=q_ins,
                 dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
             )
             recovered_sens = _detect_sensitive_peaks_in_large_gap_windows(
-                audio_envelope,
-                sample_rate,
-                gap_wins_for_peaks,
-                params,
+                audio_envelope, sample_rate, gap_wins_for_peaks, params,
                 prominence_quantile=q_sens,
                 dynamic_noise_floor_series=analysis_data.get("dynamic_noise_floor_series"),
             )
-            analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = recovered_ins.tolist()
-            analysis_data["pass3_large_gap_recovered_peaks_sensitive"] = recovered_sens.tolist()
+            analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = sorted(
+                set(int(x) for x in recovered_ins.tolist())
+            )
+            analysis_data["pass3_large_gap_recovered_peaks_sensitive"] = sorted(
+                set(int(x) for x in recovered_sens.tolist())
+            )
+
+        # ── Snap rebuilt states to detected peaks ─────────────────────────────
         if _gap_apply and _gap_peak_apply and len(gap_wins_for_peaks) > 0:
             recovered_ins_snap = np.asarray(
                 analysis_data.get("pass3_large_gap_recovered_peaks_insensitive") or [],
@@ -2360,7 +2718,8 @@ def run_pass3_correction(
     else:
         logging.info(
             "Pass 3: large-gap scan and insert disabled "
-            "(pass3_calculate_large_gaps=False and pass3_enable_gap_state_insert=False).",
+            "(pass3_calculate_large_gaps=False, pass3_enable_gap_state_insert=False, "
+            "pass3_enable_peaks_labeling_in_large_gaps=False).",
         )
 
     # ── Derive peaks_out from state sequence (canonical source of truth) ──────

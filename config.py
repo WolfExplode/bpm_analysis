@@ -172,25 +172,28 @@ DEFAULT_PARAMS = {
     # =================================================================================
 
     # --- 6.1 Noise repair (global modifier after the initial timeline exists) ---
+    "pass3_calculate_noisy_regions": True, # "Calculate noisy regions" (HF strip): embed Pass 3 unreliable sample windows on the noise strip when available.
     # If enabled and HF-noise windows exist: clear state labels inside those spans and rebuild the full S1→systole→S2→diastole sequence.
     "pass3_enable_noise_repair": True,
 
     # --- 6.2 Insert missing states in large gaps (state-level) ---
+    "pass3_calculate_large_gaps": True, # Just for display, you need to also enable pass3_enable_gap_state_insert or pass3_enable_noise_repair
     "pass3_enable_gap_state_insert": True,  # If True, long single-state spans can be cleared and rebuilt like noise repair (full-segment candidate + quiet trim).
-    # "Calculate large gaps" (diagnostics): scan for large-gap windows and optional recovered peaks for the HTML strip
-    # without applying insert/snap. If False and pass3_enable_gap_state_insert is False, gap strip data is not computed.
-    "pass3_calculate_large_gaps": True,
-    # "Calculate noisy regions" (HF strip): embed Pass 3 unreliable sample windows on the noise strip when available.
-    "pass3_calculate_noisy_regions": True,
 
     # --- 6.2.1 Large-gap peak recovery + anchor snapping ---
     # Reruns a more sensitive peak detector inside Pass 3 large-gap windows, then shifts
     # rebuilt S1/S2 segment boundaries to align with those recovered peaks (fill first, then shift).
-    "pass3_enable_gap_peak_recovery": False,
-    "pass3_gap_recovery_peak_prominence_quantile_insensitive": 0.70,  # Higher = fewer peaks, more likely real S1/S2.
+    "pass3_enable_gap_snap_to_peaks": False,
+    "pass3_gap_recovery_peak_prominence_quantile_insensitive": 0.75,  # Higher = fewer peaks, more likely real S1/S2.
     "pass3_gap_recovery_peak_prominence_quantile_sensitive": 0.5,    # Lower = more peaks; used as an "anything at all here?" scan.
     "pass3_gap_recovery_height_scale": 0.85,              # Multiply dynamic noise-floor threshold (if available).
     "pass3_gap_snap_window_ms": 100.0,                     # Search radius (ms) around each synthetic S1/S2 center when snapping to a recovered peak.
+
+    # --- 6.2.2 Large diastole — Pass 2-style peak labeling then state fill (before noise / gap insert) ---
+    # When a diastole segment exceeds the threshold (wall time), mark it unknown, run the
+    # insensitive gap peak detector, classify those peaks like Pass 2 (S1/S2/noise), then paint states.
+    "pass3_enable_peaks_labeling_in_large_gaps": True,
+    "pass3_peaks_labeling_in_large_gaps_min_sec": 6.0,
 
     # --- 6.3 Final state timeline — envelope boundary paint ---
     "pass3_state_s1_window_ms": 120.0,          # Ceiling (ms) on how far transient edge detection may extend around each S1 peak.
@@ -218,7 +221,7 @@ DEFAULT_PARAMS = {
     "pass1_bpm_gaussian_frac": 0.02,        # Used to derive Gaussian smoothing sigma for pass 1 BPM curve (smaller = tighter smoothing).
     "pass1_bpm_loess_frac": 0.02,           # Deprecated alias for pass1_bpm_gaussian_frac (kept for backward compatibility).
     "s1_s2_outlier_window_sec": 10.0,         # Half-window (seconds) for systole (S1→S2) MAD outlier removal. Increase → less aggressive (more global context). Decrease → more aggressive (more local).
-    "s1_s2_outlier_mad_k": 2,             # MAD threshold multiplier for systole (S1→S2) outlier removal. Increase → less aggressive (keeps more points). Decrease → more aggressive (flags more as outliers).
+    "s1_s2_outlier_mad_k": 2,              # MAD threshold multiplier for systole (S1→S2) outlier removal. Increase → less aggressive (keeps more points). Decrease → more aggressive (flags more as outliers).
     "s1_s2_global_outlier_mad_k": 5.0,     # After local pass: global median ± k*MAD on interval (s). Higher = less sensitive. <=0 disables.
     # Hard clamps (seconds) on measured interval durations before MAD/outliers — very wide defaults = conservative (only insane values dropped).
     "systole_duration_clamp_min_sec": 0.02,   # S1→S2 / systole segment duration floor (below → dropped).
