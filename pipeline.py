@@ -42,6 +42,10 @@ from fft_profiles import (
 )
 from correction import run_pass3_correction
 
+# Recordings longer than this skip plot-related outputs (HTML, PNG, BPM CSV from Plotter,
+# spectrogram, FFT profile HTML, intermediate pass HTML). Analysis and text reports continue.
+LONG_RECORDING_DISABLE_PLOT_SEC = 3600.0
+
 
 class _NoisyAlgorithmLogFilter(logging.Filter):
     """
@@ -326,6 +330,27 @@ def analyze_wav_file(
         else bandpass_envelope
     )
 
+    output_options = {**DEFAULT_OUTPUT_OPTIONS, **(output_options or {})}
+    duration_sec = (
+        float(len(algorithm_envelope)) / float(sample_rate)
+        if sample_rate and len(algorithm_envelope) > 0
+        else 0.0
+    )
+    if duration_sec > LONG_RECORDING_DISABLE_PLOT_SEC:
+        output_options = dict(output_options)
+        output_options["html"] = False
+        output_options["png"] = False
+        output_options["csv"] = False
+        output_options["spectrogram"] = False
+        output_options["fft_profiles"] = False
+        output_options["output_all_passes"] = False
+        logging.info(
+            "Recording length %.1f min exceeds %.0f min — disabling plot outputs "
+            "(HTML, PNG, BPM CSV, spectrogram, FFT profiles, intermediate pass HTML).",
+            duration_sec / 60.0,
+            LONG_RECORDING_DISABLE_PLOT_SEC / 60.0,
+        )
+
     noise_event_segments: list = []
     if inverse_band_envelope is not None:
         try:
@@ -348,7 +373,7 @@ def analyze_wav_file(
         pass1_analysis_data["noise_event_segments"] = noise_event_segments
 
     # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
-    _opts = output_options if output_options is not None else DEFAULT_OUTPUT_OPTIONS.copy()
+    _opts = output_options
     if _opts.get("html", True) and _opts.get("output_all_passes", True):
         _ui("Generating pass 1 HTML report...")
         plotter_pass1 = Plotter(
@@ -399,10 +424,6 @@ def analyze_wav_file(
         analysis_data["noise_removed_envelope"] = noise_removed_envelope
     if noise_event_segments:
         analysis_data["noise_event_segments"] = noise_event_segments
-
-    # Set default output options if none provided (needed for pass 2/pass 3 plot decisions)
-    if output_options is None:
-        output_options = DEFAULT_OUTPUT_OPTIONS.copy()
 
     # Pre-warm Kaleido so Chromium startup can overlap with analysis.
     try:
@@ -558,9 +579,7 @@ def analyze_wav_file(
             predicted_labels = _build_predicted_labels_for_validation(
                 analysis_data, sample_rate
             )
-            regression_log_path = None
-            if output_options is not None:
-                regression_log_path = output_options.get("regression_log_path")
+            regression_log_path = output_options.get("regression_log_path")
             _append_validation_results_row(
                 regression_log_path, original_file_path, manual_labels, predicted_labels
             )

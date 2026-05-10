@@ -4,6 +4,7 @@
 # Consumed by bpm_analysis (main pipeline) and gui (conversion helpers).
 import os
 import logging
+import time
 from typing import Dict, Optional, Tuple, List
 
 from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
@@ -23,6 +24,13 @@ except ImportError:
 # Noise-envelope path only: linear magnitude taper (FIR) — full stop below low edge, ramp to high edge, pass above.
 _NOISE_ENVELOPE_TAPER_LOW_HZ = 300.0
 _NOISE_ENVELOPE_TAPER_HIGH_HZ = 600.0
+
+
+def _log_preprocess_elapsed(label: str, t_start: float) -> float:
+    """Log wall time since t_start (perf_counter); return a fresh start time for the next step."""
+    dt = time.perf_counter() - t_start
+    logging.info("Preprocess timing — %s: %.3f s", label, dt)
+    return time.perf_counter()
 
 
 def _write_peak_normalized_debug_wav(
@@ -70,6 +78,22 @@ def _detect_and_remove_stationary_hum(
 
     if not params.get("enable_hum_removal", True):
         return audio_data, None
+
+    skip_over = params.get("hum_removal_skip_if_longer_than_min")
+    if skip_over is not None:
+        try:
+            limit_min = float(skip_over)
+        except (TypeError, ValueError):
+            limit_min = 0.0
+        if limit_min > 0.0:
+            dur_min = (float(audio_data.size) / float(sample_rate)) / 60.0
+            if dur_min > limit_min:
+                logging.info(
+                    "Hum removal skipped: duration %.1f min exceeds %.1f min limit.",
+                    dur_min,
+                    limit_min,
+                )
+                return audio_data, None
 
     try:
         # Use a relatively long window for a stable PSD estimate
@@ -291,17 +315,28 @@ def _calculate_dynamic_noise_floor(
     audio_envelope: np.ndarray, sample_rate: int, params: Dict
 ) -> Tuple[pd.Series, np.ndarray]:
     """Calculates a dynamic noise floor based on a sanitized set of audio troughs."""
+    t_nf0 = time.perf_counter()
     min_peak_dist_samples = int(params['min_peak_distance_sec'] * sample_rate)
     trough_prom_thresh = np.quantile(audio_envelope, params['trough_prominence_quantile'])
 
     # --- STEP 1: Find all potential troughs initially ---
+    t_step = time.perf_counter()
     all_trough_indices, _ = find_peaks(-audio_envelope, distance=min_peak_dist_samples, prominence=trough_prom_thresh)
+    logging.info(
+        "Preprocess timing — noise_floor (1) find_peaks: %.3f s (%d trough candidates)",
+        time.perf_counter() - t_step,
+        len(all_trough_indices),
+    )
 
     # If we don't have enough troughs to begin with, fall back to a simple static floor.
     if len(all_trough_indices) < 5:
         logging.warning("Not enough troughs found for sanitization. Using a static noise floor.")
         fallback_value = np.quantile(audio_envelope, params['noise_floor_quantile'])
         dynamic_noise_floor = pd.Series(fallback_value, index=np.arange(len(audio_envelope)))
+        logging.info(
+            "Preprocess timing — noise_floor total: %.3f s (static fallback)",
+            time.perf_counter() - t_nf0,
+        )
         return dynamic_noise_floor, all_trough_indices
 
     n = len(audio_envelope)
@@ -309,11 +344,22 @@ def _calculate_dynamic_noise_floor(
     quantile_val = params['noise_floor_quantile']
 
     # --- STEP 2: Draft noise floor from ALL troughs (dense interpolate + rolling quantile) ---
+    t_step = time.perf_counter()
     dense_troughs_draft = _dense_troughs_linear_interpolate(
         n, all_trough_indices, audio_envelope[all_trough_indices]
     )
+    logging.info(
+        "Preprocess timing — noise_floor (2a) dense interpolate (draft): %.3f s",
+        time.perf_counter() - t_step,
+    )
+    t_step = time.perf_counter()
     draft_floor_arr = _rolling_quantile_center_bfill_ffill(
         dense_troughs_draft, noise_window_samples, quantile_val, min_periods=3
+    )
+    logging.info(
+        "Preprocess timing — noise_floor (2b) rolling quantile draft floor: %.3f s (window=%d samples)",
+        time.perf_counter() - t_step,
+        noise_window_samples,
     )
 
     # --- STEP 3: Sanitize troughs (vectorized; same rule as per-index loop + pd.isna check) ---
@@ -329,11 +375,21 @@ def _calculate_dynamic_noise_floor(
 
     # --- STEP 4: Final noise floor from sanitized troughs ---
     if len(sanitized_trough_indices) > 2:
+        t_step = time.perf_counter()
         dense_troughs_final = _dense_troughs_linear_interpolate(
             n, sanitized_trough_indices, audio_envelope[sanitized_trough_indices]
         )
+        logging.info(
+            "Preprocess timing — noise_floor (3a) dense interpolate (final): %.3f s",
+            time.perf_counter() - t_step,
+        )
+        t_step = time.perf_counter()
         final_floor_arr = _rolling_quantile_center_bfill_ffill(
             dense_troughs_final, noise_window_samples, quantile_val, min_periods=3
+        )
+        logging.info(
+            "Preprocess timing — noise_floor (3b) rolling quantile final floor: %.3f s",
+            time.perf_counter() - t_step,
         )
         dynamic_noise_floor = pd.Series(final_floor_arr, index=np.arange(n))
     else:
@@ -344,6 +400,10 @@ def _calculate_dynamic_noise_floor(
         fallback_val = np.quantile(audio_envelope, 0.1)
         dynamic_noise_floor = pd.Series(fallback_val, index=np.arange(len(audio_envelope)))
 
+    logging.info(
+        "Preprocess timing — noise_floor total: %.3f s",
+        time.perf_counter() - t_nf0,
+    )
     return dynamic_noise_floor, np.asarray(sanitized_trough_indices, dtype=np.intp)
 
 
@@ -356,17 +416,25 @@ def preprocess_audio(
     save_debug_file = params["save_filtered_wav"] and output_options.get("filtered_wav", True)
     target_sample_rate = int(params.get("preprocess_target_sample_rate", 500))
 
+    t_preprocess = time.perf_counter()
+    t_step = time.perf_counter()
     try:
         # Preserve historical behavior: simple mono mix of all channels.
         audio_downsampled, new_sample_rate = librosa.load(file_path, sr=target_sample_rate, mono=True)
     except Exception as e:
         logging.error(f"Librosa failed to load file: {e}")
         raise
+    _dur_min = (float(audio_downsampled.size) / float(new_sample_rate)) / 60.0 if new_sample_rate else 0.0
+    t_step = _log_preprocess_elapsed(
+        f"librosa.load @ analysis rate ({new_sample_rate} Hz), {audio_downsampled.size} samples (~{_dur_min:.1f} min)",
+        t_step,
+    )
 
     # Optional adaptive hum removal (e.g., ~50-70 Hz mains / equipment hum)
     audio_downsampled, detected_hum = _detect_and_remove_stationary_hum(
         audio_downsampled, new_sample_rate, params
     )
+    t_step = _log_preprocess_elapsed("hum detection / notch (if any)", t_step)
     if detected_hum is not None:
         logging.info("Detected and removed stationary hum at ~%.2f Hz.", detected_hum)
 
@@ -386,11 +454,19 @@ def preprocess_audio(
 
     if highcut <= 0.0:
         logging.warning("Inverse-band (noise envelope) skipped: preprocess_bandpass_high_hz must be > 0.")
+        t_step = _log_preprocess_elapsed("inverse-band path (skipped: highcut <= 0)", t_step)
     else:
+        t_inv_overall = time.perf_counter()
         try:
+            t_native_load = time.perf_counter()
             audio_native, native_sr = librosa.load(file_path, sr=None, mono=True)
             native_sr_int = int(round(float(native_sr)))
             audio_native = np.asarray(audio_native, dtype=np.float64)
+            _nat_min = (float(audio_native.size) / float(native_sr_int)) / 60.0 if native_sr_int else 0.0
+            _log_preprocess_elapsed(
+                f"inverse-band: librosa.load @ native rate ({native_sr_int} Hz), {audio_native.size} samples (~{_nat_min:.1f} min)",
+                t_native_load,
+            )
         except Exception as e:
             logging.warning("Could not load native-rate audio for inverse-band path: %s", e)
             audio_native = np.array([], dtype=np.float64)
@@ -409,10 +485,15 @@ def preprocess_audio(
                     _NOISE_ENVELOPE_TAPER_LOW_HZ,
                     _NOISE_ENVELOPE_TAPER_HIGH_HZ,
                 )
+                logging.info(
+                    "Preprocess timing — inverse-band: skip point reached at +%.3f s in inverse block",
+                    time.perf_counter() - t_inv_overall,
+                )
             else:
                 noise_envelope_hp_cut_hz = taper_hi
                 try:
                     # Piecewise-linear FIR: 0 → ramp → 1 (firls), zero-phase via filtfilt.
+                    t_fir = time.perf_counter()
                     bands = [0.0, taper_lo, taper_lo, taper_hi, taper_hi, nyquist_native]
                     desired = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
                     width_hz = max(taper_hi - taper_lo, 50.0)
@@ -421,23 +502,45 @@ def preprocess_audio(
                     if numtaps % 2 == 0:
                         numtaps += 1
                     fir_b = firls(numtaps, bands, desired, fs=float(native_sr_int))
+                    logging.info(
+                        "Preprocess timing — inverse-band: FIR design (firls), numtaps=%d: %.3f s",
+                        numtaps,
+                        time.perf_counter() - t_fir,
+                    )
+                    t_fb = time.perf_counter()
                     audio_inverse_hp_native = filtfilt(fir_b, 1.0, audio_native)
+                    _log_preprocess_elapsed(
+                        f"inverse-band: filtfilt (native len={audio_native.size})",
+                        t_fb,
+                    )
                 except Exception as e:
                     logging.warning("Inverse-band FIR taper (native rate) failed: %s", e)
                     audio_inverse_hp_native = None
 
                 if audio_inverse_hp_native is not None and audio_inverse_hp_native.size > 0:
+                    t_h = time.perf_counter()
                     analytic_inv = hilbert(audio_inverse_hp_native)
                     envelope_inv_raw = np.abs(analytic_inv).astype(np.float64)
+                    _log_preprocess_elapsed("inverse-band: Hilbert + abs (native)", t_h)
                     smooth_window_nat = max(1, int(smooth_ms * native_sr_int / 1000))
+                    t_r = time.perf_counter()
                     inv_smooth_nat = pd.Series(envelope_inv_raw).rolling(
                         window=smooth_window_nat, min_periods=1, center=True
                     ).mean().values
+                    _log_preprocess_elapsed(
+                        f"inverse-band: rolling mean @ native (window={smooth_window_nat} samples)",
+                        t_r,
+                    )
                     try:
+                        t_rs = time.perf_counter()
                         inverse_band_envelope = librosa.resample(
                             inv_smooth_nat.astype(np.float64),
                             orig_sr=native_sr_int,
                             target_sr=new_sample_rate,
+                        )
+                        _log_preprocess_elapsed(
+                            f"inverse-band: resample envelope {native_sr_int} Hz → {new_sample_rate} Hz",
+                            t_rs,
                         )
                         n_expect = len(audio_downsampled)
                         if inverse_band_envelope.size > n_expect:
@@ -450,16 +553,23 @@ def preprocess_audio(
                     except Exception as e:
                         logging.warning("Could not resample inverse-band envelope to analysis rate: %s", e)
                         inverse_band_envelope = None
+        t_step = _log_preprocess_elapsed("inverse-band section (overall)", t_inv_overall)
 
     low, high = lowcut / nyquist, highcut / nyquist
 
     if high >= 1.0:
         raise ValueError(f"Cannot create a {highcut}Hz filter. The sample rate of {new_sample_rate}Hz is too low.")
 
+    t_bp = time.perf_counter()
     sos = butter(order, [low, high], btype="band", output="sos")
     audio_filtered = sosfiltfilt(sos, audio_downsampled)
+    t_step = _log_preprocess_elapsed(
+        f"bandpass sosfiltfilt ({lowcut:.1f}–{highcut:.1f} Hz, order {order}, len={len(audio_downsampled)})",
+        t_bp,
+    )
 
     if save_debug_file:
+        t_dbg = time.perf_counter()
         base_name = output_stem_from_path(file_path)
         debug_path = os.path.join(output_directory, f"{base_name}_filtered_debug.wav")
         debug_sample_rate = 10000
@@ -490,25 +600,35 @@ def preprocess_audio(
                 )
             except Exception as e:
                 logging.error(f"Failed to write inverse-band debug WAV file {inv_path}: {e}")
+        t_step = _log_preprocess_elapsed("optional debug WAV writes (filtered / inverse)", t_dbg)
     elif params["save_filtered_wav"] and not output_options.get("filtered_wav", True):
         logging.info("Skipping filtered audio WAV generation as requested.")
 
     # Hilbert envelope: magnitude of analytic signal for a sharper, more symmetric envelope
     # than abs + rolling mean, which helps peak timing stability (e.g. for HRV).
+    t_main = time.perf_counter()
     analytic = hilbert(audio_filtered)
     envelope_raw = np.abs(analytic).astype(np.float64)
+    t_main = _log_preprocess_elapsed("main path: Hilbert + abs @ analysis rate", t_main)
     # Smoothing to reduce ripple (e.g. between S1 and S2); window in ms from config (default 50 ms).
     smooth_window = max(1, int(smooth_ms * new_sample_rate / 1000))
+    t_roll = time.perf_counter()
     audio_envelope = pd.Series(envelope_raw).rolling(
         window=smooth_window, min_periods=1, center=True
     ).mean().values
+    t_roll = _log_preprocess_elapsed(
+        f"main path: rolling mean on envelope (window={smooth_window} samples)",
+        t_roll,
+    )
 
     noise_removed_envelope: Optional[np.ndarray] = None
     if inverse_band_envelope is not None and len(inverse_band_envelope) == len(audio_envelope):
+        t_sub = time.perf_counter()
         noise_removed_envelope = np.maximum(
             0.0,
             audio_envelope.astype(np.float64) - inverse_band_envelope.astype(np.float64),
         )
+        _log_preprocess_elapsed("noise_removed envelope (bandpass − inverse-band)", t_sub)
 
     envelope_for_algorithm = (
         noise_removed_envelope
@@ -517,6 +637,10 @@ def preprocess_audio(
     )
     noise_floor, trough_indices = _calculate_dynamic_noise_floor(
         envelope_for_algorithm, new_sample_rate, params
+    )
+    logging.info(
+        "Preprocess timing — total (preprocess_audio): %.3f s",
+        time.perf_counter() - t_preprocess,
     )
     return (
         audio_envelope,

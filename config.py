@@ -26,6 +26,8 @@ DEFAULT_PARAMS = {
     "hum_min_prominence_db": 8.0,         # Minimum prominence (dB) above local median to trigger notch
     "hum_min_prominence_over_second_db": 3.0,  # Gap over next peak before trusting detection
     "hum_notch_q": 35.0,                  # Q factor, Higher = narrower notch (try 35-40 for sharp hums)
+    # Skip hum detection/notch when duration exceeds this (minutes). Saves cost on very long files; set None to always attempt hum removal when enabled.
+    "hum_removal_skip_if_longer_than_min": 30.0,
 
     "envelope_smooth_window_ms": 40,      # Rolling window (ms) for smoothing Hilbert envelope after abs(analytic). Matches common PCG practice (e.g. 50 ms).
 
