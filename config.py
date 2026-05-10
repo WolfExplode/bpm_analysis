@@ -31,6 +31,14 @@ DEFAULT_PARAMS = {
 
     "envelope_smooth_window_ms": 40,      # Rolling window (ms) for smoothing Hilbert envelope after abs(analytic). Matches common PCG practice (e.g. 50 ms).
 
+    # Inverse-band (HF noise envelope): load + FIR taper + Hilbert at this Hz, then resample to preprocess_target_sample_rate.
+    # Much faster / lower RAM than full native (~44.1 kHz) on long files. Must exceed ~2× the HF taper top; clamped in code.
+    # Set to None or 0 to load at the file's native sample rate (slowest, highest CPU/RAM).
+    "inverse_band_working_sample_rate": 4000,
+    # FIR magnitude taper for the HF-only path: stopband below low_hz, ramp low_hz→high_hz, passband above high_hz (linear firls).
+    "inverse_band_taper_low_hz": 300.0,
+    "inverse_band_taper_high_hz": 600.0,
+
     # HF noise strip (inverse-band envelope): gate + merge / min-duration / pad.
     # Higher noise_segment_gate_quantile or noise_segment_gate_min_amplitude → fewer samples exceed the gate → fewer noisy regions (noise strip + pass3_noise_unreliable_windows when pass3_calculate_noisy_regions).
     "noise_segment_gate_quantile": 0.90,    # File-local quantile of HF envelope; only at/above this level can count as noisy (was 0.85 hardcoded).

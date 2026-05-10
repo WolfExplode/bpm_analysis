@@ -2,6 +2,7 @@
 # Full audio preprocessing pipeline: format conversion, channel splitting, signal conditioning,
 # envelope extraction, and noise-floor estimation.
 # Consumed by bpm_analysis (main pipeline) and gui (conversion helpers).
+import gc
 import os
 import logging
 import time
@@ -20,11 +21,6 @@ try:
 except ImportError:
     logging.warning("Pydub library not found. Install with 'pip install pydub'.")
     AudioSegment = None
-
-# Noise-envelope path only: linear magnitude taper (FIR) — full stop below low edge, ramp to high edge, pass above.
-_NOISE_ENVELOPE_TAPER_LOW_HZ = 300.0
-_NOISE_ENVELOPE_TAPER_HIGH_HZ = 600.0
-
 
 def _log_preprocess_elapsed(label: str, t_start: float) -> float:
     """Log wall time since t_start (perf_counter); return a fresh start time for the next step."""
@@ -444,13 +440,15 @@ def preprocess_audio(
     order = int(params.get("preprocess_bandpass_order", 2))
     nyquist = 0.5 * new_sample_rate
 
-    # Out-of-band path: native sample rate so high-pass content is not capped by analysis Nyquist.
+    # Out-of-band path: high-pass taper + Hilbert at inverse_band_working_sample_rate (or native if disabled in params).
     inverse_band_envelope: Optional[np.ndarray] = None
     audio_inverse_hp_native: Optional[np.ndarray] = None
-    native_sr_int: Optional[int] = None
+    native_sr_int: Optional[int] = None  # effective rate for inverse-band FIR/Hilbert (working or native)
     # Noise envelope FIR taper band (for logging / debug); not tied to bandpass highcut.
     noise_envelope_hp_cut_hz: Optional[float] = None
     smooth_ms = float(params.get("envelope_smooth_window_ms", 50))
+    taper_lo_cfg = float(params.get("inverse_band_taper_low_hz", 300.0))
+    taper_hi_cfg = float(params.get("inverse_band_taper_high_hz", 600.0))
 
     if highcut <= 0.0:
         logging.warning("Inverse-band (noise envelope) skipped: preprocess_bandpass_high_hz must be > 0.")
@@ -459,36 +457,46 @@ def preprocess_audio(
         t_inv_overall = time.perf_counter()
         try:
             t_native_load = time.perf_counter()
-            audio_native, native_sr = librosa.load(file_path, sr=None, mono=True)
-            native_sr_int = int(round(float(native_sr)))
+            inv_sr_param = params.get("inverse_band_working_sample_rate")
+            min_inv_sr = int(np.ceil(2.5 * taper_hi_cfg))
+            if inv_sr_param is None or float(inv_sr_param) <= 0.0:
+                audio_native, native_sr = librosa.load(file_path, sr=None, mono=True)
+                native_sr_int = int(round(float(native_sr)))
+                load_label = "native"
+            else:
+                inv_sr = int(max(float(inv_sr_param), float(min_inv_sr)))
+                audio_native, native_sr = librosa.load(file_path, sr=inv_sr, mono=True)
+                native_sr_int = int(round(float(native_sr)))
+                load_label = f"inverse-band working ({native_sr_int} Hz, min {min_inv_sr})"
             audio_native = np.asarray(audio_native, dtype=np.float64)
             _nat_min = (float(audio_native.size) / float(native_sr_int)) / 60.0 if native_sr_int else 0.0
             _log_preprocess_elapsed(
-                f"inverse-band: librosa.load @ native rate ({native_sr_int} Hz), {audio_native.size} samples (~{_nat_min:.1f} min)",
+                f"inverse-band: librosa.load @ {load_label}, {audio_native.size} samples (~{_nat_min:.1f} min)",
                 t_native_load,
             )
         except Exception as e:
-            logging.warning("Could not load native-rate audio for inverse-band path: %s", e)
+            logging.warning("Could not load audio for inverse-band path: %s", e)
             audio_native = np.array([], dtype=np.float64)
             native_sr_int = None
 
         if native_sr_int is not None and audio_native.size > 0:
             nyquist_native = 0.5 * float(native_sr_int)
-            taper_lo = float(_NOISE_ENVELOPE_TAPER_LOW_HZ)
-            taper_hi = float(_NOISE_ENVELOPE_TAPER_HIGH_HZ)
+            taper_lo = float(taper_lo_cfg)
+            taper_hi = float(taper_hi_cfg)
             if taper_hi >= nyquist_native:
                 taper_hi = max(taper_lo + 20.0, nyquist_native * 0.999)
             if taper_lo >= taper_hi - 5.0:
                 logging.warning(
                     "Inverse-band (noise taper) skipped: Nyquist %.1f Hz too low for %.0f–%.0f Hz taper.",
                     nyquist_native,
-                    _NOISE_ENVELOPE_TAPER_LOW_HZ,
-                    _NOISE_ENVELOPE_TAPER_HIGH_HZ,
+                    taper_lo_cfg,
+                    taper_hi_cfg,
                 )
                 logging.info(
                     "Preprocess timing — inverse-band: skip point reached at +%.3f s in inverse block",
                     time.perf_counter() - t_inv_overall,
                 )
+                del audio_native
             else:
                 noise_envelope_hp_cut_hz = taper_hi
                 try:
@@ -508,27 +516,32 @@ def preprocess_audio(
                         time.perf_counter() - t_fir,
                     )
                     t_fb = time.perf_counter()
+                    _native_len = audio_native.size
                     audio_inverse_hp_native = filtfilt(fir_b, 1.0, audio_native)
+                    del audio_native
                     _log_preprocess_elapsed(
-                        f"inverse-band: filtfilt (native len={audio_native.size})",
+                        f"inverse-band: filtfilt (working len={_native_len})",
                         t_fb,
                     )
                 except Exception as e:
-                    logging.warning("Inverse-band FIR taper (native rate) failed: %s", e)
+                    logging.warning("Inverse-band FIR taper (working rate) failed: %s", e)
                     audio_inverse_hp_native = None
+                    del audio_native
 
                 if audio_inverse_hp_native is not None and audio_inverse_hp_native.size > 0:
                     t_h = time.perf_counter()
                     analytic_inv = hilbert(audio_inverse_hp_native)
                     envelope_inv_raw = np.abs(analytic_inv).astype(np.float64)
-                    _log_preprocess_elapsed("inverse-band: Hilbert + abs (native)", t_h)
+                    del analytic_inv
+                    _log_preprocess_elapsed("inverse-band: Hilbert + abs (working rate)", t_h)
                     smooth_window_nat = max(1, int(smooth_ms * native_sr_int / 1000))
                     t_r = time.perf_counter()
                     inv_smooth_nat = pd.Series(envelope_inv_raw).rolling(
                         window=smooth_window_nat, min_periods=1, center=True
                     ).mean().values
+                    del envelope_inv_raw
                     _log_preprocess_elapsed(
-                        f"inverse-band: rolling mean @ native (window={smooth_window_nat} samples)",
+                        f"inverse-band: rolling mean @ working rate (window={smooth_window_nat} samples)",
                         t_r,
                     )
                     try:
@@ -550,9 +563,17 @@ def preprocess_audio(
                             inverse_band_envelope = np.pad(
                                 inverse_band_envelope, (0, pad), mode="edge"
                             )
+                        del inv_smooth_nat
                     except Exception as e:
                         logging.warning("Could not resample inverse-band envelope to analysis rate: %s", e)
                         inverse_band_envelope = None
+                        del inv_smooth_nat
+        # Native-rate HF buffer: free now unless debug WAV still needs it.
+        if not save_debug_file and audio_inverse_hp_native is not None:
+            del audio_inverse_hp_native
+            audio_inverse_hp_native = None
+        if not save_debug_file:
+            gc.collect()
         t_step = _log_preprocess_elapsed("inverse-band section (overall)", t_inv_overall)
 
     low, high = lowcut / nyquist, highcut / nyquist
@@ -592,14 +613,18 @@ def preprocess_audio(
                     inv_path, audio_inverse_hp_native, native_sr_int
                 )
                 logging.info(
-                    "Saved inverse-band (FIR taper %.0f–%.0f Hz → 1) debug WAV (%s, native %d Hz, int16).",
-                    _NOISE_ENVELOPE_TAPER_LOW_HZ,
-                    _NOISE_ENVELOPE_TAPER_HIGH_HZ,
+                    "Saved inverse-band (FIR taper %.0f–%.0f Hz → 1) debug WAV (%s, %d Hz, int16).",
+                    taper_lo_cfg,
+                    taper_hi_cfg,
                     inv_path,
                     native_sr_int,
                 )
             except Exception as e:
                 logging.error(f"Failed to write inverse-band debug WAV file {inv_path}: {e}")
+        if audio_inverse_hp_native is not None:
+            del audio_inverse_hp_native
+            audio_inverse_hp_native = None
+        gc.collect()
         t_step = _log_preprocess_elapsed("optional debug WAV writes (filtered / inverse)", t_dbg)
     elif params["save_filtered_wav"] and not output_options.get("filtered_wav", True):
         logging.info("Skipping filtered audio WAV generation as requested.")
@@ -609,6 +634,7 @@ def preprocess_audio(
     t_main = time.perf_counter()
     analytic = hilbert(audio_filtered)
     envelope_raw = np.abs(analytic).astype(np.float64)
+    del analytic
     t_main = _log_preprocess_elapsed("main path: Hilbert + abs @ analysis rate", t_main)
     # Smoothing to reduce ripple (e.g. between S1 and S2); window in ms from config (default 50 ms).
     smooth_window = max(1, int(smooth_ms * new_sample_rate / 1000))
