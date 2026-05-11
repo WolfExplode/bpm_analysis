@@ -786,7 +786,11 @@ class Plotter:
         self.bpm_axis_center = float(avg_bpm)
 
     def _configure_layout(self):
-        """Sets up the plot layout, titles, and axes with custom x-axis tick labels."""
+        """Sets up the plot layout, titles, and axes.
+
+        X-axis uses automatic ticks with a modest nticks cap. Supplying hundreds of explicit
+        tickvals/ticktext for long files made Plotly pan/zoom lag badly (layout cost per frame).
+        """
         self.fig.update_layout(
             template="plotly_dark",
             dragmode="pan",
@@ -797,18 +801,10 @@ class Plotter:
             uirevision="layout-stable",
         )
 
-        duration_sec = float(self.time_axis_sec[-1])
-        tick_interval_sec = 30
-        tick_positions_sec = np.arange(0, duration_sec + 1e-6, tick_interval_sec, dtype=float)
-        if tick_positions_sec.size > 0 and tick_positions_sec[-1] < duration_sec:
-            tick_positions_sec = np.append(tick_positions_sec, duration_sec)
-        tickvals = _elapsed_seconds_to_plot_datetimes(tick_positions_sec)
-        ticktext = [f"{int(s // 60):02d}:{int(s % 60):02d} ({s:.2f})" for s in tick_positions_sec]
-
         self.fig.update_xaxes(
             title_text="Time",
-            tickvals=tickvals,
-            ticktext=ticktext,
+            tickmode="auto",
+            nticks=24,
             hoverformat="%M:%S.%L",
             automargin=False,
             title_standoff=4,
