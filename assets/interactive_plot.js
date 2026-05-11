@@ -1056,7 +1056,11 @@
   ]);
 
   // Traces that appear in both Debug and Analysis Data views
-  const LEGEND_IN_BOTH_NAMES = new Set(["Average BPM"]);
+  const LEGEND_IN_BOTH_NAMES = new Set([
+    "Average BPM",
+    "BPM (Pass 2)",
+    "BPM (Pass 3)",
+  ]);
 
   // In Analysis Data view, y-axis range is set to (max amplitude of visible analysis traces) * this factor.
   const ANALYSIS_VIEW_Y_RANGE_MULTIPLIER = 5;

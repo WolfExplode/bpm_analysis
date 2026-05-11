@@ -40,7 +40,11 @@
     "Manual S2",
     "Manual Noise",
   ]);
-  const LEGEND_IN_BOTH_NAMES = new Set(["Average BPM"]);
+  const LEGEND_IN_BOTH_NAMES = new Set([
+    "Average BPM",
+    "BPM (Pass 2)",
+    "BPM (Pass 3)",
+  ]);
   const ANALYSIS_VIEW_Y_RANGE_MULTIPLIER = 5;
   let legendCategoryInitialState = null;
   let signalAxisRangeDefault = null;

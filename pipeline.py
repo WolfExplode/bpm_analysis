@@ -42,9 +42,9 @@ from fft_profiles import (
 )
 from correction import run_pass3_correction
 
-# Recordings longer than this skip plot-related outputs (HTML, PNG, BPM CSV from Plotter,
-# spectrogram, FFT profile HTML, intermediate pass HTML). Analysis and text reports continue.
-LONG_RECORDING_DISABLE_PLOT_SEC = 3600.0
+# Recordings longer than this skip PNG export (Kaleido), but still allow HTML/CSV/etc.
+# Independent of optimize_long_plots (that flag only trims heavy traces in Plotter when plots are produced).
+LONG_RECORDING_DISABLE_PNG_SEC = 3600.0
 
 
 class _NoisyAlgorithmLogFilter(logging.Filter):
@@ -336,19 +336,14 @@ def analyze_wav_file(
         if sample_rate and len(algorithm_envelope) > 0
         else 0.0
     )
-    if duration_sec > LONG_RECORDING_DISABLE_PLOT_SEC:
+    long_recording = duration_sec > LONG_RECORDING_DISABLE_PNG_SEC
+    if long_recording:
         output_options = dict(output_options)
-        output_options["html"] = False
         output_options["png"] = False
-        output_options["csv"] = False
-        output_options["spectrogram"] = False
-        output_options["fft_profiles"] = False
-        output_options["output_all_passes"] = False
         logging.info(
-            "Recording length %.1f min exceeds %.0f min — disabling plot outputs "
-            "(HTML, PNG, BPM CSV, spectrogram, FFT profiles, intermediate pass HTML).",
+            "Recording length %.1f min exceeds %.0f min — disabling PNG export (Kaleido).",
             duration_sec / 60.0,
-            LONG_RECORDING_DISABLE_PLOT_SEC / 60.0,
+            LONG_RECORDING_DISABLE_PNG_SEC / 60.0,
         )
 
     noise_event_segments: list = []

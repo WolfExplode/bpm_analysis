@@ -40,6 +40,20 @@ def _elapsed_seconds_to_plot_datetimes(seconds: np.ndarray) -> pd.DatetimeIndex:
     return base + pd.to_timedelta(arr, unit="s")
 
 
+def _json_for_html_inline_script(json_str: str) -> str:
+    """
+    If config JSON is embedded literally inside <script>...</script>, any '</script>'
+    substring (case-insensitive) ends the HTML script element early and breaks parsing.
+    Break the token with a backslash so the browser keeps the script open; JSON still
+    decodes the same when assigned as a JS object literal (same as json.dumps output).
+    """
+    return re.sub(
+        r"</(?i)script\s*>",
+        lambda m: "<\\/" + m.group(0)[2:],
+        json_str,
+    )
+
+
 def prewarm_kaleido_png_export() -> None:
     """
     Start Kaleido's persistent sync server (Kaleido >= 1.1) so Chromium stays
@@ -561,95 +575,101 @@ class Plotter:
 
         self.spectrogram_enabled = False
         fig = make_subplots(specs=[[{"secondary_y": True}]])
+        optimize_long_plots_pass1 = bool(self.params.get("optimize_long_plots", False))
+        long_plot_threshold_sec = float(self.params.get("long_plot_duration_threshold_sec", 600.0))
+        skip_heavy_pass1_traces = optimize_long_plots_pass1 and self.audio_duration_sec > long_plot_threshold_sec
+        if skip_heavy_pass1_traces:
+            logging.info("Pass 1 HTML: skipping envelope and anchor beat traces (optimize_long_plots on long recording).")
 
-        factor = self.params.get("plot_downsample_factor", 5)
-        n = len(audio_envelope)
-        if factor > 1 and n >= factor:
-            plot_secs = np.arange(0, n, factor, dtype=np.float64) / self.sample_rate
-            plot_envelope = audio_envelope[::factor]
-        else:
-            plot_secs = np.arange(n, dtype=np.float64) / self.sample_rate
-            plot_envelope = audio_envelope
-        plot_time = _elapsed_seconds_to_plot_datetimes(plot_secs)
-        use_nr_main = (pass1_analysis_data or {}).get("noise_removed_envelope") is not None
-        main_env_name = "Noise Removed Envelope" if use_nr_main else "Bandpass Envelope"
-        fig.add_trace(
-            go.Scatter(x=plot_time, y=plot_envelope, name=main_env_name, line=dict(color="#47a5c4")),
-            secondary_y=False,
-        )
-
-        bp_pass1 = (pass1_analysis_data or {}).get("bandpass_envelope")
-        if (
-            use_nr_main
-            and bp_pass1 is not None
-            and isinstance(bp_pass1, np.ndarray)
-            and len(bp_pass1) == n
-        ):
-            plot_bp = bp_pass1[::factor] if factor > 1 and n >= factor else bp_pass1
+        if not skip_heavy_pass1_traces:
+            factor = self.params.get("plot_downsample_factor", 5)
+            n = len(audio_envelope)
+            if factor > 1 and n >= factor:
+                plot_secs = np.arange(0, n, factor, dtype=np.float64) / self.sample_rate
+                plot_envelope = audio_envelope[::factor]
+            else:
+                plot_secs = np.arange(n, dtype=np.float64) / self.sample_rate
+                plot_envelope = audio_envelope
+            plot_time = _elapsed_seconds_to_plot_datetimes(plot_secs)
+            use_nr_main = (pass1_analysis_data or {}).get("noise_removed_envelope") is not None
+            main_env_name = "Noise Removed Envelope" if use_nr_main else "Bandpass Envelope"
             fig.add_trace(
-                go.Scatter(
-                    x=plot_time,
-                    y=plot_bp,
-                    name="Bandpass Envelope",
-                    line=dict(color="#3498db", width=1.25, dash="dot"),
-                    visible="legendonly",
-                    hovertemplate="Bandpass Envelope: %{y:.4f}<extra></extra>",
-                ),
+                go.Scatter(x=plot_time, y=plot_envelope, name=main_env_name, line=dict(color="#47a5c4")),
                 secondary_y=False,
             )
 
-        inv_env = (pass1_analysis_data or {}).get("inverse_band_envelope")
-        if inv_env is not None and isinstance(inv_env, np.ndarray) and len(inv_env) == n:
-            plot_inv = inv_env[::factor] if factor > 1 and n >= factor else inv_env
-            fig.add_trace(
-                go.Scatter(
-                    x=plot_time,
-                    y=plot_inv,
-                    name="Noise Envelope",
-                    line=dict(color="#b85c9e", width=1.25),
-                    visible="legendonly",
-                    hovertemplate="Noise Envelope: %{y:.4f}<extra></extra>",
-                ),
-                secondary_y=False,
-            )
-
-        nr_env = (pass1_analysis_data or {}).get("noise_removed_envelope")
-        if (
-            not use_nr_main
-            and nr_env is not None
-            and isinstance(nr_env, np.ndarray)
-            and len(nr_env) == n
-        ):
-            plot_nr = nr_env[::factor] if factor > 1 and n >= factor else nr_env
-            fig.add_trace(
-                go.Scatter(
-                    x=plot_time,
-                    y=plot_nr,
-                    name="Noise Removed Envelope",
-                    line=dict(color="#e67e22", width=1.25),
-                    visible="legendonly",
-                    hovertemplate="Noise Removed Envelope: %{y:.4f}<extra></extra>",
-                ),
-                secondary_y=False,
-            )
-
-        if len(anchor_beats) > 0:
-            in_bounds = (anchor_beats >= 0) & (anchor_beats < len(audio_envelope))
-            ab = anchor_beats[in_bounds]
-            if len(ab) > 0:
-                anchor_times_sec = ab.astype(np.float64) / self.sample_rate
-                anchor_times_dt = _elapsed_seconds_to_plot_datetimes(anchor_times_sec)
-                y_at_beats = np.asarray(audio_envelope)[ab]
+            bp_pass1 = (pass1_analysis_data or {}).get("bandpass_envelope")
+            if (
+                use_nr_main
+                and bp_pass1 is not None
+                and isinstance(bp_pass1, np.ndarray)
+                and len(bp_pass1) == n
+            ):
+                plot_bp = bp_pass1[::factor] if factor > 1 and n >= factor else bp_pass1
                 fig.add_trace(
                     go.Scatter(
-                        x=anchor_times_dt,
-                        y=y_at_beats,
-                        name="Anchor beats",
-                        mode="markers",
-                        marker=dict(symbol="diamond", size=8, color="orange"),
+                        x=plot_time,
+                        y=plot_bp,
+                        name="Bandpass Envelope",
+                        line=dict(color="#3498db", width=1.25, dash="dot"),
+                        visible="legendonly",
+                        hovertemplate="Bandpass Envelope: %{y:.4f}<extra></extra>",
                     ),
                     secondary_y=False,
                 )
+
+            inv_env = (pass1_analysis_data or {}).get("inverse_band_envelope")
+            if inv_env is not None and isinstance(inv_env, np.ndarray) and len(inv_env) == n:
+                plot_inv = inv_env[::factor] if factor > 1 and n >= factor else inv_env
+                fig.add_trace(
+                    go.Scatter(
+                        x=plot_time,
+                        y=plot_inv,
+                        name="Noise Envelope",
+                        line=dict(color="#b85c9e", width=1.25),
+                        visible="legendonly",
+                        hovertemplate="Noise Envelope: %{y:.4f}<extra></extra>",
+                    ),
+                    secondary_y=False,
+                )
+
+            nr_env = (pass1_analysis_data or {}).get("noise_removed_envelope")
+            if (
+                not use_nr_main
+                and nr_env is not None
+                and isinstance(nr_env, np.ndarray)
+                and len(nr_env) == n
+            ):
+                plot_nr = nr_env[::factor] if factor > 1 and n >= factor else nr_env
+                fig.add_trace(
+                    go.Scatter(
+                        x=plot_time,
+                        y=plot_nr,
+                        name="Noise Removed Envelope",
+                        line=dict(color="#e67e22", width=1.25),
+                        visible="legendonly",
+                        hovertemplate="Noise Removed Envelope: %{y:.4f}<extra></extra>",
+                    ),
+                    secondary_y=False,
+                )
+
+            if len(anchor_beats) > 0:
+                in_bounds = (anchor_beats >= 0) & (anchor_beats < len(audio_envelope))
+                ab = anchor_beats[in_bounds]
+                if len(ab) > 0:
+                    anchor_times_sec = ab.astype(np.float64) / self.sample_rate
+                    anchor_times_dt = _elapsed_seconds_to_plot_datetimes(anchor_times_sec)
+                    y_at_beats = np.asarray(audio_envelope)[ab]
+                    fig.add_trace(
+                        go.Scatter(
+                            x=anchor_times_dt,
+                            y=y_at_beats,
+                            name="Anchor beats",
+                            mode="markers",
+                            marker=dict(symbol="diamond", size=8, color="orange"),
+                        ),
+                        secondary_y=False,
+                    )
 
         # Pass 1 instant BPM: raw 60/RR, then local median±MAD in time window, then global median±MAD (pass1_bpm_global_outlier_mad_k; <=0 skips)
         if pass1_bpm_data and "raw_scatter_times" in pass1_bpm_data and "raw_scatter_bpm" in pass1_bpm_data:
@@ -713,17 +733,17 @@ class Plotter:
             lt_vals = np.asarray(pass1_analysis_data["pass2_lt_bpm"], dtype=np.float64)
             if len(lt_times) >= 2 and len(lt_times) == len(lt_vals):
                 lt_times_dt = _elapsed_seconds_to_plot_datetimes(lt_times)
-            fig.add_trace(
-                go.Scatter(
-                    x=lt_times_dt,
-                    y=lt_vals,
-                    name="BPM Trend (Belief)",
-                    mode="lines",
-                    line=dict(color="orange", width=2),
-                    visible="legendonly",
-                ),
-                secondary_y=True,
-            )
+                fig.add_trace(
+                    go.Scatter(
+                        x=lt_times_dt,
+                        y=lt_vals,
+                        name="BPM Trend (Belief)",
+                        mode="lines",
+                        line=dict(color="orange", width=2),
+                        visible="legendonly",
+                    ),
+                    secondary_y=True,
+                )
 
         self.fig = fig
         self._configure_layout()
@@ -845,6 +865,30 @@ class Plotter:
                 ),
             )
 
+    def _add_primary_y_anchor_for_secondary_only_plot(self) -> None:
+        """
+        When optimize_long_plots skips the envelope, there are no traces on the primary y-axis.
+        Plotly's y+y2 overlay subplot can then fail to render secondary (BPM) traces in the exported HTML.
+
+        Anchors y with an invisible degenerate line so BPM / HRV on yaxis2 still draws.
+        """
+        dur = float(self.audio_duration_sec)
+        if not np.isfinite(dur) or dur <= 0.0:
+            return
+        t_dt = _elapsed_seconds_to_plot_datetimes(np.array([0.0, dur], dtype=np.float64))
+        self.fig.add_trace(
+            go.Scatter(
+                x=t_dt,
+                y=np.array([0.0, 0.0], dtype=np.float64),
+                mode="lines",
+                line=dict(color="rgba(0,0,0,0)", width=1),
+                showlegend=False,
+                hoverinfo="skip",
+                name="",
+            ),
+            secondary_y=False,
+        )
+
     def _add_line_traces(
         self,
         audio_envelope: np.ndarray,
@@ -856,6 +900,7 @@ class Plotter:
         Note: Do not use dashed lines (dash=...) for line traces--they cause noticeable lag in the plot."""
         if getattr(self, "skip_detailed_debug_traces", False):
             logging.info("Skipping audio envelope and noise floor traces for long file (optimization enabled).")
+            self._add_primary_y_anchor_for_secondary_only_plot()
             return
         plot_envelope = audio_envelope
         plot_noise_floor = analysis_data.get("dynamic_noise_floor_series")
@@ -1231,6 +1276,8 @@ class Plotter:
             """
             if output_suffix not in ("_pass2", "_pass3"):
                 return
+            if getattr(self, "skip_detailed_debug_traces", False):
+                return
             debug_info = (analysis_data or {}).get("peak_classifications") or {}
             if not isinstance(debug_info, dict) or not debug_info:
                 return
@@ -1288,12 +1335,30 @@ class Plotter:
             bpm_trace_name = "BPM (Pass 3)"
         else:
             bpm_trace_name = "Average BPM"
-        if smoothed_bpm is not None and bpm_times is not None and len(bpm_times) == len(smoothed_bpm) and len(bpm_times) > 0:
-            bpm_dt = _elapsed_seconds_to_plot_datetimes(np.asarray(bpm_times, dtype=np.float64))
+
+        def _flatten_float_series(a):
+            if a is None:
+                return None
+            arr = getattr(a, "to_numpy", None)
+            if callable(arr):
+                vals = np.asarray(a.to_numpy(dtype=np.float64), dtype=np.float64)
+            else:
+                vals = np.asarray(a, dtype=np.float64)
+            return vals.reshape(-1)
+
+        flat_bpm = _flatten_float_series(smoothed_bpm)
+        flat_bt = _flatten_float_series(bpm_times)
+        if (
+            flat_bpm is not None
+            and flat_bt is not None
+            and flat_bt.shape[0] == flat_bpm.shape[0]
+            and flat_bt.shape[0] > 0
+        ):
+            bpm_dt = _elapsed_seconds_to_plot_datetimes(flat_bt.astype(np.float64, copy=False))
             self.fig.add_trace(
                 go.Scatter(
                     x=bpm_dt,
-                    y=np.asarray(smoothed_bpm, dtype=np.float64),
+                    y=flat_bpm,
                     name=bpm_trace_name,
                     line=dict(color="#4a4a4a", width=3),
                 ),
@@ -1421,6 +1486,8 @@ class Plotter:
     ) -> None:
         """Add BPM-expected systole curve, measured systole datapoints (outlier-filtered), and best-fit curve on yaxis3 (Pass 2 and Pass 3 only)."""
         if output_suffix not in ("_pass2", "_pass3"):
+            return
+        if getattr(self, "skip_detailed_debug_traces", False):
             return
         obs_t, obs_iv, exp_t, exp_iv = _compute_systolic_interval_data(
             analysis_data, pass_metrics, self.sample_rate, self.params
@@ -1935,7 +2002,7 @@ class Plotter:
                     out_quiet.append(d)
             if out_quiet:
                 config_payload["pass3GapQuietSegments"] = out_quiet
-        config_json = json.dumps(config_payload)
+        config_json = _json_for_html_inline_script(json.dumps(config_payload))
 
         use_inline_js = bool(_oo.get("html_inline_interactive_script", False))
 

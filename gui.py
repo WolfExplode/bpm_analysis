@@ -752,8 +752,7 @@ class BPMApp:
                     logging.error("Failed to initialize regression testing output log: %s", e)
                     regression_log_path = None
 
-            if optimize_long_plots:
-                self.params["optimize_long_plots"] = True
+            self.params["optimize_long_plots"] = bool(optimize_long_plots)
             self.params["algorithm_console_logging"] = bool(algorithm_console_logging)
             self.params["general_console_logging"] = bool(general_console_logging)
 

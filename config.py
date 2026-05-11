@@ -250,7 +250,7 @@ DEFAULT_PARAMS = {
     # --- 7.1. Long Plot Optimization ---
     # When enabled, very long recordings can skip detailed debug traces in the HTML plot
     # to keep file sizes manageable. Shorter recordings are always shown in full detail.
-    "optimize_long_plots": False,                # Whether to enable long-plot optimization.
+    "optimize_long_plots": False,                 # Long recordings: lighter traces (envelope/peaks debug, S1/S2/noise scores, systole/diastole overlay series). Does not override the >60 min plot-output cutoff in pipeline.
     "long_plot_duration_threshold_sec": 600.0,   # Duration threshold (seconds) to treat a file as "long" (default: 10 minutes).
 
     # --- 7.1.1. FFT Profiles (S1/S2 frequency spectra from raw and preprocessed audio) ---
