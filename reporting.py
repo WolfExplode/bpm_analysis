@@ -170,12 +170,21 @@ class ReportGenerator:
 
     def _write_steepest_slopes(self, f, peak_exertion_stats, peak_recovery_stats):
         """Writes the peak exertion and recovery slope data to the markdown report."""
+        epoch = datetime.datetime(1970, 1, 1)
+
+        def _hms(ts):
+            secs = (ts - epoch).total_seconds()
+            h = int(secs // 3600)
+            m = int((secs % 3600) // 60)
+            s = int(secs % 60)
+            return f"{h}:{m:02d}:{s:02d}"
+
         f.write("## Steepest Slopes Analysis\n\n### Peak Exertion (Fastest HR Increase)\n\n")
         if peak_exertion_stats:
             pes = peak_exertion_stats
             f.write("| Attribute | Value |\n|:---|:---|\n")
             f.write(f"| **Rate** | `+{pes['slope_bpm_per_sec']:.2f}` BPM/second |\n")
-            f.write(f"| **Period** | {pes['start_time'].strftime('%M:%S')} to {pes['end_time'].strftime('%M:%S')} |\n")
+            f.write(f"| **Period** | {_hms(pes['start_time'])} to {_hms(pes['end_time'])} |\n")
             f.write(f"| **Duration** | {pes['duration_sec']:.1f} seconds |\n")
             f.write(f"| **BPM Change** | {pes['start_bpm']:.1f} to {pes['end_bpm']:.1f} BPM |\n\n")
         else:
@@ -186,7 +195,7 @@ class ReportGenerator:
             prs = peak_recovery_stats
             f.write("| Attribute | Value |\n|:---|:---|\n")
             f.write(f"| **Rate** | `{prs['slope_bpm_per_sec']:.2f}` BPM/second |\n")
-            f.write(f"| **Period** | {prs['start_time'].strftime('%M:%S')} to {prs['end_time'].strftime('%M:%S')} |\n")
+            f.write(f"| **Period** | {_hms(prs['start_time'])} to {_hms(prs['end_time'])} |\n")
             f.write(f"| **Duration** | {prs['duration_sec']:.1f} seconds |\n")
             f.write(f"| **BPM Change** | {prs['start_bpm']:.1f} to {prs['end_bpm']:.1f} BPM |\n\n")
         else:
@@ -194,7 +203,7 @@ class ReportGenerator:
 
     def _write_significant_changes(self, f, major_inclines, major_declines):
         """Writes the sections on sustained heart rate increases and decreases to the report file."""
-        epoch = datetime.datetime.fromtimestamp(0)
+        epoch = datetime.datetime(1970, 1, 1)
 
         def _write_period_list(items, empty_msg, duration_key, change_key, change_prefix):
             if not items:

@@ -68,7 +68,7 @@ def _json_for_html_inline_script(json_str: str) -> str:
     decodes the same when assigned as a JS object literal (same as json.dumps output).
     """
     return re.sub(
-        r"</(?i)script\s*>",
+        r"(?i)</script\s*>",
         lambda m: "<\\/" + m.group(0)[2:],
         json_str,
     )
@@ -826,7 +826,8 @@ class Plotter:
             title_text="Time",
             tickmode="auto",
             nticks=24,
-            hoverformat="%M:%S.%L",
+            tickformat="%H:%M:%S",
+            hoverformat="%H:%M:%S.%L",
             automargin=False,
             title_standoff=4,
             domain=[0, 0.95],

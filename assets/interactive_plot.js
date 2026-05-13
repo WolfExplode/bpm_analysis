@@ -13,7 +13,9 @@
 (function () {
   const cfg = window.BPM_ANALYZER_CONFIG || {};
   const TOTAL_DURATION = cfg.totalDuration || 0;
-  const EPOCH = new Date(0);
+  // Match Python's naive datetime epoch (1970-01-01 00:00:00 local time),
+  // not UTC epoch millis, so strip overlays/tooltips align with x-axis values.
+  const EPOCH = new Date(1970, 0, 1, 0, 0, 0, 0);
   const SPECTROGRAM_SOURCES = cfg.spectrogramSources || {};
   const SPECTROGRAM_AVAILABLE = cfg.spectrogramAvailable || {};
   const AUDIO_SOURCES = cfg.audioSources || {};
@@ -640,7 +642,7 @@
         const w = rect.width || 1;
         const x0ms = new Date(xAxisRange[0]).getTime();
         const x1ms = new Date(xAxisRange[1]).getTime();
-        const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms)) / 1000;
+        const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms) - EPOCH.getTime()) / 1000;
         const seg = _segmentAtTime(tSec);
         const text = _formatTooltip(seg);
         if (!text) {
@@ -663,7 +665,7 @@
         const w = rect.width || 1;
         const x0ms = new Date(xAxisRange[0]).getTime();
         const x1ms = new Date(xAxisRange[1]).getTime();
-        const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms)) / 1000;
+        const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms) - EPOCH.getTime()) / 1000;
         const gapSeg = _gapSegmentAtTime(tSec);
         const quietSeg = _gapQuietSegmentAtTime(tSec);
         const noiseSeg = _noiseSegmentAtTime(tSec);

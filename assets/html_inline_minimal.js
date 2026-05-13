@@ -3,7 +3,9 @@
 
 (function () {
   const cfg = window.BPM_ANALYZER_CONFIG || {};
-  const EPOCH = new Date(0);
+  // Match Python's naive datetime epoch (1970-01-01 00:00:00 local time),
+  // not UTC epoch millis, so interactions align with x-axis values.
+  const EPOCH = new Date(1970, 0, 1, 0, 0, 0, 0);
   let plotlyGraphDiv = null;
   const BEAT_HOVER_TRACES = ["S1 Beats", "S2 Beats", "Noise/Rejected"];
   let beatHoverEnabled = cfg.htmlS1S2HoverOnByDefault === true;

@@ -11,8 +11,9 @@ def timestamp_str() -> str:
 
 
 def seconds_to_datetime(seconds: float) -> datetime.datetime:
-    """Elapsed seconds since epoch -> timezone-naive datetime (for Plotly/pandas)."""
-    return datetime.datetime.fromtimestamp(0) + datetime.timedelta(seconds=seconds)
+    """Elapsed seconds since Unix epoch -> timezone-naive datetime (for Plotly/pandas)."""
+    # Use a fixed epoch instead of fromtimestamp(0), which can shift to 1969 in local time zones.
+    return datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=seconds)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

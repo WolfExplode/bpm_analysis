@@ -494,7 +494,7 @@ def smooth_bpm_series_from_instant(
     # Gaussian sigma chosen so that ±3σ spans roughly the same width as the old rolling window.
     sigma_sec = max(0.05, smoothing_window_sec / 3.0)
     smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
-    start_time = datetime.datetime.fromtimestamp(0)
+    start_time = datetime.datetime(1970, 1, 1)
     valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
     smoothed_bpm = pd.Series(smoothed_vals, index=valid_peak_times_dt)
     return smoothed_bpm, bpm_times, instant_bpm
@@ -519,7 +519,7 @@ def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> T
     smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
     sigma_sec = max(0.05, smoothing_window_sec / 3.0)
     smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
-    start_time = datetime.datetime.fromtimestamp(0)
+    start_time = datetime.datetime(1970, 1, 1)
     valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
     smoothed_bpm = pd.Series(smoothed_vals, index=valid_peak_times_dt)
     return smoothed_bpm, bpm_times, instant_bpm
@@ -563,7 +563,7 @@ def calculate_bpm_series_from_s1_state_labels(
     smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
     sigma_sec = max(0.05, smoothing_window_sec / 3.0)
     smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
-    start_time = datetime.datetime.fromtimestamp(0)
+    start_time = datetime.datetime(1970, 1, 1)
     valid_peak_times_dt = [start_time + datetime.timedelta(seconds=float(t)) for t in bpm_times]
     smoothed_bpm = pd.Series(smoothed_vals, index=valid_peak_times_dt)
     return smoothed_bpm, bpm_times, instant_bpm
