@@ -131,9 +131,9 @@ def _lombscargle_band_powers(
     vlf_mask = (freqs >= 0.003) & (freqs < 0.04)
     lf_mask = (freqs >= 0.04) & (freqs < 0.15)
     hf_mask = (freqs >= 0.15) & (freqs <= 0.40)
-    raw_vlf = float(np.trapz(periodogram[vlf_mask], freqs[vlf_mask])) if np.any(vlf_mask) else 0.0
-    raw_lf = float(np.trapz(periodogram[lf_mask], freqs[lf_mask])) if np.any(lf_mask) else 0.0
-    raw_hf = float(np.trapz(periodogram[hf_mask], freqs[hf_mask])) if np.any(hf_mask) else 0.0
+    raw_vlf = float(np.trapezoid(periodogram[vlf_mask], freqs[vlf_mask])) if np.any(vlf_mask) else 0.0
+    raw_lf = float(np.trapezoid(periodogram[lf_mask], freqs[lf_mask])) if np.any(lf_mask) else 0.0
+    raw_hf = float(np.trapezoid(periodogram[hf_mask], freqs[hf_mask])) if np.any(hf_mask) else 0.0
     raw_total = raw_vlf + raw_lf + raw_hf
     var_rr = float(np.var(rr_ms))
     if raw_total > 1e-20 and var_rr > 0:

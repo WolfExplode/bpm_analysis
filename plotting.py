@@ -27,17 +27,37 @@ matplotlib.use("Agg")  # Use non-interactive backend for spectrogram generation
 import matplotlib.pyplot as plt
 
 
-def _elapsed_seconds_to_plot_datetimes(seconds: np.ndarray) -> pd.DatetimeIndex:
+def _elapsed_seconds_to_plot_datetimes(seconds: np.ndarray) -> np.ndarray:
     """
     Vectorized equivalent of
     pd.to_datetime([seconds_to_datetime(float(t)) for t in seconds]).
     Same local-epoch convention as time_utils.seconds_to_datetime (for Plotly x).
+
+    Returns numpy datetime64[ns] (not pandas DatetimeIndex) so figure JSON for
+    Kaleido PNG export does not contain non-JSON-serializable pandas.Timestamp.
     """
     arr = np.asarray(seconds, dtype=np.float64).reshape(-1)
     if arr.size == 0:
-        return pd.DatetimeIndex([], dtype="datetime64[ns]")
+        return np.array([], dtype="datetime64[ns]")
     base = pd.Timestamp(seconds_to_datetime(0.0))
-    return base + pd.to_timedelta(arr, unit="s")
+    idx = base + pd.to_timedelta(arr, unit="s")
+    return idx.to_numpy(dtype="datetime64[ns]")
+
+
+def _bpm_axis_times_to_plot_x_coords(times_like: List[Any]) -> np.ndarray:
+    """
+    Map HRV slope dict times to the same numpy datetime64 x-axis as other traces.
+    Values may be elapsed seconds (float) or datetime-like (from smoothed_bpm index);
+    pandas.Timestamp is not JSON-safe for Kaleido unless converted here.
+    """
+    origin = seconds_to_datetime(0.0)
+    secs: List[float] = []
+    for t in times_like:
+        if isinstance(t, (int, float, np.integer, np.floating)) and not isinstance(t, bool):
+            secs.append(float(t))
+        else:
+            secs.append(float((pd.Timestamp(t) - pd.Timestamp(origin)).total_seconds()))
+    return _elapsed_seconds_to_plot_datetimes(np.asarray(secs, dtype=np.float64))
 
 
 def _json_for_html_inline_script(json_str: str) -> str:
@@ -521,6 +541,7 @@ class Plotter:
                 logging.info(f"Plot PNG exported via Kaleido to {output_png_path}")
             except Exception as e:
                 logging.warning(f"Failed to export Plot PNG (requires kaleido): {e}")
+                logging.debug("Kaleido PNG export traceback (set log level DEBUG for details)", exc_info=True)
 
         if output_options is None or output_options.get("csv", True):
             smoothed_bpm = pass_metrics.get("smoothed_bpm")
@@ -1677,7 +1698,7 @@ class Plotter:
                 c_data = [incline["duration_sec"], incline["bpm_increase"], incline["slope_bpm_per_sec"]]
                 self.fig.add_trace(
                     go.Scatter(
-                        x=[incline["start_time"], incline["end_time"]],
+                        x=_bpm_axis_times_to_plot_x_coords([incline["start_time"], incline["end_time"]]),
                         y=[incline["start_bpm"], incline["end_bpm"]],
                         mode="lines",
                         line=dict(color="purple", width=4),
@@ -1696,7 +1717,7 @@ class Plotter:
                 c_data = [decline["duration_sec"], decline["bpm_decrease"], decline["slope_bpm_per_sec"]]
                 self.fig.add_trace(
                     go.Scatter(
-                        x=[decline["start_time"], decline["end_time"]],
+                        x=_bpm_axis_times_to_plot_x_coords([decline["start_time"], decline["end_time"]]),
                         y=[decline["start_bpm"], decline["end_bpm"]],
                         mode="lines",
                         line=dict(color="#2ca02c", width=4),
@@ -1714,7 +1735,7 @@ class Plotter:
             stats = peak_recovery_stats
             self.fig.add_trace(
                 go.Scatter(
-                    x=[stats["start_time"], stats["end_time"]],
+                    x=_bpm_axis_times_to_plot_x_coords([stats["start_time"], stats["end_time"]]),
                     y=[stats["start_bpm"], stats["end_bpm"]],
                     mode="lines",
                     line=dict(color="#ff69b4", width=5),
@@ -1731,7 +1752,7 @@ class Plotter:
             stats = peak_exertion_stats
             self.fig.add_trace(
                 go.Scatter(
-                    x=[stats["start_time"], stats["end_time"]],
+                    x=_bpm_axis_times_to_plot_x_coords([stats["start_time"], stats["end_time"]]),
                     y=[stats["start_bpm"], stats["end_bpm"]],
                     mode="lines",
                     line=dict(color="#9d32a8", width=5),
