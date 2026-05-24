@@ -8,7 +8,8 @@ import logging
 import time
 from typing import Dict, Optional, Tuple, List
 
-from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
+from config import DEFAULT_OUTPUT_OPTIONS
+from file_io import output_stem_from_path
 
 import numpy as np
 import pandas as pd

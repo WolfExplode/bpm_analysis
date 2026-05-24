@@ -13,7 +13,7 @@ import datetime
 from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
-from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS, strip_output_filename_emojis
+from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, List, Optional, Tuple

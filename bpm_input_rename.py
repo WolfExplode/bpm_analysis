@@ -9,7 +9,7 @@ import re
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import quote
 
-from config import output_stem_from_path, strip_output_filename_emojis
+from file_io import normalize_output_filename_stem, output_stem_from_path
 
 # Suffixes of analysis artifacts under output_directory that use output_stem_from_path(input).
 # Used to rename outputs when the input file is BPM-tagged (single-channel only); order matters for HTML patching.
@@ -50,7 +50,7 @@ def strip_trailing_bpm_filename_annotations(stem: str) -> str:
 def _output_audio_basename_for_html(input_basename: str) -> str:
     """Match plotting._generate_custom_html: emoji-strip stem, keep extension (copied WAV name in output dir)."""
     stem, ext = os.path.splitext(input_basename)
-    return strip_output_filename_emojis(stem) + ext
+    return normalize_output_filename_stem(stem) + ext
 
 
 def format_bpm_filename_annotation(start_bpm: float, min_bpm: float, max_bpm: float) -> str:

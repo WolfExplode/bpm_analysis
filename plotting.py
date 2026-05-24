@@ -15,7 +15,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path, strip_output_filename_emojis
+from config import DEFAULT_OUTPUT_OPTIONS
+from file_io import find_companion_wav, normalize_output_filename_stem, output_stem_from_path
 from confidence_engine import calculate_bpm_intervals
 from hrv import compute_systole_interval_curve
 
@@ -1782,28 +1783,38 @@ class Plotter:
         """
         audio_file_name = os.path.basename(self.audio_source_path)
         _stem, _ext = os.path.splitext(audio_file_name)
-        output_audio_basename = strip_output_filename_emojis(_stem) + _ext
+        if not _ext:
+            _ext = ".wav"
+        output_audio_basename = normalize_output_filename_stem(_stem) + _ext
         duration_sec = self.audio_duration_sec or 0
 
         # --- Resolve audio source path ---
         audio_src = ""
-        if os.path.exists(self.audio_source_path):
-            dest_audio_path = os.path.join(self.output_directory, output_audio_basename)
-            if os.path.abspath(self.audio_source_path) != os.path.abspath(dest_audio_path):
-                try:
-                    shutil.copy2(self.audio_source_path, dest_audio_path)
-                    logging.info(f"Copied audio file to {dest_audio_path}")
-                except Exception as e:
-                    logging.error(f"Could not copy audio file: {e}")
-            audio_src = output_audio_basename.replace('\\', '/')
-        else:
+        dest_audio_path = os.path.join(self.output_directory, output_audio_basename)
+        copy_from = (
+            self.audio_source_path
+            if os.path.exists(self.audio_source_path)
+            else find_companion_wav(
+                _stem,
+                self.output_directory,
+                os.path.dirname(self.audio_source_path),
+            )
+        )
+        if copy_from and os.path.abspath(copy_from) != os.path.abspath(dest_audio_path):
+            try:
+                shutil.copy2(copy_from, dest_audio_path)
+                logging.info(f"Copied audio file to {dest_audio_path}")
+            except Exception as e:
+                logging.error(f"Could not copy audio file: {e}")
+        elif not copy_from:
             logging.error(f"Audio source file does NOT exist: {self.audio_source_path}")
-            dest_audio_path = os.path.join(self.output_directory, output_audio_basename)
-            if os.path.exists(dest_audio_path):
-                audio_src = output_audio_basename.replace('\\', '/')
+
+        if os.path.exists(dest_audio_path):
+            audio_src = output_audio_basename.replace('\\', '/')
+            if not copy_from or os.path.abspath(copy_from) != os.path.abspath(dest_audio_path):
                 logging.info(f"Found audio file in output directory: {dest_audio_path}")
-            else:
-                logging.error(f"Audio file not found anywhere: {output_audio_basename}")
+        else:
+            logging.error(f"Audio file not found anywhere: {output_audio_basename}")
 
         filtered_debug_file_name = f"{base_name}_filtered_debug.wav"
         filtered_debug_path = os.path.join(self.output_directory, filtered_debug_file_name)

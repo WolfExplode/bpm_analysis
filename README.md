@@ -64,7 +64,16 @@ python main.pyw
 ```
 Tip: You can double-click `main.pyw` to launch the app without opening a command prompt.
 
+## Build
 
+From the project directory, with the same Python environment and dependencies you use to run the app, install PyInstaller if needed, then run:
+
+```bash
+pip install pyinstaller
+pyinstaller BPM_Analyzer.spec
+```
+
+PyInstaller writes the standalone app under `dist/` (for example `dist/BPM_Analyzer.exe` on Windows).
 
 ## Extra Features:
 Import the generated heart rate graph into Blender to easily calculate the change in bpm over time.

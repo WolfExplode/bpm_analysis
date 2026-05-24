@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from audio_preprocessing import convert_to_wav, split_wav_to_mono_channels
-from config import strip_output_filename_emojis
+from file_io import find_companion_wav, normalize_output_filename_stem
 from console_logging import configure_analysis_console_logging
 
 _EXT_PREFERENCE = {
@@ -87,11 +87,11 @@ def extract_start_bpm_from_filename(file_path: str) -> Optional[float]:
 
 
 def dedupe_input_files(paths: List[str]) -> List[str]:
-    """Prefer WAV when both compressed and WAV share the same base name."""
+    """Prefer WAV when both compressed and WAV share the same base name (emoji/space tolerant)."""
     deduped: Dict[str, Tuple[int, str]] = {}
     for path in paths:
         base_name_only = os.path.splitext(os.path.basename(path))[0]
-        key = base_name_only.lower()
+        key = normalize_output_filename_stem(base_name_only).casefold()
         ext = os.path.splitext(path)[1].lower()
         score = _EXT_PREFERENCE.get(ext, 0)
 
@@ -119,11 +119,11 @@ def resolve_working_wav(
     if ext_lower != ".wav":
         source_stem = os.path.basename(base_name)
         source_dir = os.path.dirname(file_path)
-        same_dir_wav = os.path.join(source_dir, source_stem + ".wav")
-        output_stem = strip_output_filename_emojis(source_stem)
+        output_stem = normalize_output_filename_stem(source_stem)
         candidate_wav = os.path.join(wav_io_dir, output_stem + ".wav")
+        same_dir_wav = find_companion_wav(source_stem, source_dir, wav_io_dir)
 
-        if os.path.exists(same_dir_wav):
+        if same_dir_wav:
             if os.path.abspath(os.path.dirname(same_dir_wav)) == os.path.abspath(output_dir):
                 wav_path = same_dir_wav
             elif not output_options.get("working_wav_in_output", True):
@@ -154,7 +154,7 @@ def resolve_working_wav(
         else:
             orig_base = os.path.basename(file_path)
             o_stem, o_ext = os.path.splitext(orig_base)
-            out_wav_name = strip_output_filename_emojis(o_stem) + o_ext
+            out_wav_name = normalize_output_filename_stem(o_stem) + o_ext
             wav_path = os.path.join(wav_io_dir, out_wav_name)
             shutil.copy(file_path, wav_path)
 

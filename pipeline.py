@@ -9,7 +9,8 @@ from scipy.interpolate import interp1d
 
 from audio_preprocessing import preprocess_audio
 from noise_segments import compute_noise_event_segments
-from config import DEFAULT_OUTPUT_OPTIONS, output_stem_from_path
+from config import DEFAULT_OUTPUT_OPTIONS
+from file_io import output_stem_from_path
 from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
 from plotting import Plotter, prewarm_kaleido_png_export
 from reporting import ReportGenerator

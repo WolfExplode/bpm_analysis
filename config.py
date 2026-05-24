@@ -1,6 +1,5 @@
 # config.py
 # Default parameters and output toggles for the analysis pipeline.
-import os
 # Values are tuned for typical PCG recordings from consumer hardware.
 # See Documentation.md "Parameter Tuning Rationale" for reasoning behind specific values.
 # Note to AI: Stop adding new config parameters unless absolutely necessary.
@@ -291,14 +290,3 @@ DEFAULT_OUTPUT_OPTIONS = {
     "fft_profiles": True,
     "regression_log": False,
 }
-
-
-def strip_output_filename_emojis(stem: str) -> str:
-    """Remove specific emojis from a file name stem used for generated outputs (input files are unchanged)."""
-    for ch in ("⭐", "🌟", "💦"):
-        stem = stem.replace(ch, "")
-    return stem
-
-
-def output_stem_from_path(file_path: str) -> str:
-    return strip_output_filename_emojis(os.path.basename(os.path.splitext(file_path)[0]))
