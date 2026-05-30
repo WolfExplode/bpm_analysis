@@ -11,6 +11,7 @@ import os
 from typing import Any, Dict, Optional
 
 from config import DEFAULT_OUTPUT_OPTIONS
+from audio_preprocessing import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
 
 # Must match gui.OUTPUT_FILE_OPTIONS (first element of each tuple).
 UI_SETTINGS_OUTPUT_OPTION_KEYS = (
@@ -33,6 +34,8 @@ def migrate_ui_settings_keys(settings: Dict[str, Any]) -> None:
         settings["algorithm_console_logging"] = settings["verbose_console_logging"]
     if "general_console_logging" not in settings and "general_debug_logging" in settings:
         settings["general_console_logging"] = settings["general_debug_logging"]
+    if "channel_mode" not in settings and settings.get("process_all_channels"):
+        settings["channel_mode"] = CHANNEL_MODE_ALL
 
 
 def load_ui_settings_json(settings_path: str) -> Optional[Dict[str, Any]]:
@@ -101,7 +104,7 @@ def batch_cli_defaults_from_ui_settings(settings: Optional[Dict[str, Any]]) -> D
         "output_next_to_input": bool(s.get("output_to_input_dir", False)),
         "global_bpm_hint": parse_starting_bpm_from_settings(s),
         "bpm_from_filename": bool(s.get("bpm_from_filename", False)),
-        "process_all_channels": bool(s.get("process_all_channels", False)),
+        "channel_mode": normalize_channel_mode(s.get("channel_mode", CHANNEL_MODE_MIXED)),
         "optimize_long_plots": bool(s.get("optimize_long_plots", False)),
         "algorithm_console_logging": bool(s.get("algorithm_console_logging", True)),
         "general_console_logging": bool(s.get("general_console_logging", False)),

@@ -16,7 +16,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from audio_preprocessing import convert_to_wav, split_wav_to_mono_channels
+from audio_preprocessing import (
+    CHANNEL_MODE_ALL,
+    CHANNEL_MODE_MIXED,
+    convert_to_wav,
+    normalize_channel_mode,
+    resolve_wav_for_channel_mode,
+)
 from file_io import find_companion_wav, normalize_output_filename_stem
 from console_logging import configure_analysis_console_logging
 
@@ -170,7 +176,7 @@ class BatchJob:
     output_options: Dict[str, Any]
     global_bpm_hint: Optional[float]
     bpm_from_filename: bool
-    process_all_channels: bool
+    channel_mode: str
     collect_fft_for_aggregate: bool
 
 
@@ -204,7 +210,7 @@ def run_single_input_file(
     *,
     global_bpm_hint: Optional[float] = None,
     bpm_from_filename: bool = False,
-    process_all_channels: bool = False,
+    channel_mode: str = CHANNEL_MODE_MIXED,
     collect_fft_for_aggregate: bool = False,
     progress_callback: Optional[Callable[[str], None]] = None,
     conversion_status_callback: Optional[Callable[[str], None]] = None,
@@ -234,11 +240,17 @@ def run_single_input_file(
 
         wav_path = resolve_working_wav(file_path, wav_io_dir, output_dir, output_options)
 
+        mode = normalize_channel_mode(channel_mode)
         wav_files_to_analyze = [wav_path]
-        if process_all_channels:
+        if mode != CHANNEL_MODE_MIXED:
             if conversion_status_callback is not None:
-                conversion_status_callback(f"{basename}: Splitting stereo into mono channels...")
-            wav_files_to_analyze = split_wav_to_mono_channels(wav_path, wav_io_dir)
+                if mode == CHANNEL_MODE_ALL:
+                    conversion_status_callback(f"{basename}: Splitting stereo into mono channels...")
+                else:
+                    conversion_status_callback(
+                        f"{basename}: Extracting {mode} channel..."
+                    )
+            wav_files_to_analyze = resolve_wav_for_channel_mode(wav_path, wav_io_dir, mode)
         multi_channel = len(wav_files_to_analyze) > 1
 
         if global_bpm_hint is not None:
@@ -338,7 +350,7 @@ def _process_one_job(job: BatchJob) -> BatchJobResult:
         job.params,
         global_bpm_hint=job.global_bpm_hint,
         bpm_from_filename=job.bpm_from_filename,
-        process_all_channels=job.process_all_channels,
+        channel_mode=job.channel_mode,
         collect_fft_for_aggregate=job.collect_fft_for_aggregate,
         progress_callback=None,
         conversion_status_callback=None,
@@ -357,7 +369,7 @@ def run_batch_parallel(
     max_workers: int = 1,
     global_bpm_hint: Optional[float] = None,
     bpm_from_filename: bool = False,
-    process_all_channels: bool = False,
+    channel_mode: str = CHANNEL_MODE_MIXED,
     sequential_progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
     sequential_conversion_callback: Optional[Callable[[int, int, str, str], None]] = None,
 ) -> BatchParallelSummary:
@@ -406,7 +418,7 @@ def run_batch_parallel(
                 output_options=job_opts,
                 global_bpm_hint=global_bpm_hint,
                 bpm_from_filename=bpm_from_filename,
-                process_all_channels=process_all_channels,
+                channel_mode=channel_mode,
                 collect_fft_for_aggregate=collect_fft_for_aggregate,
             )
         )
@@ -449,7 +461,7 @@ def run_batch_parallel(
                     job.params,
                     global_bpm_hint=job.global_bpm_hint,
                     bpm_from_filename=job.bpm_from_filename,
-                    process_all_channels=job.process_all_channels,
+                    channel_mode=job.channel_mode,
                     collect_fft_for_aggregate=job.collect_fft_for_aggregate,
                     progress_callback=_make_prog(i, total, fp) if sequential_progress_callback else None,
                     conversion_status_callback=_make_conv(i, total, fp)

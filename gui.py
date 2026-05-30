@@ -19,6 +19,13 @@ from enum import Enum, auto
 from typing import Any, List, Optional, Tuple
 from time_utils import timestamp_str
 from ui_settings_loader import migrate_ui_settings_keys
+from audio_preprocessing import (
+    CHANNEL_MODE_ALL,
+    CHANNEL_MODE_LEFT,
+    CHANNEL_MODE_MIXED,
+    CHANNEL_MODE_RIGHT,
+    normalize_channel_mode,
+)
 from console_logging import configure_analysis_console_logging
 from bpm_input_rename import rename_analysis_outputs_after_input_bpm_rename, try_rename_input_with_bpm_annotation
 
@@ -46,6 +53,15 @@ OUTPUT_FILE_OPTIONS = (
     ("debug", "Debug Report (.md)"),
     ("regression_log", "Regression testing output log (.md)"),
 )
+
+CHANNEL_MODE_OPTIONS = (
+    (CHANNEL_MODE_MIXED, "Mixed (mono downmix)"),
+    (CHANNEL_MODE_ALL, "Each channel separately (stereo \u2192 CH1 & CH2)"),
+    (CHANNEL_MODE_LEFT, "Left channel only"),
+    (CHANNEL_MODE_RIGHT, "Right channel only"),
+)
+_CHANNEL_MODE_LABEL_BY_VALUE = {v: label for v, label in CHANNEL_MODE_OPTIONS}
+_CHANNEL_MODE_VALUE_BY_LABEL = {label: v for v, label in CHANNEL_MODE_OPTIONS}
 
 class BPMApp:
     # Minimum window size when auto-sized or resized by user
@@ -131,13 +147,17 @@ class BPMApp:
         self.rename_input_with_bpm.trace("w", lambda *args: self.save_ui_settings())
 
         # Channel handling option
-        self.process_all_channels = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.channel_mode = tk.StringVar(value=_CHANNEL_MODE_LABEL_BY_VALUE[CHANNEL_MODE_MIXED])
+        ttk.Label(param_frame, text="Audio channels:").grid(row=3, column=0, sticky=tk.W, pady=(4, 0))
+        channel_combo = ttk.Combobox(
             param_frame,
-            text="Analyze each audio channel separately (stereo \u2192 CH1 & CH2 outputs)",
-            variable=self.process_all_channels,
-            command=self.save_ui_settings,
-        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+            textvariable=self.channel_mode,
+            values=[label for _, label in CHANNEL_MODE_OPTIONS],
+            state="readonly",
+            width=42,
+        )
+        channel_combo.grid(row=3, column=1, sticky=tk.W, pady=(4, 0), padx=(6, 0))
+        channel_combo.bind("<<ComboboxSelected>>", lambda e: self.save_ui_settings())
 
         # Output file options (defaults from config only)
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
@@ -493,7 +513,7 @@ class BPMApp:
         return extract_start_bpm_from_filename(file_path)
 
     _SETTINGS_VAR_KEYS = (
-        ('process_all_channels', 'algorithm_console_logging', 'general_console_logging', 'bpm_from_filename', 'rename_input_with_bpm')
+        ('algorithm_console_logging', 'general_console_logging', 'bpm_from_filename', 'rename_input_with_bpm')
         + tuple('output_' + k for k, _ in OUTPUT_FILE_OPTIONS)
         + (
             'optimize_long_plots',
@@ -526,6 +546,8 @@ class BPMApp:
             return
         try:
             settings = {k: getattr(self, k).get() for k in self._SETTINGS_VAR_KEYS}
+            label = self.channel_mode.get()
+            settings["channel_mode"] = _CHANNEL_MODE_VALUE_BY_LABEL.get(label, CHANNEL_MODE_MIXED)
             settings['starting_bpm'] = self.bpm_entry.get().strip()
             settings['last_files'] = self.current_files if self.current_files else []
             with open(self.settings_file, 'w', encoding='utf-8') as f:
@@ -544,6 +566,9 @@ class BPMApp:
             if settings.get('starting_bpm'):
                 self.bpm_entry.delete(0, tk.END)
                 self.bpm_entry.insert(0, settings['starting_bpm'])
+            if "channel_mode" in settings:
+                mode = normalize_channel_mode(settings["channel_mode"])
+                self.channel_mode.set(_CHANNEL_MODE_LABEL_BY_VALUE.get(mode, _CHANNEL_MODE_LABEL_BY_VALUE[CHANNEL_MODE_MIXED]))
             for k in self._SETTINGS_VAR_KEYS:
                 if k in settings:
                     getattr(self, k).set(settings[k])
@@ -728,7 +753,8 @@ class BPMApp:
             base_output_dir = os.path.join(os.getcwd(), "processed_files")
             os.makedirs(base_output_dir, exist_ok=True)
 
-            process_all_channels = self.process_all_channels.get()
+            label = self.channel_mode.get()
+            channel_mode = _CHANNEL_MODE_VALUE_BY_LABEL.get(label, CHANNEL_MODE_MIXED)
             optimize_long_plots = self.optimize_long_plots.get()
             algorithm_console_logging = self.algorithm_console_logging.get()
             general_console_logging = self.general_console_logging.get()
@@ -796,7 +822,7 @@ class BPMApp:
                 max_workers=max_workers,
                 global_bpm_hint=global_start_bpm_hint,
                 bpm_from_filename=bpm_from_filename,
-                process_all_channels=process_all_channels,
+                channel_mode=channel_mode,
                 sequential_progress_callback=_seq_prog if max_workers == 1 else None,
                 sequential_conversion_callback=_seq_conv if max_workers == 1 else None,
             )

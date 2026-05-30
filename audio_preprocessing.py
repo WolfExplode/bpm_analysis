@@ -23,6 +23,49 @@ except ImportError:
     logging.warning("Pydub library not found. Install with 'pip install pydub'.")
     AudioSegment = None
 
+CHANNEL_MODE_MIXED = "mixed"
+CHANNEL_MODE_LEFT = "left"
+CHANNEL_MODE_RIGHT = "right"
+CHANNEL_MODE_ALL = "all"
+CHANNEL_MODES = (CHANNEL_MODE_MIXED, CHANNEL_MODE_LEFT, CHANNEL_MODE_RIGHT, CHANNEL_MODE_ALL)
+MAX_STEREO_CHANNEL_COUNT = 2
+
+
+class TooManyAudioChannelsError(ValueError):
+    """Raised when channel-specific processing is requested on >2-channel audio."""
+
+
+def normalize_channel_mode(mode: str) -> str:
+    m = (mode or CHANNEL_MODE_MIXED).strip().lower()
+    if m not in CHANNEL_MODES:
+        raise ValueError(f"Invalid channel_mode {mode!r}; expected one of {CHANNEL_MODES}.")
+    return m
+
+
+def get_audio_channel_count(file_path: str) -> int:
+    """Return channel count (1 for mono). Falls back to 1 if pydub cannot open the file."""
+    if not AudioSegment:
+        return 1
+    try:
+        return int(AudioSegment.from_file(file_path).channels)
+    except Exception as e:
+        logging.warning("Could not read channel count for %s: %s", file_path, e)
+        return 1
+
+
+def _export_mono_channel(
+    segment,
+    file_path: str,
+    output_directory: str,
+    channel_index: int,
+) -> str:
+    """Export one 0-based mono channel; filename uses 1-based _chN suffix."""
+    ch_num = channel_index + 1
+    base_name = output_stem_from_path(file_path)
+    out_path = os.path.join(output_directory, f"{base_name}_ch{ch_num}.wav")
+    segment.export(out_path, format="wav")
+    return out_path
+
 def _log_preprocess_elapsed(label: str, t_start: float) -> float:
     """Log wall time since t_start (perf_counter); return a fresh start time for the next step."""
     dt = time.perf_counter() - t_start
@@ -239,49 +282,89 @@ def convert_to_wav(file_path: str, target_path: str) -> bool:
 
 def split_wav_to_mono_channels(file_path: str, output_directory: str) -> List[str]:
     """
-    For a possibly multi-channel WAV file, export one mono WAV per channel.
+    For a stereo WAV file, export one mono WAV per channel.
 
     Returns a list of file paths to the mono channel WAVs. If the input
     is already mono or splitting fails, the original file_path is returned
-    as the only element.
+    as the only element. Raises TooManyAudioChannelsError when channel count > 2.
     """
+    return resolve_wav_for_channel_mode(file_path, output_directory, CHANNEL_MODE_ALL)
+
+
+def resolve_wav_for_channel_mode(
+    file_path: str,
+    output_directory: str,
+    channel_mode: str = CHANNEL_MODE_MIXED,
+) -> List[str]:
+    """
+    Select working WAV path(s) for analysis based on channel_mode.
+
+    mixed — use file as-is (librosa downmixes at load time).
+    left / right — export one stereo channel (ch1 = left, ch2 = right).
+    all — export each stereo channel as separate mono WAVs.
+
+    Mono inputs are returned unchanged for left/right/all. More than two channels
+    raises TooManyAudioChannelsError.
+    """
+    mode = normalize_channel_mode(channel_mode)
+    if mode == CHANNEL_MODE_MIXED:
+        return [file_path]
+
     if not AudioSegment:
-        logging.warning("Pydub not available; cannot split channels. Using original file only.")
+        logging.warning("Pydub not available; cannot select channels. Using original file only.")
         return [file_path]
 
     try:
         sound = AudioSegment.from_file(file_path)
     except Exception as e:
-        logging.warning(f"Failed to open WAV for channel splitting ({file_path}): {e}")
+        logging.warning("Failed to open WAV for channel selection (%s): %s", file_path, e)
         return [file_path]
 
-    if sound.channels <= 1:
+    n_channels = sound.channels
+    if n_channels <= 1:
         return [file_path]
+
+    if n_channels > MAX_STEREO_CHANNEL_COUNT:
+        raise TooManyAudioChannelsError(
+            f"'{os.path.basename(file_path)}' has {n_channels} audio channels; "
+            "left/right/separate-channel analysis supports stereo (2 channels) only."
+        )
 
     mono_segments = sound.split_to_mono()
-    base_name = output_stem_from_path(file_path)
+    if mode == CHANNEL_MODE_ALL:
+        channel_paths: List[str] = []
+        for idx, seg in enumerate(mono_segments):
+            try:
+                channel_paths.append(_export_mono_channel(seg, file_path, output_directory, idx))
+            except Exception as e:
+                logging.warning("Failed to export channel %d for %s: %s", idx + 1, file_path, e)
+        if not channel_paths:
+            return [file_path]
+        logging.info(
+            "Split %s into %d mono channel file(s): %s",
+            os.path.basename(file_path),
+            len(channel_paths),
+            ", ".join(os.path.basename(p) for p in channel_paths),
+        )
+        return channel_paths
 
-    channel_paths: List[str] = []
-    for idx, seg in enumerate(mono_segments):
-        ch_idx = idx + 1
-        out_path = os.path.join(output_directory, f"{base_name}_ch{ch_idx}.wav")
-        try:
-            seg.export(out_path, format="wav")
-            channel_paths.append(out_path)
-        except Exception as e:
-            logging.warning(f"Failed to export channel {ch_idx} for {file_path}: {e}")
-
-    # Fallback: if export failed for all channels, keep original file
-    if not channel_paths:
+    channel_index = 0 if mode == CHANNEL_MODE_LEFT else 1
+    side_label = "left" if mode == CHANNEL_MODE_LEFT else "right"
+    try:
+        out_path = _export_mono_channel(
+            mono_segments[channel_index], file_path, output_directory, channel_index
+        )
+    except Exception as e:
+        logging.warning("Failed to export %s channel for %s: %s", side_label, file_path, e)
         return [file_path]
 
     logging.info(
-        "Split %s into %d mono channel file(s): %s",
+        "Using %s channel only from %s: %s",
+        side_label,
         os.path.basename(file_path),
-        len(channel_paths),
-        ", ".join(os.path.basename(p) for p in channel_paths),
+        os.path.basename(out_path),
     )
-    return channel_paths
+    return [out_path]
 
 
 def _dense_troughs_linear_interpolate(

@@ -23,6 +23,7 @@ from batch_runner import run_batch_parallel
 from bpm_input_rename import rename_analysis_outputs_after_input_bpm_rename, try_rename_input_with_bpm_annotation
 from config import DEFAULT_PARAMS
 from console_logging import configure_analysis_console_logging
+from audio_preprocessing import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
 from ui_settings_loader import batch_cli_defaults_from_ui_settings, load_ui_settings_json
 
 
@@ -104,7 +105,7 @@ def main(argv: List[str] | None = None) -> int:
         action="store_const",
         const=True,
         default=_SUP,
-        help="Analyze each audio channel separately (default: ui_settings.json process_all_channels).",
+        help="Analyze each stereo channel separately (same as --channel all).",
     )
     parser.add_argument(
         "--no-all-channels",
@@ -112,7 +113,13 @@ def main(argv: List[str] | None = None) -> int:
         action="store_const",
         const=False,
         default=_SUP,
-        help="Analyze mixed channel only.",
+        help="Use mixed mono downmix (same as --channel mixed).",
+    )
+    parser.add_argument(
+        "--channel",
+        choices=("mixed", "left", "right", "all"),
+        default=_SUP,
+        help="Channel selection: mixed (default), left, right, or all (default: ui_settings.json channel_mode).",
     )
     parser.add_argument(
         "--optimize-long-plots",
@@ -336,9 +343,11 @@ def main(argv: List[str] | None = None) -> int:
     if global_bpm_hint is not None:
         bpm_from_filename = False
 
-    process_all_channels = merged["process_all_channels"]
-    if hasattr(ns, "all_channels"):
-        process_all_channels = bool(ns.all_channels)
+    channel_mode = normalize_channel_mode(merged["channel_mode"])
+    if hasattr(ns, "channel") and ns.channel is not _SUP:
+        channel_mode = normalize_channel_mode(ns.channel)
+    elif hasattr(ns, "all_channels") and ns.all_channels is not _SUP:
+        channel_mode = CHANNEL_MODE_ALL if ns.all_channels else CHANNEL_MODE_MIXED
 
     optimize_long = merged["optimize_long_plots"]
     if hasattr(ns, "optimize_long_plots"):
@@ -414,7 +423,7 @@ def main(argv: List[str] | None = None) -> int:
         max_workers=jobs,
         global_bpm_hint=global_bpm_hint,
         bpm_from_filename=bpm_from_filename,
-        process_all_channels=process_all_channels,
+        channel_mode=channel_mode,
     )
 
     if rename_input_with_bpm:
