@@ -153,27 +153,50 @@
   let manualStateSegments = pass3SegmentsToManual(_initialPass3ForManual);
   let manualStripEdited = false;
   const manualStateUndoStack = [];
+  const manualStateRedoStack = [];
   const MANUAL_STATE_UNDO_MAX = 50;
 
   function cloneManualStateSegments(segs) {
     return segs.map((seg) => ({ ...seg }));
   }
 
-  function pushManualStateUndo() {
+  function captureManualStateForUndo() {
     manualStateUndoStack.push(cloneManualStateSegments(manualStateSegments));
     if (manualStateUndoStack.length > MANUAL_STATE_UNDO_MAX) {
       manualStateUndoStack.shift();
     }
   }
 
+  function captureManualStateForRedo() {
+    manualStateRedoStack.push(cloneManualStateSegments(manualStateSegments));
+    if (manualStateRedoStack.length > MANUAL_STATE_UNDO_MAX) {
+      manualStateRedoStack.shift();
+    }
+  }
+
+  function pushManualStateUndo() {
+    captureManualStateForUndo();
+    manualStateRedoStack.length = 0;
+  }
+
   function undoManualState() {
     if (manualStateUndoStack.length === 0) return;
+    captureManualStateForRedo();
     manualStateSegments = manualStateUndoStack.pop();
     if (manualStateUndoStack.length === 0) {
       manualStripEdited = false;
     }
     scheduleDrawPass3StateStrip();
     console.log(`Undo: restored ${manualStateSegments.length} state segment(s).`);
+  }
+
+  function redoManualState() {
+    if (manualStateRedoStack.length === 0) return;
+    captureManualStateForUndo();
+    manualStateSegments = manualStateRedoStack.pop();
+    manualStripEdited = true;
+    scheduleDrawPass3StateStrip();
+    console.log(`Redo: restored ${manualStateSegments.length} state segment(s).`);
   }
 
   function revealManualStateStrip() {
@@ -1434,7 +1457,7 @@
     finishManualStateEdit(`Removed ${seg.state} at t=${t.toFixed(3)}s [${seg.start_sec.toFixed(3)}, ${seg.end_sec.toFixed(3)}]`);
   }
 
-  // Flip manual S1↔S2 for all manual segments whose center is >= playhead.
+  // Flip S1↔S2 for all anchor segments whose center is >= playhead.
   // Clears regenerated segments right of playhead; gaps are refilled automatically.
   function flipManualStatesRight() {
     if (!audio) return;
@@ -1445,23 +1468,24 @@
     manualStateSegments = manualStateSegments.filter((seg) => {
       const center = (seg.start_sec + seg.end_sec) / 2;
       if (center < cutoff) return true;
-      if (seg.source === "regenerated") return false; // remove regenerated right of playhead
+      if (seg.source === "regenerated") return false;
       return true;
     });
 
     manualStateSegments.forEach((seg) => {
       const center = (seg.start_sec + seg.end_sec) / 2;
-      if (center < cutoff || seg.source !== "manual") return;
-      if (seg.state === "S1") { seg.state = "S2"; flippedCount++; }
-      else if (seg.state === "S2") { seg.state = "S1"; flippedCount++; }
+      if (center < cutoff || (seg.state !== "S1" && seg.state !== "S2")) return;
+      seg.state = seg.state === "S1" ? "S2" : "S1";
+      seg.source = "manual";
+      flippedCount++;
     });
 
     if (flippedCount === 0) {
       manualStateUndoStack.pop(); // no change made
-      alert("No manual S1/S2 states to flip to the right of the playhead.");
+      alert("No S1/S2 states to flip to the right of the playhead.");
       return;
     }
-    finishManualStateEdit(`Flipped ${flippedCount} manual state(s) right of t=${cutoff.toFixed(3)}s`);
+    finishManualStateEdit(`Flipped ${flippedCount} S1/S2 state(s) right of t=${cutoff.toFixed(3)}s`);
   }
 
   function getRegenAnchors() {
@@ -1739,6 +1763,12 @@
       return;
     }
 
+    if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ" && e.shiftKey) {
+      e.preventDefault();
+      redoManualState();
+      return;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ" && !e.shiftKey) {
       e.preventDefault();
       undoManualState();
@@ -1784,6 +1814,7 @@
         break;
       case "Backspace":
       case "Delete":
+      case "KeyX":
         e.preventDefault();
         removeStateAtPlayhead();
         break;
