@@ -216,6 +216,40 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
     return metrics
 
 
+def _write_hr_stats(metrics: Dict[str, Any], smoothed_bpm) -> None:
+    """Write all derived HR stats from a smoothed BPM series into metrics."""
+    metrics["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
+    metrics["major_declines"] = find_major_hr_declines(smoothed_bpm)
+    metrics["hrr_stats"] = calculate_hrr(smoothed_bpm)
+    metrics["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
+    metrics["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
+    if not getattr(smoothed_bpm, "empty", True):
+        hrv_summary = dict(metrics.get("hrv_summary") or {})
+        hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
+        hrv_summary["min_bpm"] = float(smoothed_bpm.min())
+        hrv_summary["max_bpm"] = float(smoothed_bpm.max())
+        metrics["hrv_summary"] = hrv_summary
+
+
+def _apply_bpm_smoothing(metrics: Dict[str, Any], params: Dict) -> None:
+    """
+    MAD-filter + smooth the instant BPM already in *metrics*, then write back all
+    downstream HR stats.  No-op when metrics lacks valid bt/ib or MAD drops all points.
+    """
+    bt = metrics.get("bpm_times")
+    ib = metrics.get("instant_bpm")
+    if bt is None or ib is None or len(bt) != len(ib) or len(bt) < 2:
+        return
+    t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
+    if len(t_filt) == 0:
+        return
+    smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
+    metrics["smoothed_bpm"] = smoothed_bpm
+    metrics["bpm_times"] = bpm_times
+    metrics["instant_bpm"] = instant_bpm
+    _write_hr_stats(metrics, smoothed_bpm)
+
+
 def _apply_pass3_state_timeline_bpm(
     metrics: Dict[str, Any],
     analysis_data: Dict,
@@ -260,17 +294,7 @@ def _apply_pass3_state_timeline_bpm(
     metrics["smoothed_bpm"] = bpm_grid
     metrics["bpm_times"] = t_grid
     metrics.pop("instant_bpm", None)
-    metrics["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
-    metrics["major_declines"] = find_major_hr_declines(smoothed_bpm)
-    metrics["hrr_stats"] = calculate_hrr(smoothed_bpm)
-    metrics["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
-    metrics["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-    if not getattr(smoothed_bpm, "empty", True):
-        hrv_summary = dict(metrics.get("hrv_summary") or {})
-        hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
-        hrv_summary["min_bpm"] = float(smoothed_bpm.min())
-        hrv_summary["max_bpm"] = float(smoothed_bpm.max())
-        metrics["hrv_summary"] = hrv_summary
+    _write_hr_stats(metrics, smoothed_bpm)
     logging.info("Pass 3: BPM curve from state timeline (S1 run starts → same MAD/smooth as peaks).")
 
 
@@ -450,27 +474,7 @@ def analyze_wav_file(
         ):
             metrics_pass2["bpm_times_raw"] = np.asarray(bt0, dtype=np.float64).copy()
             metrics_pass2["instant_bpm_raw"] = np.asarray(ib0, dtype=np.float64).copy()
-        # Pass 2: BPM curve and all derived stats from MAD-filtered instantaneous BPM (same logic as algorithm input)
-        bt = metrics_pass2.get("bpm_times")
-        ib = metrics_pass2.get("instant_bpm")
-        if bt is not None and ib is not None and len(bt) == len(ib) and len(bt) >= 2:
-            t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
-            if len(t_filt) > 0:
-                smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
-                metrics_pass2["smoothed_bpm"] = smoothed_bpm
-                metrics_pass2["bpm_times"] = bpm_times
-                metrics_pass2["instant_bpm"] = instant_bpm
-                metrics_pass2["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
-                metrics_pass2["major_declines"] = find_major_hr_declines(smoothed_bpm)
-                metrics_pass2["hrr_stats"] = calculate_hrr(smoothed_bpm)
-                metrics_pass2["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
-                metrics_pass2["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-                if not getattr(smoothed_bpm, "empty", True):
-                    hrv_summary = metrics_pass2.get("hrv_summary") or {}
-                    hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
-                    hrv_summary["min_bpm"] = float(smoothed_bpm.min())
-                    hrv_summary["max_bpm"] = float(smoothed_bpm.max())
-                    metrics_pass2["hrv_summary"] = hrv_summary
+        _apply_bpm_smoothing(metrics_pass2, params)
         if output_all_passes:
             _ui("Pass 2: saving HTML / PNG / CSV...")
             plotter = Plotter(
@@ -541,27 +545,7 @@ def analyze_wav_file(
         ):
             metrics_after_pass3["bpm_times_raw"] = np.asarray(bt0, dtype=np.float64).copy()
             metrics_after_pass3["instant_bpm_raw"] = np.asarray(ib0, dtype=np.float64).copy()
-        # Apply MAD-based BPM (same params as pass 2) on peak-derived instant BPM
-        bt = metrics_after_pass3.get("bpm_times")
-        ib = metrics_after_pass3.get("instant_bpm")
-        if bt is not None and ib is not None and len(bt) == len(ib) and len(bt) >= 2:
-            t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
-            if len(t_filt) > 0:
-                smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
-                metrics_after_pass3["smoothed_bpm"] = smoothed_bpm
-                metrics_after_pass3["bpm_times"] = bpm_times
-                metrics_after_pass3["instant_bpm"] = instant_bpm
-                metrics_after_pass3["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
-                metrics_after_pass3["major_declines"] = find_major_hr_declines(smoothed_bpm)
-                metrics_after_pass3["hrr_stats"] = calculate_hrr(smoothed_bpm)
-                metrics_after_pass3["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
-                metrics_after_pass3["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-                if not getattr(smoothed_bpm, "empty", True):
-                    hrv_summary = metrics_after_pass3.get("hrv_summary") or {}
-                    hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
-                    hrv_summary["min_bpm"] = float(smoothed_bpm.min())
-                    hrv_summary["max_bpm"] = float(smoothed_bpm.max())
-                    metrics_after_pass3["hrv_summary"] = hrv_summary
+        _apply_bpm_smoothing(metrics_after_pass3, params)
 
     _apply_pass3_state_timeline_bpm(metrics_after_pass3, analysis_data, sample_rate, params)
 

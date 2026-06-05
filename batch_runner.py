@@ -132,7 +132,7 @@ def resolve_working_wav(
         if same_dir_wav:
             if os.path.abspath(os.path.dirname(same_dir_wav)) == os.path.abspath(output_dir):
                 wav_path = same_dir_wav
-            elif not output_options.get("working_wav_in_output", True):
+            elif not output_options.get("working_wav_in_output", False):
                 wav_path = same_dir_wav
             else:
                 wav_path = candidate_wav
@@ -229,7 +229,7 @@ def run_single_input_file(
     try:
         os.makedirs(output_dir, exist_ok=True)
 
-        if output_options.get("working_wav_in_output", True):
+        if output_options.get("working_wav_in_output", False):
             wav_io_dir = output_dir
         else:
             working_tmp = tempfile.mkdtemp(prefix="bpm_working_")
