@@ -538,7 +538,7 @@
                     </select>
                     <button id="apply-label-btn" title="Place selected state centered on playhead">Apply</button>
                     <button id="flip-labels-right-btn" title="Flip manual S1↔S2 states to the right of the playhead">Flip Right</button>
-                    <button id="regenerate-states-btn" title="Fill gaps between manual S1/S2 anchors with systole/diastole">Regenerate</button>
+                    <button id="regenerate-states-btn" title="Show auto labels unchanged until first edit; then fill gaps between S1/S2 anchors with systole/diastole">Regenerate</button>
                     <button id="download-labels-btn" title="Export manual state sequence as CSV">Download CSV</button>
                     <button id="import-labels-btn" title="Import manual state sequence CSV (replaces current)">Import CSV</button>
                     <input type="file" id="import-labels-input" accept=".csv" style="display:none" />
@@ -604,6 +604,7 @@
         <kbd>&#8592;&#8594;</kbd> Seek &nbsp;
         <kbd>G</kbd> Spectrogram &nbsp;
         <kbd>1</kbd>/<kbd>2</kbd> Apply S1/S2 &nbsp;
+        <kbd>Del</kbd> Remove state &nbsp;
         <kbd>Ctrl+Z</kbd> Undo
     </div>
 

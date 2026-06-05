@@ -347,6 +347,39 @@
   }
 
   let pass3StripRaf = 0;
+  const STATE_STRIP_HEIGHT = 10;
+  const STATE_STRIP_GAP = 2;
+  const CARDIAC_STATE_COLORS = {
+    S1: "#e36f6f",
+    systole: "#666666",
+    S2: "#f0a030",
+    diastole: "#999999",
+  };
+  const MANUAL_S1_S2_SATURATED = { S1: "#e36f6f", S2: "#f0a030" };
+  const MANUAL_S1_S2_FADED = { S1: "#633838", S2: "#735028" };
+
+  /** Shared layout: manual row at plot bottom, cardiac directly above, noise above cardiac. */
+  function getStateStripLayout() {
+    if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return null;
+    const fl = plotlyGraphDiv._fullLayout;
+    const xaxis = fl.xaxis;
+    const yaxis = fl.yaxis;
+    if (!xaxis || !yaxis) return null;
+    if (!xAxisRange || xAxisRange.length < 2) return null;
+
+    const left = Math.floor(xaxis._offset || 0);
+    const width = Math.floor(xaxis._length || 0);
+    const topPlot = Math.floor(yaxis._offset || 0);
+    const heightPlot = Math.floor(yaxis._length || 0);
+    if (width <= 1 || heightPlot <= 1) return null;
+
+    const manualTop = topPlot + heightPlot - STATE_STRIP_HEIGHT - 1;
+    const cardiacTop = manualTop - STATE_STRIP_GAP - STATE_STRIP_HEIGHT;
+    const noiseTop = cardiacTop - STATE_STRIP_GAP - STATE_STRIP_HEIGHT;
+
+    return { left, width, manualTop, cardiacTop, noiseTop };
+  }
+
   function scheduleDrawPass3StateStrip() {
     if (pass3StripRaf) return;
     pass3StripRaf = window.requestAnimationFrame(() => {
@@ -359,28 +392,15 @@
 
   function drawPass3CardiacStateStrip() {
     if (!cardiacStateStripCanvas || !pass3SegmentsActive || pass3SegmentsActive.length === 0) return;
-    if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
-    const fl = plotlyGraphDiv._fullLayout;
-    const xaxis = fl.xaxis;
-    const yaxis = fl.yaxis;
-    if (!xaxis || !yaxis) return;
-    if (!xAxisRange || xAxisRange.length < 2) return;
+    const layout = getStateStripLayout();
+    if (!layout) return;
 
-    // Determine visible x range in ms since epoch.
     const x0ms = new Date(xAxisRange[0]).getTime();
     const x1ms = new Date(xAxisRange[1]).getTime();
     if (!Number.isFinite(x0ms) || !Number.isFinite(x1ms) || x1ms <= x0ms) return;
 
-    // Plot area geometry (px) relative to plotlyGraphDiv.
-    const left = Math.floor(xaxis._offset || 0);
-    const width = Math.floor(xaxis._length || 0);
-    const topPlot = Math.floor(yaxis._offset || 0);
-    const heightPlot = Math.floor(yaxis._length || 0);
-    if (width <= 1 || heightPlot <= 1) return;
-
-    // Shift up when the manual strip is visible below.
-    const stripHeight = 10;
-    const top = topPlot + heightPlot - stripHeight - 1 - (manualStripEdited ? 12 : 0);
+    const { left, width, cardiacTop: top } = layout;
+    const stripHeight = STATE_STRIP_HEIGHT;
 
     cardiacStateStripCanvas.style.left = `${left}px`;
     cardiacStateStripCanvas.style.top = `${top}px`;
@@ -393,12 +413,7 @@
     const ctx = cardiacStateStripCanvas.getContext("2d");
     if (!ctx) return;
 
-    const colors = {
-      S1: "#e36f6f",
-      systole: "#666666",
-      S2: "#f0a030",
-      diastole: "#999999",
-    };
+    const colors = CARDIAC_STATE_COLORS;
 
     ctx.clearRect(0, 0, width, stripHeight);
     // Soft background so strip is visible even over spectrogram.
@@ -438,25 +453,15 @@
       manualStateStripCanvas.height = 1;
       return;
     }
-    if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
-    const fl = plotlyGraphDiv._fullLayout;
-    const xaxis = fl.xaxis;
-    const yaxis = fl.yaxis;
-    if (!xaxis || !yaxis) return;
-    if (!xAxisRange || xAxisRange.length < 2) return;
+    const layout = getStateStripLayout();
+    if (!layout) return;
 
     const x0ms = new Date(xAxisRange[0]).getTime();
     const x1ms = new Date(xAxisRange[1]).getTime();
     if (!Number.isFinite(x0ms) || !Number.isFinite(x1ms) || x1ms <= x0ms) return;
 
-    const left = Math.floor(xaxis._offset || 0);
-    const width = Math.floor(xaxis._length || 0);
-    const topPlot = Math.floor(yaxis._offset || 0);
-    const heightPlot = Math.floor(yaxis._length || 0);
-    if (width <= 1 || heightPlot <= 1) return;
-
-    const stripHeight = 10;
-    const top = topPlot + heightPlot - stripHeight - 1;
+    const { left, width, manualTop: top } = layout;
+    const stripHeight = STATE_STRIP_HEIGHT;
 
     manualStateStripCanvas.style.left = `${left}px`;
     manualStateStripCanvas.style.top = `${top}px`;
@@ -469,9 +474,13 @@
     const ctx = manualStateStripCanvas.getContext("2d");
     if (!ctx) return;
 
-    // Saturated = manual, desaturated = regenerated
-    const saturated = { S1: "#e36f6f", systole: "#888888", S2: "#f0a030", diastole: "#777777" };
-    const faded    = { S1: "#9b4c4c", systole: "#555555", S2: "#a06820", diastole: "#444444" };
+    function colorForManualSegment(seg) {
+      if (seg.state === "systole" || seg.state === "diastole") {
+        return CARDIAC_STATE_COLORS[seg.state];
+      }
+      const beatPalette = seg.source === "manual" ? MANUAL_S1_S2_SATURATED : MANUAL_S1_S2_FADED;
+      return beatPalette[seg.state] || CARDIAC_STATE_COLORS[seg.state] || "#555555";
+    }
 
     ctx.clearRect(0, 0, width, stripHeight);
     ctx.fillStyle = "rgba(0,0,0,0.25)";
@@ -489,8 +498,7 @@
       const x = Math.max(0, Math.min(width, px0));
       const xEnd = Math.max(0, Math.min(width, px1));
       if (xEnd <= x) continue;
-      const palette = seg.source === "manual" ? saturated : faded;
-      ctx.fillStyle = palette[seg.state] || "#555555";
+      ctx.fillStyle = colorForManualSegment(seg);
       ctx.fillRect(x, 0, xEnd - x, stripHeight);
     }
   }
@@ -507,26 +515,15 @@
       noiseStateStripCanvas.height = 1;
       return;
     }
-    const fl = plotlyGraphDiv._fullLayout;
-    const xaxis = fl.xaxis;
-    const yaxis = fl.yaxis;
-    if (!xaxis || !yaxis) return;
-    if (!xAxisRange || xAxisRange.length < 2) return;
+    const layout = getStateStripLayout();
+    if (!layout) return;
 
     const x0ms = new Date(xAxisRange[0]).getTime();
     const x1ms = new Date(xAxisRange[1]).getTime();
     if (!Number.isFinite(x0ms) || !Number.isFinite(x1ms) || x1ms <= x0ms) return;
 
-    const left = Math.floor(xaxis._offset || 0);
-    const width = Math.floor(xaxis._length || 0);
-    const topPlot = Math.floor(yaxis._offset || 0);
-    const heightPlot = Math.floor(yaxis._length || 0);
-    if (width <= 1 || heightPlot <= 1) return;
-
-    const stripHeight = 10;
-    const stripGap = 2;
-    const cardiacTop = topPlot + heightPlot - stripHeight - 1;
-    const top = cardiacTop - stripHeight - stripGap;
+    const { left, width, noiseTop: top } = layout;
+    const stripHeight = STATE_STRIP_HEIGHT;
 
     noiseStateStripCanvas.style.left = `${left}px`;
     noiseStateStripCanvas.style.top = `${top}px`;
@@ -1422,13 +1419,23 @@
     );
     manualStateSegments.push({ start_sec: start, end_sec: end, state, source: "manual", bpm_at_mid: bpm });
     manualStateSegments.sort((a, b) => a.start_sec - b.start_sec);
-    revealManualStateStrip();
-    scheduleDrawPass3StateStrip();
-    console.log(`Manual ${state} placed at t=${tCenter.toFixed(3)}s [${start.toFixed(3)}, ${end.toFixed(3)}]`);
+    finishManualStateEdit(`Manual ${state} placed at t=${tCenter.toFixed(3)}s [${start.toFixed(3)}, ${end.toFixed(3)}]`);
+  }
+
+  // Remove whichever state segment contains the current playhead.
+  function removeStateAtPlayhead() {
+    if (!audio) return;
+    const t = audio.currentTime;
+    const seg = manualStateSegments.find((s) => t >= s.start_sec && t < s.end_sec) || null;
+    if (!seg) return;
+
+    pushManualStateUndo();
+    manualStateSegments = manualStateSegments.filter((s) => s !== seg);
+    finishManualStateEdit(`Removed ${seg.state} at t=${t.toFixed(3)}s [${seg.start_sec.toFixed(3)}, ${seg.end_sec.toFixed(3)}]`);
   }
 
   // Flip manual S1↔S2 for all manual segments whose center is >= playhead.
-  // Clears regenerated segments right of playhead (user should re-regenerate if needed).
+  // Clears regenerated segments right of playhead; gaps are refilled automatically.
   function flipManualStatesRight() {
     if (!audio) return;
     pushManualStateUndo();
@@ -1454,22 +1461,24 @@
       alert("No manual S1/S2 states to flip to the right of the playhead.");
       return;
     }
-    revealManualStateStrip();
-    scheduleDrawPass3StateStrip();
-    console.log(`Flipped ${flippedCount} manual state(s) right of t=${cutoff.toFixed(3)}s`);
+    finishManualStateEdit(`Flipped ${flippedCount} manual state(s) right of t=${cutoff.toFixed(3)}s`);
   }
 
-  // Minimal v1 regenerate: fill gaps between consecutive manual S1/S2 anchors.
+  function getRegenAnchors() {
+    return manualStateSegments
+      .filter((s) => (s.state === "S1" || s.state === "S2") && (s.source === "manual" || s.source === "auto"))
+      .sort((a, b) => a.start_sec - b.start_sec);
+  }
+
+  // Fill gaps between S1/S2 anchors with systole/diastole.
   // S1→S2 gap → systole; S2→S1 gap → diastole. Other pairings are left empty.
-  function regenerateGaps() {
-    const anchors = manualStateSegments.filter((s) => s.source === "manual").sort((a, b) => a.start_sec - b.start_sec);
+  function rebuildRegenGaps() {
+    const anchors = getRegenAnchors();
     if (anchors.length < 2) {
-      alert("Need at least 2 manual state anchors to regenerate gaps.");
-      return;
+      manualStateSegments = manualStateSegments.filter((s) => s.source !== "regenerated");
+      return { ok: false, anchorCount: anchors.length, fillCount: 0 };
     }
 
-    pushManualStateUndo();
-    // Keep only manual segments, then add regenerated fills.
     const newSegs = [];
     for (let i = 0; i < anchors.length - 1; i++) {
       const a = anchors[i];
@@ -1486,9 +1495,50 @@
     }
 
     manualStateSegments = [...anchors, ...newSegs].sort((a, b) => a.start_sec - b.start_sec);
+    return { ok: true, anchorCount: anchors.length, fillCount: newSegs.length };
+  }
+
+  function applyAutoRegenAfterEdit() {
+    if (!manualStripEdited) return;
+    const result = rebuildRegenGaps();
+    if (result.ok) {
+      console.log(`Auto-regenerated ${result.fillCount} gap segment(s) between ${result.anchorCount} anchors.`);
+    }
+  }
+
+  function finishManualStateEdit(logMsg) {
+    revealManualStateStrip();
+    applyAutoRegenAfterEdit();
+    scheduleDrawPass3StateStrip();
+    if (logMsg) console.log(logMsg);
+  }
+
+  // Regenerate button: same rebuild as auto-regen, with undo.
+  // Auto-generated labels are truth until the first user edit; after that,
+  // remaining auto S1/S2 anchors still count alongside manual placements.
+  function regenerateGaps() {
+    if (!manualStripEdited) {
+      if (!manualStateSegments.length) {
+        alert("No state labels available to regenerate.");
+        return;
+      }
+      revealManualStateStrip();
+      scheduleDrawPass3StateStrip();
+      console.log("Auto-generated labels shown unchanged (truth until first edit).");
+      return;
+    }
+
+    const anchors = getRegenAnchors();
+    if (anchors.length < 2) {
+      alert("Need at least 2 S1/S2 anchors to regenerate gaps.");
+      return;
+    }
+
+    pushManualStateUndo();
+    const result = rebuildRegenGaps();
     revealManualStateStrip();
     scheduleDrawPass3StateStrip();
-    console.log(`Regenerated ${newSegs.length} gap segment(s) between ${anchors.length} anchors.`);
+    console.log(`Regenerated ${result.fillCount} gap segment(s) between ${result.anchorCount} anchors.`);
   }
 
   function downloadStateCsv() {
@@ -1568,9 +1618,7 @@
 
     pushManualStateUndo();
     manualStateSegments = imported.sort((a, b) => a.start_sec - b.start_sec);
-    revealManualStateStrip();
-    scheduleDrawPass3StateStrip();
-    console.log(`Imported ${manualStateSegments.length} state segment(s) from CSV.`);
+    finishManualStateEdit(`Imported ${manualStateSegments.length} state segment(s) from CSV.`);
   }
 
   if (applyLabelBtn) {
@@ -1682,8 +1730,8 @@
 
   // Keyboard shortcuts
   document.addEventListener("keydown", (e) => {
-    // Don't trigger if typing in an input or textarea
-    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    // Don't trigger if typing in a form control
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT")) return;
 
     if (e.code === "Escape" && analysisSummaryOverlay && analysisSummaryOverlay.classList.contains("visible")) {
       closeAnalysisSummaryModal();
@@ -1733,6 +1781,11 @@
         e.preventDefault();
         if (labelTypeSelect) labelTypeSelect.value = "S2";
         applyManualState("S2");
+        break;
+      case "Backspace":
+      case "Delete":
+        e.preventDefault();
+        removeStateAtPlayhead();
         break;
       case "KeyA":
         // A/B compare state strip: A = "before" correction
