@@ -36,7 +36,14 @@ _OUTPUT_STEM_SUFFIXES: tuple[str, ...] = (
 
 # Trailing BPM tags stripped from the stem before appending a fresh annotation (end of stem only).
 _BPM_FILENAME_TAIL_RE = re.compile(
-    r"(?:\s+(?:\d+\s*,\s*\d+\s*-\s*\d+\s*bpm|\d+\s*to\s*\d+\s*bpm|\d+\s*bpm))+$",
+    r"(?:\s+(?:"
+    r"\[\s*\d+\s*,\s*\d+\s*-\s*\d+\s*bpm\s*\]"
+    r"|\[\s*\d+\s*to\s*\d+\s*bpm\s*\]"
+    r"|\[\s*\d+\s*bpm\s*\]"
+    r"|\d+\s*,\s*\d+\s*-\s*\d+\s*bpm"
+    r"|\d+\s*to\s*\d+\s*bpm"
+    r"|\d+\s*bpm"
+    r"))+$",
     re.IGNORECASE,
 )
 _MAX_BASENAME_LEN = 255
@@ -58,7 +65,7 @@ def format_bpm_filename_annotation(start_bpm: float, min_bpm: float, max_bpm: fl
     a = int(round(start_bpm))
     lo = int(round(min_bpm))
     hi = int(round(max_bpm))
-    return f"{a},{lo}-{hi}bpm"
+    return f"[{a},{lo}-{hi}bpm]"
 
 
 def _warn(
@@ -177,7 +184,7 @@ def rename_analysis_outputs_after_input_bpm_rename(
 ) -> None:
     """
     After try_rename_input_with_bpm_annotation, rename outputs that used the old input stem
-    so they match the new file name (e.g. name_bpm_plot.png -> name 100,120-206bpm_bpm_plot.png).
+    so they match the new file name (e.g. name_bpm_plot.png -> name [100,120-206bpm]_bpm_plot.png).
     """
     if not output_directory or not os.path.isdir(output_directory):
         return

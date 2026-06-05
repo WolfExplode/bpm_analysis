@@ -140,7 +140,7 @@ class BPMApp:
         self.rename_input_with_bpm = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             param_frame,
-            text="Rename input file with BPM tag: start,min-maxbpm (uses analysis; not for multi-channel)",
+            text="Rename input file with BPM tag: [start,min-maxbpm] (uses analysis; not for multi-channel)",
             variable=self.rename_input_with_bpm,
             command=self.save_ui_settings,
         ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))

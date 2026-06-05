@@ -41,7 +41,7 @@ _EXT_PREFERENCE = {
 def extract_start_bpm_from_filename(file_path: str) -> Optional[float]:
     """
     Detect starting BPM from the file name (last rightmost match per pattern).
-    Patterns: '120,60-150bpm', '90to132bpm', '150bpm' (case-insensitive).
+    Patterns: '[120,60-150bpm]', '120,60-150bpm', '90to132bpm', '150bpm' (case-insensitive).
     """
     base = os.path.basename(file_path)
     comma_matches = list(

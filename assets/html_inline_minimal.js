@@ -38,9 +38,6 @@
     "S2 Beats",
     "Noise/Rejected",
     "BPM Trend (Belief)",
-    "Manual S1",
-    "Manual S2",
-    "Manual Noise",
   ]);
   const LEGEND_IN_BOTH_NAMES = new Set([
     "Average BPM",

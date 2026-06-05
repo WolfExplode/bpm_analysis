@@ -174,8 +174,7 @@
             font-family: 'Segoe UI', sans-serif;
         }
 
-        #apply-label-btn,
-        #download-labels-btn {
+        #labeling-controls button {
             background: #2a2a3a;
             border: 1px solid #444;
             color: #e0e0e0;
@@ -186,8 +185,7 @@
             transition: all 0.15s;
         }
 
-        #apply-label-btn:hover,
-        #download-labels-btn:hover {
+        #labeling-controls button:hover {
             background: #3a3a4a;
             border-color: #00d4ff;
         }
@@ -203,9 +201,10 @@
             border: 1px solid #333;
         }
 
-        /* State strip overlays near x-axis (HF noise row above cardiac phase row) */
+        /* State strip overlays near x-axis */
         #noise-state-strip-plot,
-        #cardiac-state-strip-plot {
+        #cardiac-state-strip-plot,
+        #manual-state-strip-plot {
             position: absolute;
             left: 0;
             top: 0;
@@ -219,7 +218,10 @@
             z-index: 7;
         }
         #cardiac-state-strip-plot {
-            z-index: 6; /* above plot but below playhead */
+            z-index: 6;
+        }
+        #manual-state-strip-plot {
+            z-index: 5;
         }
 
         .state-strip-tooltip {
@@ -529,16 +531,16 @@
                     <button class="grid-toggle-button active" data-grid-axis="yaxis2" title="Toggle BPM/HRV gridlines">BPM</button>
                 </div>
                 <div id="labeling-controls">
-                    <span class="grid-label">Label:</span>
-                    <select id="label-type-select" title="Desired label for nearest peak">
+                    <span class="grid-label">State:</span>
+                    <select id="label-type-select" title="State to place at playhead">
                         <option value="S1">S1</option>
                         <option value="S2">S2</option>
-                        <option value="Noise">Noise</option>
                     </select>
-                    <button id="apply-label-btn" title="Relabel nearest peak to current playhead time">Apply</button>
-                    <button id="flip-labels-right-btn" title="Flip all S1/S2 labels to the right of the playhead">Flip Right</button>
-                    <button id="download-labels-btn" title="Download current labels as CSV (includes smoothed BPM for this pass at each peak time)">Download CSV</button>
-                    <button id="import-labels-btn" title="Import manually labeled peaks CSV">Import CSV</button>
+                    <button id="apply-label-btn" title="Place selected state centered on playhead">Apply</button>
+                    <button id="flip-labels-right-btn" title="Flip manual S1↔S2 states to the right of the playhead">Flip Right</button>
+                    <button id="regenerate-states-btn" title="Fill gaps between manual S1/S2 anchors with systole/diastole">Regenerate</button>
+                    <button id="download-labels-btn" title="Export manual state sequence as CSV">Download CSV</button>
+                    <button id="import-labels-btn" title="Import manual state sequence CSV (replaces current)">Import CSV</button>
                     <input type="file" id="import-labels-input" accept=".csv" style="display:none" />
                 </div>
                 <span id="total-time">%%TOTAL_TIME%%</span>
@@ -572,6 +574,8 @@
             <div id="noise-state-strip-tooltip" class="state-strip-tooltip hidden"></div>
             <canvas id="cardiac-state-strip-plot"></canvas>
             <div id="cardiac-state-strip-tooltip" class="state-strip-tooltip hidden"></div>
+            <canvas id="manual-state-strip-plot"></canvas>
+            <div id="manual-state-strip-tooltip" class="state-strip-tooltip hidden"></div>
             <div id="chart-playhead"></div>
             <div id="plotly-chart">
                 %%PLOTLY_HTML%%
@@ -598,7 +602,9 @@
         <kbd>Space</kbd> Play &nbsp;
         <kbd>S</kbd> Stop &nbsp;
         <kbd>&#8592;&#8594;</kbd> Seek &nbsp;
-        <kbd>G</kbd> Spectrogram
+        <kbd>G</kbd> Spectrogram &nbsp;
+        <kbd>1</kbd>/<kbd>2</kbd> Apply S1/S2 &nbsp;
+        <kbd>Ctrl+Z</kbd> Undo
     </div>
 
 %%HTML_INTERACTIVE_SCRIPTS%%

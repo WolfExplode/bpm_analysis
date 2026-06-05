@@ -1918,6 +1918,15 @@ class Plotter:
             },
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
             "htmlS1S2HoverOnByDefault": hover_on_by_default,
+            "bpmIntervalParams": {
+                "s1_nominal_sec":             float(self.params.get("s1_nominal_sec", 0.080)),
+                "s2_nominal_sec":             float(self.params.get("s2_nominal_sec", 0.080)),
+                "weissler_ref_et_ms":         float(self.params.get("s1_s2_expected_weissler_ref_et_ms", 300)),
+                "weissler_ref_bpm":           float(self.params.get("s1_s2_expected_weissler_ref_bpm", 60)),
+                "weissler_slope_ms_per_bpm":  float(self.params.get("s1_s2_expected_weissler_slope_ms_per_bpm", 1.0)),
+                "min_s1_s2_interval_sec":     float(self.params.get("min_s1_s2_interval_sec", 0.15)),
+                "s1_s2_interval_cap_sec":     float(self.params.get("s1_s2_interval_cap_sec", 0.4)),
+            },
         }
         # Pass 3: state timeline overlay (compact strip above chart).
         def _segments_from_boundaries(boundaries):

@@ -7,7 +7,8 @@
 //       spectrogramAvailable: { original: boolean, filtered: boolean, filtered_inverse?: boolean },
 //       audioSources: { original: string, filtered: string, filtered_inverse?: string },
 //       audioLabels: { original: string, filtered: string, filtered_inverse?: string },
-//       htmlS1S2HoverOnByDefault: boolean  // optional; default false = hover off until user toggles toolbar
+//       htmlS1S2HoverOnByDefault: boolean,   // optional; default false
+//       bpmIntervalParams: { s1_nominal_sec, s2_nominal_sec, weissler_ref_et_ms, ... }
 //   };
 
 (function () {
@@ -22,6 +23,7 @@
   const AUDIO_LABELS = cfg.audioLabels || {};
   const ANALYSIS_SUMMARY = typeof cfg.analysisSummary === "string" ? cfg.analysisSummary : "";
   const beatHoverDefaultOn = cfg.htmlS1S2HoverOnByDefault === true;
+  const BPM_INTERVAL_PARAMS = cfg.bpmIntervalParams || {};
   const PASS3_SEGMENTS_AFTER = Array.isArray(cfg.pass3SegmentsAfter)
     ? cfg.pass3SegmentsAfter
     : Array.isArray(cfg.pass3Segments)
@@ -31,6 +33,27 @@
   const PASS3_SEGMENTS_DEFAULT_VIEW =
     typeof cfg.pass3SegmentsDefaultView === "string" ? cfg.pass3SegmentsDefaultView : "after";
   let pass3SegmentsActive = PASS3_SEGMENTS_DEFAULT_VIEW === "before" ? PASS3_SEGMENTS_BEFORE : PASS3_SEGMENTS_AFTER;
+
+  function pass3SegmentsToManual(segments) {
+    const validStates = new Set(["S1", "S2", "systole", "diastole"]);
+    const out = [];
+    for (const seg of segments || []) {
+      if (!seg) continue;
+      const startSec = typeof seg.start === "number" ? seg.start : parseFloat(seg.start);
+      const endSec = typeof seg.end === "number" ? seg.end : parseFloat(seg.end);
+      const state = typeof seg.state === "string" ? seg.state : String(seg.state || "");
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) continue;
+      if (state === "unknown" || state === "gap") continue;
+      if (!validStates.has(state)) continue;
+      out.push({ start_sec: startSec, end_sec: endSec, state, source: "auto", bpm_at_mid: null });
+    }
+    return out.sort((a, b) => a.start_sec - b.start_sec);
+  }
+
+  const _initialPass3ForManual =
+    PASS3_SEGMENTS_DEFAULT_VIEW === "before" && PASS3_SEGMENTS_BEFORE.length > 0
+      ? PASS3_SEGMENTS_BEFORE
+      : PASS3_SEGMENTS_AFTER;
 
   // DOM Elements
   const audio = document.getElementById("audio-player");
@@ -55,6 +78,8 @@
   const cardiacStateStripTooltip = document.getElementById("cardiac-state-strip-tooltip");
   const noiseStateStripCanvas = document.getElementById("noise-state-strip-plot");
   const noiseStateStripTooltip = document.getElementById("noise-state-strip-tooltip");
+  const manualStateStripCanvas = document.getElementById("manual-state-strip-plot");
+  const manualStateStripTooltip = document.getElementById("manual-state-strip-tooltip");
   const _rawNoiseSegs = Array.isArray(cfg.noiseEventSegments) ? cfg.noiseEventSegments : [];
   const _rawGapSegs = Array.isArray(cfg.pass3LargeGapSegments) ? cfg.pass3LargeGapSegments : [];
   const _rawGapQuietSegs = Array.isArray(cfg.pass3GapQuietSegments) ? cfg.pass3GapQuietSegments : [];
@@ -91,6 +116,7 @@
   const analysisSummaryText = document.getElementById("analysis-summary-text");
   const analysisSummaryClose = document.getElementById("analysis-summary-close");
   const pass3StateViewSelect = document.getElementById("pass3-state-view-select");
+  const regenerateStatesBtn = document.getElementById("regenerate-states-btn");
 
   const DEFAULT_AUDIO_KEY = "original";
   let currentAudioKey = DEFAULT_AUDIO_KEY;
@@ -121,11 +147,38 @@
   let beatHoverEnabled = beatHoverDefaultOn;
   let plotlyGraphDiv = null;
   let xAxisRange = null;
-  let fullXAxisRange = null; // Store the full x-axis range for spectrogram positioning
-  // Editable peak labels (one entry per plotted peak)
-  let editablePeaks = [];
-  // Overlay Plotly traces for manual labels
-  const manualLabelTraceIndices = { S1: null, S2: null, Noise: null };
+  let fullXAxisRange = null;
+  // Manual state segments: [{start_sec, end_sec, state, source, bpm_at_mid}, ...]
+  // Seeded from Pass 3 algorithm labels; manual edits use source "manual".
+  let manualStateSegments = pass3SegmentsToManual(_initialPass3ForManual);
+  let manualStripEdited = false;
+  const manualStateUndoStack = [];
+  const MANUAL_STATE_UNDO_MAX = 50;
+
+  function cloneManualStateSegments(segs) {
+    return segs.map((seg) => ({ ...seg }));
+  }
+
+  function pushManualStateUndo() {
+    manualStateUndoStack.push(cloneManualStateSegments(manualStateSegments));
+    if (manualStateUndoStack.length > MANUAL_STATE_UNDO_MAX) {
+      manualStateUndoStack.shift();
+    }
+  }
+
+  function undoManualState() {
+    if (manualStateUndoStack.length === 0) return;
+    manualStateSegments = manualStateUndoStack.pop();
+    if (manualStateUndoStack.length === 0) {
+      manualStripEdited = false;
+    }
+    scheduleDrawPass3StateStrip();
+    console.log(`Undo: restored ${manualStateSegments.length} state segment(s).`);
+  }
+
+  function revealManualStateStrip() {
+    manualStripEdited = true;
+  }
 
   /** Get numeric value at index from Plotly/array-like y data (handles _inputArray, bdata, etc.). */
   function getNumericFromArrayLike(yContainer, index) {
@@ -300,6 +353,7 @@
       pass3StripRaf = 0;
       drawNoiseStateStrip();
       drawPass3CardiacStateStrip();
+      drawManualStateStrip();
     });
   }
 
@@ -324,9 +378,9 @@
     const heightPlot = Math.floor(yaxis._length || 0);
     if (width <= 1 || heightPlot <= 1) return;
 
-    // Place strip slightly above the x-axis tick labels area, inside plot area.
+    // Shift up when the manual strip is visible below.
     const stripHeight = 10;
-    const top = topPlot + heightPlot - stripHeight - 1;
+    const top = topPlot + heightPlot - stripHeight - 1 - (manualStripEdited ? 12 : 0);
 
     cardiacStateStripCanvas.style.left = `${left}px`;
     cardiacStateStripCanvas.style.top = `${top}px`;
@@ -372,6 +426,71 @@
       // Gaps: Python clips segments so nothing is drawn over HF-noise times; unknown is unused in segments.
       if (state === "unknown" || state === "gap") continue;
       ctx.fillStyle = colors[state] || "#555555";
+      ctx.fillRect(x, 0, xEnd - x, stripHeight);
+    }
+  }
+
+  function drawManualStateStrip() {
+    if (!manualStateStripCanvas) return;
+    if (!manualStripEdited || manualStateSegments.length === 0) {
+      manualStateStripCanvas.style.display = "none";
+      manualStateStripCanvas.width = 1;
+      manualStateStripCanvas.height = 1;
+      return;
+    }
+    if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout) return;
+    const fl = plotlyGraphDiv._fullLayout;
+    const xaxis = fl.xaxis;
+    const yaxis = fl.yaxis;
+    if (!xaxis || !yaxis) return;
+    if (!xAxisRange || xAxisRange.length < 2) return;
+
+    const x0ms = new Date(xAxisRange[0]).getTime();
+    const x1ms = new Date(xAxisRange[1]).getTime();
+    if (!Number.isFinite(x0ms) || !Number.isFinite(x1ms) || x1ms <= x0ms) return;
+
+    const left = Math.floor(xaxis._offset || 0);
+    const width = Math.floor(xaxis._length || 0);
+    const topPlot = Math.floor(yaxis._offset || 0);
+    const heightPlot = Math.floor(yaxis._length || 0);
+    if (width <= 1 || heightPlot <= 1) return;
+
+    const stripHeight = 10;
+    const top = topPlot + heightPlot - stripHeight - 1;
+
+    manualStateStripCanvas.style.left = `${left}px`;
+    manualStateStripCanvas.style.top = `${top}px`;
+    manualStateStripCanvas.style.width = `${width}px`;
+    manualStateStripCanvas.style.height = `${stripHeight}px`;
+    manualStateStripCanvas.style.display = "";
+    manualStateStripCanvas.width = Math.max(1, width);
+    manualStateStripCanvas.height = Math.max(1, stripHeight);
+
+    const ctx = manualStateStripCanvas.getContext("2d");
+    if (!ctx) return;
+
+    // Saturated = manual, desaturated = regenerated
+    const saturated = { S1: "#e36f6f", systole: "#888888", S2: "#f0a030", diastole: "#777777" };
+    const faded    = { S1: "#9b4c4c", systole: "#555555", S2: "#a06820", diastole: "#444444" };
+
+    ctx.clearRect(0, 0, width, stripHeight);
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(0, 0, width, stripHeight);
+
+    const span = x1ms - x0ms;
+    for (const seg of manualStateSegments) {
+      const s0 = secondsToDatetime(seg.start_sec).getTime();
+      const s1 = secondsToDatetime(seg.end_sec).getTime();
+      if (s1 <= x0ms || s0 >= x1ms) continue;
+      const cl0 = Math.max(x0ms, s0);
+      const cl1 = Math.min(x1ms, s1);
+      const px0 = Math.floor(((cl0 - x0ms) / span) * width);
+      const px1 = Math.ceil(((cl1 - x0ms) / span) * width);
+      const x = Math.max(0, Math.min(width, px0));
+      const xEnd = Math.max(0, Math.min(width, px1));
+      if (xEnd <= x) continue;
+      const palette = seg.source === "manual" ? saturated : faded;
+      ctx.fillStyle = palette[seg.state] || "#555555";
       ctx.fillRect(x, 0, xEnd - x, stripHeight);
     }
   }
@@ -679,6 +798,36 @@
       });
       noiseStateStripCanvas.addEventListener("mouseleave", () => {
         noiseStateStripTooltip.classList.add("hidden");
+      });
+    }
+
+    if (manualStateStripCanvas && manualStateStripTooltip) {
+      manualStateStripCanvas.addEventListener("mousemove", (e) => {
+        if (!xAxisRange || xAxisRange.length < 2) return;
+        const rect = manualStateStripCanvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const w = rect.width || 1;
+        const x0ms = new Date(xAxisRange[0]).getTime();
+        const x1ms = new Date(xAxisRange[1]).getTime();
+        const tSec = (x0ms + (mouseX / w) * (x1ms - x0ms) - EPOCH.getTime()) / 1000;
+        const seg = manualStateSegments.find((s) => tSec >= s.start_sec && tSec < s.end_sec) || null;
+        if (!seg) {
+          manualStateStripTooltip.classList.add("hidden");
+          return;
+        }
+        const durMs = Math.round((seg.end_sec - seg.start_sec) * 1000);
+        const lines = [
+          `${seg.state}`,
+          `${seg.start_sec.toFixed(3)}s → ${seg.end_sec.toFixed(3)}s  (${durMs}ms)`,
+          `Source: ${seg.source}`,
+        ];
+        const bpm = seg.bpm_at_mid ?? getBpmSmoothedAtTime((seg.start_sec + seg.end_sec) / 2);
+        if (bpm && Number.isFinite(bpm)) lines.push(`BPM: ${bpm.toFixed(1)}`);
+        manualStateStripTooltip.textContent = lines.join("\n");
+        _placeStripTooltipAboveCursor(manualStateStripTooltip, e.clientX, e.clientY);
+      });
+      manualStateStripCanvas.addEventListener("mouseleave", () => {
+        manualStateStripTooltip.classList.add("hidden");
       });
     }
   }
@@ -1052,9 +1201,6 @@
     "S2 Beats",
     "Noise/Rejected",
     "BPM Trend (Belief)",
-    "Manual S1",
-    "Manual S2",
-    "Manual Noise",
   ]);
 
   // Traces that appear in both Debug and Analysis Data views
@@ -1179,63 +1325,6 @@
     return null;
   }
 
-  // Sample the primary signal envelope trace at an arbitrary time (in seconds).
-  // Prefers "Noise Removed Envelope" when present (algorithm input), else "Bandpass Envelope".
-  // Returns { xVal, yVal } or null if no matching trace exists.
-  function getEnvelopePointAtTime(timeSec) {
-    if (!plotlyGraphDiv || !plotlyGraphDiv.data) return null;
-    let idx = findTraceIndexByName("Noise Removed Envelope");
-    if (idx === null) idx = findTraceIndexByName("Bandpass Envelope");
-    if (idx === null) return null;
-
-    const tr = plotlyGraphDiv.data[idx];
-    if (!tr || !tr.x || !tr.y) return null;
-
-    let bestI = -1;
-    let bestDt = Infinity;
-
-    for (let i = 0; i < tr.x.length; i++) {
-      const xVal = tr.x[i];
-      if (!xVal) continue;
-
-      let tSec = null;
-      if (xVal instanceof Date) {
-        const ms = xVal.getTime();
-        if (Number.isFinite(ms)) {
-          tSec = (ms - EPOCH.getTime()) / 1000;
-        }
-      } else {
-        const d = new Date(xVal);
-        const ms = d.getTime();
-        if (Number.isFinite(ms)) {
-          tSec = (ms - EPOCH.getTime()) / 1000;
-        }
-      }
-      if (tSec === null || !Number.isFinite(tSec)) continue;
-
-      const dt = Math.abs(tSec - timeSec);
-      if (dt < bestDt) {
-        bestDt = dt;
-        bestI = i;
-      }
-    }
-
-    if (bestI < 0) return null;
-
-    let yVal = null;
-    try {
-      const candidate = tr.y[bestI];
-      const num =
-        typeof candidate === "number" ? candidate : parseFloat(candidate);
-      if (!Number.isFinite(num)) return null;
-      yVal = num;
-    } catch (e) {
-      return null;
-    }
-
-    return { xVal: tr.x[bestI], yVal };
-  }
-
   /**
    * Smoothed BPM for this pass at timeSec (nearest sample on the pass BPM curve).
    * Trace names match plotting.py: Pass 3 / Pass 2 / pass 1 preliminary / final "Average BPM".
@@ -1293,522 +1382,224 @@
     return null;
   }
 
-  function buildEditablePeaks() {
-    editablePeaks = [];
-    if (!plotlyGraphDiv || !plotlyGraphDiv.data) return;
+  // ─── State labeling ────────────────────────────────────────────────────────
 
-    const baseTraceIndices = new Set();
-
-    plotlyGraphDiv.data.forEach((trace, traceIndex) => {
-      const name = trace.name || "";
-      let baseLabel = null;
-      if (name === "S1 Beats") baseLabel = "S1";
-      else if (name === "S2 Beats") baseLabel = "S2";
-      else if (name === "Noise/Rejected") baseLabel = "Noise";
-
-      if (!baseLabel || !trace.x || !trace.x.length) return;
-      baseTraceIndices.add(traceIndex);
-
-      for (let i = 0; i < trace.x.length; i++) {
-        const xVal = trace.x[i];
-        if (!xVal) continue;
-        const tSec = (new Date(xVal).getTime() - EPOCH.getTime()) / 1000;
-
-        // Capture the y-value at this peak so we can reliably round-trip it in CSV exports.
-        let yVal = null;
-        try {
-          if (trace && trace.y) {
-            yVal = getNumericFromArrayLike(trace.y, i);
-          }
-        } catch (e) {
-          // ignore extraction errors
-        }
-
-        editablePeaks.push({
-          timeSec: tSec,
-          traceIndex,
-          pointIndex: i,
-          baseLabel,
-          manualLabel: baseLabel,
-          yVal,
-        });
-      }
-    });
-
-    // Dim the original classifier markers slightly so manual overlays stand out.
-    if (baseTraceIndices.size > 0) {
-      Plotly.restyle(
-        plotlyGraphDiv,
-        { opacity: 0.90 },
-        Array.from(baseTraceIndices)
-      );
-    }
-    refreshManualLabelTraces();
-  }
-
-  function ensureManualLabelTraces() {
-    if (!plotlyGraphDiv) return;
-    // If traces already exist, nothing to do.
-    if (
-      manualLabelTraceIndices.S1 !== null &&
-      manualLabelTraceIndices.S2 !== null &&
-      manualLabelTraceIndices.Noise !== null
-    ) {
-      return;
-    }
-
-    const baseIndex = plotlyGraphDiv.data.length;
-    const commonOpts = {
-      mode: "markers",
-      yaxis: "y",
-      showlegend: true,
-      visible: "legendonly",
-      hovertemplate:
-        "Manual %{customdata[0]}<br>Time: %{x|%M:%S.%L}<br>Base: %{customdata[1]}<extra></extra>",
-      customdata: [],
+  // Port of confidence_engine.calculate_bpm_intervals (nominal S1/S2/systole/diastole durations).
+  function calcPhaseDurations(bpm) {
+    const p = BPM_INTERVAL_PARAMS;
+    bpm = Math.max(typeof bpm === "number" && Number.isFinite(bpm) ? bpm : 70, 1e-6);
+    const rr = 60.0 / bpm;
+    const refEtMs = typeof p.weissler_ref_et_ms === "number" ? p.weissler_ref_et_ms : 300;
+    const refBpm  = typeof p.weissler_ref_bpm === "number" ? p.weissler_ref_bpm : 60;
+    const slope   = typeof p.weissler_slope_ms_per_bpm === "number" ? p.weissler_slope_ms_per_bpm : 1.0;
+    const minAbs  = typeof p.min_s1_s2_interval_sec === "number" ? p.min_s1_s2_interval_sec : 0.15;
+    const capAbs  = typeof p.s1_s2_interval_cap_sec === "number" ? p.s1_s2_interval_cap_sec : 0.4;
+    const sys = Math.min(capAbs, Math.max(minAbs, (refEtMs - slope * (bpm - refBpm)) / 1000));
+    return {
+      s1:       typeof p.s1_nominal_sec === "number" ? p.s1_nominal_sec : 0.080,
+      s2:       typeof p.s2_nominal_sec === "number" ? p.s2_nominal_sec : 0.080,
+      systole:  sys,
+      diastole: Math.max(0, rr - sys),
+      rr,
     };
-
-    const traces = [
-      {
-        name: "Manual S1",
-        marker: { color: "#ff4d4d", size: 10, symbol: "circle-open" },
-        x: [],
-        y: [],
-        ...commonOpts,
-      },
-      {
-        name: "Manual S2",
-        marker: { color: "#ffa94d", size: 9, symbol: "circle-open" },
-        x: [],
-        y: [],
-        ...commonOpts,
-      },
-      {
-        name: "Manual Noise",
-        marker: { color: "#bbbbbb", size: 8, symbol: "x" },
-        x: [],
-        y: [],
-        ...commonOpts,
-      },
-    ];
-
-    Plotly.addTraces(plotlyGraphDiv, traces);
-    manualLabelTraceIndices.S1 = baseIndex;
-    manualLabelTraceIndices.S2 = baseIndex + 1;
-    manualLabelTraceIndices.Noise = baseIndex + 2;
   }
 
-  function refreshManualLabelTraces() {
-    if (!plotlyGraphDiv || !editablePeaks.length) return;
-    ensureManualLabelTraces();
-
-    const s1X = [];
-    const s1Y = [];
-    const s1Custom = [];
-
-    const s2X = [];
-    const s2Y = [];
-    const s2Custom = [];
-
-    const noiseX = [];
-    const noiseY = [];
-    const noiseCustom = [];
-    const unknownLabels = new Set();
-
-    const canonicalLabel = (s) =>
-      String(s || "")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9_]/g, "");
-
-    editablePeaks.forEach((p) => {
-      const tDate = secondsToDatetime(p.timeSec);
-      let yVal = null;
-
-      // 1) Prefer stored yVal if available
-      if (typeof p.yVal === "number" && Number.isFinite(p.yVal)) {
-        yVal = p.yVal;
-      } else {
-        // 2) Try to read from the original base trace
-        const baseTrace =
-          plotlyGraphDiv &&
-          p.traceIndex != null &&
-          plotlyGraphDiv.data &&
-          plotlyGraphDiv.data[p.traceIndex]
-            ? plotlyGraphDiv.data[p.traceIndex]
-            : null;
-        if (baseTrace && baseTrace.y) {
-          yVal = getNumericFromArrayLike(baseTrace.y, p.pointIndex) ?? yVal;
-        }
-
-        // 3) Fallback: sample from the Bandpass Envelope trace at this time
-        if (yVal === null || typeof yVal === "undefined") {
-          const envPt = getEnvelopePointAtTime(p.timeSec);
-          if (envPt && typeof envPt.yVal === "number") {
-            yVal = envPt.yVal;
-          }
-        }
-
-        // Cache back onto the peak object for future exports/updates.
-        if (typeof yVal === "number" && Number.isFinite(yVal)) {
-          p.yVal = yVal;
-        }
-      }
-      if (yVal === null || typeof yVal === "undefined") return;
-
-      const entry = [p.manualLabel, p.baseLabel];
-      const lblCanon = canonicalLabel(p.manualLabel);
-
-      if (lblCanon === "s1") {
-        s1X.push(tDate);
-        s1Y.push(yVal);
-        s1Custom.push(entry);
-      } else if (lblCanon === "s2") {
-        s2X.push(tDate);
-        s2Y.push(yVal);
-        s2Custom.push(entry);
-      } else if (
-        lblCanon === "noise" ||
-        lblCanon === "noiserejected" ||
-        lblCanon === "rejected" ||
-        lblCanon === "artifact" ||
-        lblCanon === "artifacts"
-      ) {
-        noiseX.push(tDate);
-        noiseY.push(yVal);
-        noiseCustom.push(entry);
-      } else {
-        if (p.manualLabel) {
-          unknownLabels.add(p.manualLabel);
-        }
-      }
-    });
-
-    Plotly.restyle(
-      plotlyGraphDiv,
-      { x: [s1X], y: [s1Y], customdata: [s1Custom] },
-      manualLabelTraceIndices.S1
-    );
-    Plotly.restyle(
-      plotlyGraphDiv,
-      { x: [s2X], y: [s2Y], customdata: [s2Custom] },
-      manualLabelTraceIndices.S2
-    );
-    Plotly.restyle(
-      plotlyGraphDiv,
-      { x: [noiseX], y: [noiseY], customdata: [noiseCustom] },
-      manualLabelTraceIndices.Noise
-    );
-  }
-
-  function findNearestEditablePeak(timeSec) {
-    if (!editablePeaks.length) return null;
-    let best = null;
-    let bestDt = Infinity;
-    editablePeaks.forEach((p) => {
-      const dt = Math.abs(p.timeSec - timeSec);
-      if (dt < bestDt) {
-        bestDt = dt;
-        best = p;
-      }
-    });
-    if (!best) return null;
-    return { peak: best, delta: bestDt };
-  }
-
-  function applyLabelToNearestPeak() {
+  // Place a manual S1 or S2 state centered on the current playhead.
+  // Removes any existing segment (manual or regenerated) that overlaps the new span.
+  function applyManualState(state) {
     if (!audio) return;
-    if (!editablePeaks.length) {
-      alert("No peaks available to relabel in this plot.");
-      return;
-    }
-    const targetTime = audio.currentTime;
-    const result = findNearestEditablePeak(targetTime);
-    if (!result) {
-      alert("Could not find any peaks to relabel.");
-      return;
-    }
-    const { peak, delta } = result;
-    const desiredLabel =
-      (labelTypeSelect && labelTypeSelect.value) ? labelTypeSelect.value : "S1";
+    pushManualStateUndo();
+    const tCenter = audio.currentTime;
+    const bpm = getBpmSmoothedAtTime(tCenter) || 70;
+    const durations = calcPhaseDurations(bpm);
+    const dur = state === "S1" ? durations.s1 : durations.s2;
+    const half = dur / 2;
+    const start = Math.max(0, tCenter - half);
+    const end   = Math.min(TOTAL_DURATION > 0 ? TOTAL_DURATION : 1e9, tCenter + half);
 
-    // Optional sanity threshold: 0.4s from playhead
-    if (delta > 0.4) {
-      if (
-        !window.confirm(
-          `Nearest peak is ${delta.toFixed(
-            3
-          )}s away from playhead at t=${targetTime.toFixed(
-            3
-          )}s. Apply label ${desiredLabel} anyway?`
-        )
-      ) {
-        return;
-      }
-    }
-
-    const prev = peak.manualLabel;
-    peak.manualLabel = desiredLabel;
-    console.log(
-      `Relabeled peak at t=${peak.timeSec.toFixed(
-        3
-      )}s from ${prev} → ${desiredLabel}`
+    manualStateSegments = manualStateSegments.filter(
+      (seg) => seg.end_sec <= start || seg.start_sec >= end
     );
-    refreshManualLabelTraces();
+    manualStateSegments.push({ start_sec: start, end_sec: end, state, source: "manual", bpm_at_mid: bpm });
+    manualStateSegments.sort((a, b) => a.start_sec - b.start_sec);
+    revealManualStateStrip();
+    scheduleDrawPass3StateStrip();
+    console.log(`Manual ${state} placed at t=${tCenter.toFixed(3)}s [${start.toFixed(3)}, ${end.toFixed(3)}]`);
   }
 
-  // Flip all S1/S2 labels to the right of the current playhead.
-  function flipLabelsRightOfPlayhead() {
+  // Flip manual S1↔S2 for all manual segments whose center is >= playhead.
+  // Clears regenerated segments right of playhead (user should re-regenerate if needed).
+  function flipManualStatesRight() {
     if (!audio) return;
-    if (!editablePeaks.length) {
-      alert("No peaks available to flip in this plot.");
-      return;
-    }
-
-    const cutoffTime = audio.currentTime;
+    pushManualStateUndo();
+    const cutoff = audio.currentTime;
     let flippedCount = 0;
 
-    editablePeaks.forEach((p) => {
-      if (!Number.isFinite(p.timeSec)) return;
-      if (p.timeSec < cutoffTime) return;
-
-      const manual = p.manualLabel || p.baseLabel;
-      if (manual === "S1") {
-        p.manualLabel = "S2";
-        flippedCount++;
-      } else if (manual === "S2") {
-        p.manualLabel = "S1";
-        flippedCount++;
-      }
+    manualStateSegments = manualStateSegments.filter((seg) => {
+      const center = (seg.start_sec + seg.end_sec) / 2;
+      if (center < cutoff) return true;
+      if (seg.source === "regenerated") return false; // remove regenerated right of playhead
+      return true;
     });
 
-    if (flippedCount > 0) {
-      refreshManualLabelTraces();
-    } else {
-      alert("No S1/S2 peaks to flip to the right of the playhead.");
+    manualStateSegments.forEach((seg) => {
+      const center = (seg.start_sec + seg.end_sec) / 2;
+      if (center < cutoff || seg.source !== "manual") return;
+      if (seg.state === "S1") { seg.state = "S2"; flippedCount++; }
+      else if (seg.state === "S2") { seg.state = "S1"; flippedCount++; }
+    });
+
+    if (flippedCount === 0) {
+      manualStateUndoStack.pop(); // no change made
+      alert("No manual S1/S2 states to flip to the right of the playhead.");
+      return;
     }
+    revealManualStateStrip();
+    scheduleDrawPass3StateStrip();
+    console.log(`Flipped ${flippedCount} manual state(s) right of t=${cutoff.toFixed(3)}s`);
   }
 
-  function downloadLabelsCsv() {
-    if (!editablePeaks.length) {
-      alert("No peak labels available to export.");
+  // Minimal v1 regenerate: fill gaps between consecutive manual S1/S2 anchors.
+  // S1→S2 gap → systole; S2→S1 gap → diastole. Other pairings are left empty.
+  function regenerateGaps() {
+    const anchors = manualStateSegments.filter((s) => s.source === "manual").sort((a, b) => a.start_sec - b.start_sec);
+    if (anchors.length < 2) {
+      alert("Need at least 2 manual state anchors to regenerate gaps.");
       return;
     }
 
-    // Debug-friendly export: include both logical time and the actual x/y used for plotting.
-    // x_plot_sec is just time_sec; y_plot is the envelope/sample value used when drawing.
-    // bpm_smoothed is the pass smoothed BPM curve at that time (nearest point on the plot).
-    const header =
-      "time_sec,base_label,manual_label,x_plot_sec,y_plot,bpm_smoothed\n";
-    const sorted = [...editablePeaks].sort(
-      (a, b) => a.timeSec - b.timeSec
-    );
-    let missingYCount = 0;
-    const lines = sorted.map((p, idx) => {
-      // time_sec / x_plot_sec
-      const t = Number.isFinite(p.timeSec) ? p.timeSec : NaN;
+    pushManualStateUndo();
+    // Keep only manual segments, then add regenerated fills.
+    const newSegs = [];
+    for (let i = 0; i < anchors.length - 1; i++) {
+      const a = anchors[i];
+      const b = anchors[i + 1];
+      const gapStart = a.end_sec;
+      const gapEnd   = b.start_sec;
+      if (gapEnd <= gapStart) continue;
+      let fillState = null;
+      if (a.state === "S1" && b.state === "S2") fillState = "systole";
+      else if (a.state === "S2" && b.state === "S1") fillState = "diastole";
+      if (!fillState) continue;
+      const tMid = (gapStart + gapEnd) / 2;
+      newSegs.push({ start_sec: gapStart, end_sec: gapEnd, state: fillState, source: "regenerated", bpm_at_mid: getBpmSmoothedAtTime(tMid) || 70 });
+    }
 
-      // y_plot: prefer stored yVal; otherwise, derive from base trace if possible.
-      let yPlot = null;
-      if (typeof p.yVal === "number") {
-        yPlot = p.yVal;
-      } else if (
-        plotlyGraphDiv &&
-        p.traceIndex != null &&
-        p.pointIndex != null &&
-        plotlyGraphDiv.data &&
-        plotlyGraphDiv.data[p.traceIndex] &&
-        plotlyGraphDiv.data[p.traceIndex].y
-      ) {
-        const baseTrace = plotlyGraphDiv.data[p.traceIndex];
-        yPlot = getNumericFromArrayLike(baseTrace.y, p.pointIndex) ?? yPlot;
-      } else {
-        // Fallback for robustness: sample from Bandpass Envelope at this time.
-        try {
-          const envPt = getEnvelopePointAtTime(p.timeSec);
-          if (envPt && typeof envPt.yVal === "number") {
-            yPlot = envPt.yVal;
-          }
-        } catch (e) {
-          // ignore export-time envelope lookup errors
-        }
-      }
+    manualStateSegments = [...anchors, ...newSegs].sort((a, b) => a.start_sec - b.start_sec);
+    revealManualStateStrip();
+    scheduleDrawPass3StateStrip();
+    console.log(`Regenerated ${newSegs.length} gap segment(s) between ${anchors.length} anchors.`);
+  }
 
-      const safeY = Number.isFinite(yPlot) ? yPlot : "";
-
-      if (!Number.isFinite(yPlot)) missingYCount++;
-
-      const bpmSmoothed = Number.isFinite(t) ? getBpmSmoothedAtTime(t) : null;
-      const safeBpm =
-        bpmSmoothed !== null && Number.isFinite(bpmSmoothed)
-          ? bpmSmoothed.toFixed(3)
-          : "";
-
-      return [
-        Number.isFinite(t) ? t.toFixed(3) : "",
-        p.baseLabel ?? "",
-        p.manualLabel ?? "",
-        Number.isFinite(t) ? t.toFixed(3) : "",
-        safeY,
-        safeBpm,
-      ].join(",");
-    });
-    const csvContent = header + lines.join("\n");
-
-    const blob = new Blob([csvContent], {
-      type: "text/csv;charset=utf-8;",
-    });
-    const url = URL.createObjectURL(blob);
+  function downloadStateCsv() {
+    if (!manualStateSegments.length) {
+      alert("No manual states to export.");
+      return;
+    }
+    const header = "start_sec,end_sec,state,source,bpm_at_mid\n";
+    const rows = [...manualStateSegments]
+      .sort((a, b) => a.start_sec - b.start_sec)
+      .map((seg) => {
+        const tMid = (seg.start_sec + seg.end_sec) / 2;
+        const bpm = seg.bpm_at_mid ?? getBpmSmoothedAtTime(tMid);
+        return [
+          seg.start_sec.toFixed(3),
+          seg.end_sec.toFixed(3),
+          seg.state,
+          seg.source,
+          Number.isFinite(bpm) ? bpm.toFixed(3) : "",
+        ].join(",");
+      });
+    const csvContent = header + rows.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    const baseName =
-      (audioFileNameEl && audioFileNameEl.dataset && audioFileNameEl.dataset.defaultName) ||
-      "labels";
+    const baseName = (audioFileNameEl && audioFileNameEl.dataset && audioFileNameEl.dataset.defaultName) || "analysis";
     link.href = url;
-    link.download = `${baseName}_manually_Labeled_peaks.csv`;
+    link.download = `${baseName}_manual_state_sequence.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }
 
-  // Import labels from a CSV that was previously exported by this tool.
-  // This implementation is intentionally simple and deterministic:
-  // - It matches peaks by rounded time_sec (3 decimal places).
-  // - It updates manual_label (and base_label, if present) on existing peaks.
-  // - It does NOT create new peaks; rows without a matching time are ignored.
-  function applyImportedLabelsCsv(csvText) {
+  // Import replaces the entire manual state timeline.
+  function importStateCsv(csvText) {
     if (!csvText) {
-      alert("No CSV content available to import labels.");
+      alert("No CSV content to import.");
       return;
     }
-    if (!editablePeaks.length) {
-      alert("No peaks available to relabel in this plot.");
-      return;
-    }
-
     const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (lines.length <= 1) {
       alert("CSV appears to be empty or missing data rows.");
       return;
     }
-
     const headerCells = lines[0].split(",");
     const lower = headerCells.map((h) => h.trim().toLowerCase());
-    const timeIdx = lower.indexOf("time_sec");
-    const manualIdx = lower.indexOf("manual_label");
-    const baseIdx = lower.indexOf("base_label");
+    const iStart  = lower.indexOf("start_sec");
+    const iEnd    = lower.indexOf("end_sec");
+    const iState  = lower.indexOf("state");
+    const iSource = lower.indexOf("source");
+    const iBpm    = lower.indexOf("bpm_at_mid");
 
-    if (timeIdx === -1 || (manualIdx === -1 && baseIdx === -1)) {
-      alert(
-        'CSV must contain at least "time_sec" and "manual_label" or "base_label" columns.'
-      );
+    if (iStart === -1 || iEnd === -1 || iState === -1) {
+      alert('CSV must contain "start_sec", "end_sec", and "state" columns.');
       return;
     }
 
-    // Build a lookup table from rounded time_sec -> { manual, base }.
-    const importedByTime = new Map();
+    const validStates = new Set(["S1", "S2", "systole", "diastole"]);
+    const imported = [];
     for (let i = 1; i < lines.length; i++) {
-      const row = lines[i];
-      const cells = row.split(",");
-      if (cells.length <= timeIdx) continue;
-
-      const tRaw = cells[timeIdx];
-      const t = parseFloat(tRaw);
-      if (!Number.isFinite(t)) continue;
-      const key = t.toFixed(3);
-
-      const manualCell =
-        manualIdx !== -1 && cells.length > manualIdx ? cells[manualIdx] : "";
-      const baseCell =
-        baseIdx !== -1 && cells.length > baseIdx ? cells[baseIdx] : "";
-
-      const manual = (manualCell || "").trim();
-      const base = (baseCell || "").trim();
-
-      if (!manual && !base) continue;
-
-      importedByTime.set(key, { manual, base });
+      const cells = lines[i].split(",");
+      const start = parseFloat(cells[iStart]);
+      const end   = parseFloat(cells[iEnd]);
+      const state = (cells[iState] || "").trim();
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+      if (!validStates.has(state)) continue;
+      const source = iSource !== -1 ? (cells[iSource] || "manual").trim() : "manual";
+      const bpm    = iBpm !== -1 ? parseFloat(cells[iBpm]) : NaN;
+      imported.push({ start_sec: start, end_sec: end, state, source, bpm_at_mid: Number.isFinite(bpm) ? bpm : null });
     }
 
-    if (!importedByTime.size) {
-      alert("No usable label rows found in CSV.");
+    if (!imported.length) {
+      alert("No valid state rows found in CSV.");
       return;
     }
 
-    let updatedCount = 0;
-
-    editablePeaks.forEach((p) => {
-      if (!Number.isFinite(p.timeSec)) return;
-      const key = p.timeSec.toFixed(3);
-      const rec = importedByTime.get(key);
-      if (!rec) return;
-
-      const { manual, base } = rec;
-      if (!manual && !base) return;
-
-      if (manual) {
-        p.manualLabel = manual;
-      }
-      if (base) {
-        p.baseLabel = base;
-      }
-      updatedCount++;
-    });
-
-    if (updatedCount > 0) {
-      refreshManualLabelTraces();
-      // Ensure manual trace legends are visible and base S1/S2/Noise traces go to legendonly.
-      const showManualTraces = Object.values(manualLabelTraceIndices).filter(
-        (idx) => typeof idx === "number" && idx >= 0
-      );
-      if (showManualTraces.length && plotlyGraphDiv) {
-        Plotly.restyle(plotlyGraphDiv, { visible: true }, showManualTraces);
-      }
-
-      const hideNames = ["S1 Beats", "S2 Beats", "Noise/Rejected"];
-      const hideIndices = hideNames
-        .map((name) => findTraceIndexByName(name))
-        .filter((idx) => typeof idx === "number" && idx >= 0);
-      if (hideIndices.length && plotlyGraphDiv) {
-        Plotly.restyle(plotlyGraphDiv, { visible: "legendonly" }, hideIndices);
-      }
-    } else {
-      alert(
-        "No labels from CSV could be matched to existing peaks by time_sec. Check that the file was exported from this viewer."
-      );
-    }
+    pushManualStateUndo();
+    manualStateSegments = imported.sort((a, b) => a.start_sec - b.start_sec);
+    revealManualStateStrip();
+    scheduleDrawPass3StateStrip();
+    console.log(`Imported ${manualStateSegments.length} state segment(s) from CSV.`);
   }
 
   if (applyLabelBtn) {
-    applyLabelBtn.addEventListener("click", applyLabelToNearestPeak);
+    applyLabelBtn.addEventListener("click", () => {
+      const state = (labelTypeSelect && labelTypeSelect.value) || "S1";
+      applyManualState(state);
+    });
   }
   if (flipLabelsRightBtn) {
-    flipLabelsRightBtn.addEventListener("click", flipLabelsRightOfPlayhead);
+    flipLabelsRightBtn.addEventListener("click", flipManualStatesRight);
+  }
+  if (regenerateStatesBtn) {
+    regenerateStatesBtn.addEventListener("click", regenerateGaps);
   }
   if (downloadLabelsBtn) {
-    downloadLabelsBtn.addEventListener("click", downloadLabelsCsv);
+    downloadLabelsBtn.addEventListener("click", downloadStateCsv);
   }
   if (importLabelsBtn && importLabelsInput) {
-    // Use a hidden file input so Import CSV is only processed on explicit click.
     importLabelsBtn.addEventListener("click", () => {
-      if (!plotlyGraphDiv || !editablePeaks.length) {
-        alert(
-          "Plot not ready or no peaks available yet. Wait for the chart to finish loading before importing labels."
-        );
-        return;
-      }
       importLabelsInput.value = "";
       importLabelsInput.click();
     });
-
     importLabelsInput.addEventListener("change", (event) => {
-      const file =
-        event && event.target && event.target.files && event.target.files[0];
+      const file = event && event.target && event.target.files && event.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = (e) => {
         const text = e && e.target && e.target.result ? e.target.result : "";
-        applyImportedLabelsCsv(text);
+        importStateCsv(text);
       };
       reader.readAsText(file);
     });
@@ -1900,6 +1691,12 @@
       return;
     }
 
+    if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ" && !e.shiftKey) {
+      e.preventDefault();
+      undoManualState();
+      return;
+    }
+
     switch (e.code) {
       case "Space":
         e.preventDefault();
@@ -1928,28 +1725,14 @@
         toggleSpectrogram();
         break;
       case "Digit1":
-        // Label nearest peak as S1
         e.preventDefault();
-        if (labelTypeSelect) {
-          labelTypeSelect.value = "S1";
-        }
-        applyLabelToNearestPeak();
+        if (labelTypeSelect) labelTypeSelect.value = "S1";
+        applyManualState("S1");
         break;
       case "Digit2":
-        // Label nearest peak as S2
         e.preventDefault();
-        if (labelTypeSelect) {
-          labelTypeSelect.value = "S2";
-        }
-        applyLabelToNearestPeak();
-        break;
-      case "Digit3":
-        // Label nearest peak as Noise
-        e.preventDefault();
-        if (labelTypeSelect) {
-          labelTypeSelect.value = "Noise";
-        }
-        applyLabelToNearestPeak();
+        if (labelTypeSelect) labelTypeSelect.value = "S2";
+        applyManualState("S2");
         break;
       case "KeyA":
         // A/B compare state strip: A = "before" correction
@@ -1983,7 +1766,6 @@
       plotlyGraphDiv = graphDivs[0];
       refreshAxisGridButtons();
       flushPendingAxisGridUpdates();
-      buildEditablePeaks();
 
       const legendCategoryFilter = document.getElementById("legend-category-filter");
       if (legendCategoryFilter) {
