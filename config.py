@@ -2,7 +2,6 @@
 # Default parameters and output toggles for the analysis pipeline.
 # Values are tuned for typical PCG recordings from consumer hardware.
 # See Documentation.md "Parameter Tuning Rationale" for reasoning behind specific values.
-# Note to AI: Stop adding new config parameters unless absolutely necessary.
 
 DEFAULT_PARAMS = {
     # =================================================================================
@@ -180,6 +179,7 @@ DEFAULT_PARAMS = {
     "lone_s1_amplitude_weight": 0.35,      # The weight given to the amplitude consistency score.
     # k consecutive noise raw peaks before current + span ≈ (k+1)×RR → score span/(k+1) vs RR.
     "lone_s1_missed_beat_tolerance_frac": 0.22,  # |span − m×RR| / (m×RR) must be ≤ this (m = k+1).
+    "lone_s1_forward_s1_vs_s2_min_ratio": 1.69,  # Forward check: current peak must be at least this × the next peak's amplitude to be treated as S1 rather than S2. Tuned empirically.
 
     # =================================================================================
     # 6. Pass 3 — Dense state timeline from Pass 2 (spectral S2 / Pass A–C / emissions removed; see pass3 archived logic.md)

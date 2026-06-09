@@ -1,3 +1,10 @@
+---
+Created on: 2025-12-04 20:55
+Last Modified: 2026-01-03 20:01
+File Folder: Programming
+tags: 
+Parent:
+---
 # **BPM Analysis documentation**
 
 # Design theory
@@ -859,6 +866,9 @@ Simply run `pyinstaller BPM_Analyzer.spec` to repackage and update binaries
 > 
 
 > [!say]
+> that was a large refactor, let's double check if all the decisions we made make sense in the larger context of what we are trying to do.
+
+> [!say]
 > There are bits of logic that I implemented to the script that likely do not need to be there. I come up with a idea to solve a problem, then later I come up with a better idea but left the initial solution in the code. Therefore there may be redundancy in logic that's still being used in the call stack but from a practical standpoint the logic is redundant. 
 > 
 > Can you scan our codebase for such cases if they do exist
@@ -874,14 +884,19 @@ Simply run `pyinstaller BPM_Analyzer.spec` to repackage and update binaries
 > can you scan the codebase for dead/redundant code? any stale or outdated comments?
 
 > [!say]
+> there may be a lot of redundant code in our codebase. can you scan our code to check for areas of improvements?  
+> places where we put too much defensive coding that's likely not needed. etc.
+> and list anything you are not sure of so you can research how blender behaves in the future
+> 
+> ok do some research on what you are unsure about and tell me what you find. after that, we can begin to tim down our codebase
+> 
+> ok trim down our codebase
+
+> [!say]
 > We should be writing code/text that makes it easy for AI to decipher and replace. Previously, we had difficulty with, and replacing/editing code using AI. Replace all high-risk characters with their ASCII equivalents so the codebase would be all-ASCII in its source text (string literals + comments). double check areas of concern. 
 
 > [!say]
-> that was a large refactor, let's double check if all the decisions we made make sense in the larger context of what we are trying to do.
-
-
-> [!say]
-> I'm using the graphical display to debug and understand how my code works. I don't want anything for display only. display should always show what data the algorithm uses/processes. can you double check that all display data is direct data from the algorithm?
+> I'm using the graphical display to debug and understand how my code works. I don't want anything for display only. display should always show what data the algorithm uses/processes. can you double check that all display data is direct data directly used by the algorithm? I don't want anything to display as one thing but then never get used in the algorithm's logic. that's nonsensical. leading to many confusing bugs
 
 
 

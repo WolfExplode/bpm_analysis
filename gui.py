@@ -135,7 +135,6 @@ class BPMApp:
             variable=self.bpm_from_filename,
             command=self.save_ui_settings,
         ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
-        self.bpm_from_filename.trace("w", lambda *args: self.save_ui_settings())
 
         self.rename_input_with_bpm = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -144,7 +143,6 @@ class BPMApp:
             variable=self.rename_input_with_bpm,
             command=self.save_ui_settings,
         ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
-        self.rename_input_with_bpm.trace("w", lambda *args: self.save_ui_settings())
 
         # Channel handling option
         self.channel_mode = tk.StringVar(value=_CHANNEL_MODE_LABEL_BY_VALUE[CHANNEL_MODE_MIXED])
@@ -181,9 +179,6 @@ class BPMApp:
         n_opts = len(OUTPUT_FILE_OPTIONS)
         half = (n_opts + 1) // 2
 
-        def on_output_change(*args):
-            self.save_ui_settings()
-
         for i in range(half):
             for col, idx in enumerate([i, i + half]):
                 if idx >= n_opts:
@@ -193,7 +188,6 @@ class BPMApp:
                 ttk.Checkbutton(
                     output_frame, text=label, variable=var, command=self.save_ui_settings
                 ).grid(row=i, column=col, sticky="w", padx=(0, 20))
-                var.trace("w", on_output_change)
 
         # Output location
         ttk.Checkbutton(
@@ -210,16 +204,12 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=half + 1, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(4, 0))
 
-        self.html_s1_s2_hover_on_by_default.trace("w", lambda *args: self.save_ui_settings())
-
         ttk.Checkbutton(
             output_frame,
             text="HTML: embed minimal script only (no interactive_plot.js; chart + hover + legend filter only)",
             variable=self.html_inline_interactive_script,
             command=self.save_ui_settings,
         ).grid(row=half + 2, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
-
-        self.html_inline_interactive_script.trace("w", lambda *args: self.save_ui_settings())
 
         # Select All/None buttons
         btn_frame_output = ttk.Frame(output_frame)
@@ -228,8 +218,6 @@ class BPMApp:
                   bootstyle=SECONDARY).grid(row=0, column=0, padx=(0, 5))
         ttk.Button(btn_frame_output, text="Select None", command=self.select_none_outputs,
                   bootstyle=SECONDARY).grid(row=0, column=1)
-
-        self.output_to_input_dir.trace("w", lambda *args: self.save_ui_settings())
 
         # Debugging options
         debug_frame = ttk.LabelFrame(main_frame, text="Debugging Options", padding="10")
@@ -277,7 +265,6 @@ class BPMApp:
         )
         _jobs_spin.pack(side=tk.LEFT, padx=(8, 0))
         _jobs_spin.bind("<FocusOut>", lambda e: self.save_ui_settings())
-        self.cli_batch_jobs.trace("w", lambda *args: self.save_ui_settings())
 
         self.auto_close_when_done = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -286,12 +273,6 @@ class BPMApp:
             variable=self.auto_close_when_done,
             command=self.save_ui_settings,
         ).grid(row=5, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
-        self.auto_close_when_done.trace("w", lambda *args: self.save_ui_settings())
-
-        self.algorithm_console_logging.trace("w", lambda *args: self.save_ui_settings())
-        self.general_console_logging.trace("w", lambda *args: self.save_ui_settings())
-        self.optimize_long_plots.trace("w", lambda *args: self.save_ui_settings())
-        self.output_all_passes.trace("w", lambda *args: self.save_ui_settings())
 
         # Action Buttons
         btn_frame = ttk.Frame(main_frame)
@@ -331,7 +312,7 @@ class BPMApp:
     def process_log_queue(self):
         try:
             while not self.log_queue.empty():
-                msg: UIMessage = self.log_queue.get(0)
+                msg: UIMessage = self.log_queue.get_nowait()
 
                 if msg.type == UIMessageType.STATUS:
                     self.status_var.set(msg.data)
@@ -667,11 +648,13 @@ class BPMApp:
         """Select all output file options."""
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
             getattr(self, "output_" + opt_key).set(True)
+        self.save_ui_settings()
 
     def select_none_outputs(self):
         """Deselect all output file options."""
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
             getattr(self, "output_" + opt_key).set(False)
+        self.save_ui_settings()
 
     def get_output_options(self):
         """Get the current output file selection as a dictionary (keys match config.DEFAULT_OUTPUT_OPTIONS)."""

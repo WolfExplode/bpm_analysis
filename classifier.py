@@ -534,7 +534,8 @@ class PeakClassifier:
                 next_amp = self.audio_envelope[next_raw_peak_idx]
 
                 # If not MUCH stronger, it's likely S2, not S1
-                if current_amp < next_amp * 1.69: # 1.69 is a random number I tuned, a better implementation would avoid the need for this magic number
+                s1_vs_s2_ratio = float(self.params.get("lone_s1_forward_s1_vs_s2_min_ratio", 1.69))
+                if current_amp < next_amp * s1_vs_s2_ratio:
                     detail_lines.append(
                         f"Forward check: next peak too close ({forward_interval_sec:.3f}s) and not strong enough "
                         f"→ veto → 0.00"

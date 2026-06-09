@@ -231,25 +231,6 @@ def _write_hr_stats(metrics: Dict[str, Any], smoothed_bpm) -> None:
         metrics["hrv_summary"] = hrv_summary
 
 
-def _apply_bpm_smoothing(metrics: Dict[str, Any], params: Dict) -> None:
-    """
-    MAD-filter + smooth the instant BPM already in *metrics*, then write back all
-    downstream HR stats.  No-op when metrics lacks valid bt/ib or MAD drops all points.
-    """
-    bt = metrics.get("bpm_times")
-    ib = metrics.get("instant_bpm")
-    if bt is None or ib is None or len(bt) != len(ib) or len(bt) < 2:
-        return
-    t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
-    if len(t_filt) == 0:
-        return
-    smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
-    metrics["smoothed_bpm"] = smoothed_bpm
-    metrics["bpm_times"] = bpm_times
-    metrics["instant_bpm"] = instant_bpm
-    _write_hr_stats(metrics, smoothed_bpm)
-
-
 def _apply_pass3_state_timeline_bpm(
     metrics: Dict[str, Any],
     analysis_data: Dict,
@@ -464,17 +445,6 @@ def analyze_wav_file(
     if needs_plot_outputs and len(s1_peaks) >= 2:
         _ui("Pass 2: computing heart rate metrics...")
         metrics_pass2 = _calculate_metrics_from_peaks(s1_peaks, sample_rate, params)
-        bt0 = metrics_pass2.get("bpm_times")
-        ib0 = metrics_pass2.get("instant_bpm")
-        if (
-            bt0 is not None
-            and ib0 is not None
-            and len(bt0) == len(ib0)
-            and len(bt0) > 0
-        ):
-            metrics_pass2["bpm_times_raw"] = np.asarray(bt0, dtype=np.float64).copy()
-            metrics_pass2["instant_bpm_raw"] = np.asarray(ib0, dtype=np.float64).copy()
-        _apply_bpm_smoothing(metrics_pass2, params)
         if output_all_passes:
             _ui("Pass 2: saving HTML / PNG / CSV...")
             plotter = Plotter(
@@ -535,17 +505,6 @@ def analyze_wav_file(
         metrics_after_pass3 = dict(metrics_pass2)
     else:
         metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass4, sample_rate, params)
-        bt0 = metrics_after_pass3.get("bpm_times")
-        ib0 = metrics_after_pass3.get("instant_bpm")
-        if (
-            bt0 is not None
-            and ib0 is not None
-            and len(bt0) == len(ib0)
-            and len(bt0) > 0
-        ):
-            metrics_after_pass3["bpm_times_raw"] = np.asarray(bt0, dtype=np.float64).copy()
-            metrics_after_pass3["instant_bpm_raw"] = np.asarray(ib0, dtype=np.float64).copy()
-        _apply_bpm_smoothing(metrics_after_pass3, params)
 
     _apply_pass3_state_timeline_bpm(metrics_after_pass3, analysis_data, sample_rate, params)
 
