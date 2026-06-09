@@ -233,7 +233,6 @@ DEFAULT_PARAMS = {
     "pass2_instant_bpm_outlier_window_sec": 8.0,  # Half-window (seconds) for pass 2/3 instantaneous BPM: local MAD outlier removal.
     "pass2_instant_bpm_outlier_mad_k": 8,       # Local MADs for pass 2/3 instant BPM. Lower = more aggressive.
     "pass1_bpm_gaussian_frac": 0.02,        # Used to derive Gaussian smoothing sigma for pass 1 BPM curve (smaller = tighter smoothing).
-    "pass1_bpm_loess_frac": 0.02,           # Deprecated alias for pass1_bpm_gaussian_frac (kept for backward compatibility).
     "s1_s2_outlier_window_sec": 10.0,         # Half-window (seconds) for systole (S1→S2) MAD outlier removal. Increase → less aggressive (more global context). Decrease → more aggressive (more local).
     "s1_s2_outlier_mad_k": 2,              # MAD threshold multiplier for systole (S1→S2) outlier removal. Increase → less aggressive (keeps more points). Decrease → more aggressive (flags more as outliers).
     "s1_s2_global_outlier_mad_k": 5.0,     # After local pass: global median ± k*MAD on interval (s). Higher = less sensitive. <=0 disables.
@@ -243,7 +242,6 @@ DEFAULT_PARAMS = {
     "diastole_duration_clamp_min_sec": 0.02,  # S2→next S1 / diastole segment floor.
     "diastole_duration_clamp_max_sec": 3.0,  # Ceiling for absurd gaps/mislabels.
     "systole_gaussian_frac": 0.05,          # Used to derive Gaussian smoothing sigma for systole curve (smaller = tighter smoothing).
-    "s1_s2_loess_frac": 0.05,               # Deprecated alias for systole_gaussian_frac (kept for backward compatibility).
     "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
     # --- 7.1. Long Plot Optimization ---

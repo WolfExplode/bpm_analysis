@@ -3,18 +3,31 @@ correction.py — Pass 3 cardiac-cycle correction and state-timeline generation.
 
 Entry point: run_pass3_correction().
 
-Structure
----------
-  Module-level helpers  (formerly closures inside _refine_and_correct_peaks)
-  Boundary geometry     (_resolve_boundary_overlap, _paint_state_boundaries,
-                         _build_reasoning_payload)
-  S2-events rebuild     (_rebuild_s2_events)
-  Main entry point      (run_pass3_correction)
+Section map (Ctrl+F the section title to jump)
+-----------------------------------------------
+  STATE CONSTANTS                           line ~43
+  Gap peak recovery                         line ~63
+  Boundary snapping                         line ~162
+  BPM interpolation / transient edge        line ~366
+  Hover / correction note formatters        line ~467
+  Boundary geometry (paint, overlap)        line ~513
+  Reasoning payload builder                 line ~627
+  S2 events rebuild                         line ~723
+  Noise interval utilities                  line ~758
+  BPM raster construction                   line ~822
+  Noise repair (clear + rebuild)            line ~967
+  Correction reasoning record builders     line ~1094
+  Duration series cleaning + measurement   line ~1152
+  Boundary geometry helpers (trim/interp)  line ~1312
+  Gap detection and filling                line ~1362
+  S2 seeding from Pass 2 pairs             line ~2203
+  MAIN ENTRY POINT                         line ~2276
 """
 
 import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
+from analysis_data_schema import AnalysisData
 
 import numpy as np
 import pandas as pd
@@ -145,6 +158,10 @@ def _detect_sensitive_peaks_in_large_gap_windows(
     out_arr = np.asarray(sorted(set(int(x) for x in out if 0 <= int(x) < n)), dtype=np.int64)
     return out_arr
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Boundary snapping — shift rebuilt state edges to align with recovered peaks
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _pass3_snap_rebuilt_states_to_recovered_peaks(
     state_labels: np.ndarray,
@@ -347,7 +364,7 @@ def _pass3_snap_rebuilt_states_to_recovered_peaks(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Module-level helpers  (formerly closures inside _refine_and_correct_peaks)
+# BPM interpolation and transient edge detection
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _bpm_at_time(
@@ -447,6 +464,10 @@ def _find_transient_bounds(
         return max(0, peak_idx - half_window), min(n_samples, peak_idx + half_window + 1)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Hover / correction note formatters (used by _build_reasoning_payload)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _fmt_corr_note(c: Dict[str, Any], sample_rate: float) -> str:
     """Return a warning line describing the direct correction applied."""
     ctype = c.get("type", "")
@@ -490,7 +511,7 @@ def _fmt_cascade_note(src: Dict[str, Any], sample_rate: float) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Boundary geometry helpers
+# Boundary geometry — paint state spans from S1/S2 peaks, resolve overlaps
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _resolve_boundary_overlap(
@@ -603,6 +624,10 @@ def _s2_index_hover_note(
     )
 
 
+# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# Reasoning payload builder (assembles per-cycle debug hover data)
+# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
 def _build_reasoning_payload(
     s1: int,
     s1_start: int,
@@ -696,7 +721,7 @@ def _build_reasoning_payload(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# S2-events rebuild helper
+# S2 events rebuild — synthesize S2 positions from S1 list + BPM prior
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _rebuild_s2_events(
@@ -729,6 +754,10 @@ def _rebuild_s2_events(
         s2_events.append(int(max(a + 1, min(s2_pred_a, b - 1))))
     return s2_events
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Noise interval utilities — convert segments to sample ranges, merge, query
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _noise_sample_intervals(
     noise_event_segments: Optional[List[Dict[str, Any]]],
@@ -789,6 +818,10 @@ def _span_intersects_merged_noise(
             return True
     return False
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BPM raster construction — build smooth BPM series from clean RR intervals
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _build_lt_bpm_series_from_clean_rr(
     s1_peaks: np.ndarray,
@@ -931,6 +964,10 @@ def _dense_raster_from_points(
     return t_grid, y_grid
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Noise repair — clear state labels inside HF-noise windows and rebuild
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _pass3_clear_states_in_hf_noise(
     state_labels: np.ndarray,
     state_boundaries: List[Tuple],
@@ -1054,6 +1091,10 @@ def _pass3_clear_states_in_hf_noise(
     return state_labels, new_bd
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Correction reasoning record builders (for debug overlay in HTML plots)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _pass3_rebuild_reasoning(
     phase: str,
     ivs: Dict,
@@ -1107,6 +1148,10 @@ def _pass3_gap_insert_rebuild_reasoning(
         "Inserted missing cardiac cycle(s) in a large gap.",
     )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Duration series cleaning and phase-curve measurement
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _pass3_clean_duration_series(
     t_raw: np.ndarray,
@@ -1264,6 +1309,10 @@ def _pass3_measured_diastole_series_from_boundaries(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# State boundary geometry helpers (piecewise interpolation, trim, removal)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _interp_piecewise_linear(
     t_query: float,
     t: np.ndarray,
@@ -1309,6 +1358,10 @@ def _pass3_remove_boundaries_overlapping_span(
         out.append(seg)
     return out
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gap detection and filling — find, label, and rebuild long unknown spans
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _pass3_find_gap_windows(
     state_boundaries: List[Tuple],
@@ -2147,6 +2200,10 @@ def _pass3_insert_missing_states_in_large_gaps(
     return state_labels, rebuilt
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# S2 seeding from Pass 2 pairs and pre-correction boundary snapshot
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _seed_s2_from_pass2_pairs(
     s1_list: List[int],
     s1_s2_pairs: List[Tuple[int, int]],
@@ -2223,7 +2280,7 @@ def _build_state_boundaries_before_from_cycles(
 def run_pass3_correction(
     s1_peaks: np.ndarray,
     all_raw_peaks: np.ndarray,
-    analysis_data: Dict,
+    analysis_data: AnalysisData,
     audio_envelope: np.ndarray,
     sample_rate: int,
     params: Dict,

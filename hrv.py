@@ -361,10 +361,7 @@ def compute_pass1_bpm_curve(
     if len(scatter_times) < 3:
         return None
 
-    gaussian_frac = float(params.get(
-        "pass1_bpm_gaussian_frac",
-        params.get("pass1_bpm_loess_frac", 0.2),
-    ))
+    gaussian_frac = float(params.get("pass1_bpm_gaussian_frac", 0.2))
     # Canonical dense curve on the standardized dt raster.
     curve_times = dense_time_grid(float(scatter_times.max()), STANDARD_DT_SEC)
     curve_times = curve_times[curve_times >= float(scatter_times.min())]
@@ -422,10 +419,7 @@ def compute_systole_interval_curve(
     if len(scatter_times) < 3:
         return None
 
-    gaussian_frac = float(params.get(
-        "systole_gaussian_frac",
-        params.get("systole_loess_frac", params.get("s1_s2_loess_frac", 0.05)),
-    ))
+    gaussian_frac = float(params.get("systole_gaussian_frac", 0.05))
     curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
     sigma_sec = _gaussian_sigma_from_frac_and_spacing(scatter_times, gaussian_frac)
     curve_intervals = _gaussian_kernel_smooth(curve_times, scatter_times, scatter_intervals, sigma_sec)

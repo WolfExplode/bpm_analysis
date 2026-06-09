@@ -20,6 +20,7 @@ from validation import (
     _append_validation_results_row,
 )
 from classifier import PeakClassifier
+from analysis_data_schema import AnalysisData
 from confidence_engine import calculate_bpm_intervals
 from hrv import (
     calculate_bpm_series,

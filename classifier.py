@@ -3,6 +3,7 @@ import pandas as pd
 from scipy.signal import find_peaks
 import logging
 from typing import List, Dict, Tuple, Optional, Any, Callable
+from analysis_data_schema import AnalysisData
 
 from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
 
@@ -79,7 +80,7 @@ class PeakClassifier:
         raw_peaks_override: Optional[np.ndarray] = None,
     ) -> AnalysisState:
         """Pre-calculates all necessary data and initializes the state for the peak finding loop."""
-        analysis_data: Dict[str, Any] = {}
+        analysis_data: AnalysisData = {}
         dynamic_noise_floor, trough_indices = precomputed_noise_floor, precomputed_troughs
         if raw_peaks_override is not None and len(np.asarray(raw_peaks_override)) > 0:
             all_peaks = np.sort(np.unique(np.asarray(raw_peaks_override, dtype=np.int64)))
@@ -130,7 +131,7 @@ class PeakClassifier:
             peak_prominence_detail_cache=prom_cache,
         )
 
-    def classify_peaks(self) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    def classify_peaks(self) -> Tuple[np.ndarray, np.ndarray, AnalysisData]:
         """Main classification loop to iterate through all raw peaks."""
         p3_lg = bool(getattr(self, "_pass3_large_gap", False))
         n_all = len(self.state.all_peaks)
