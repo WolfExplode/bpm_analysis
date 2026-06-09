@@ -16,15 +16,12 @@ from confidence_engine import (
     update_long_term_bpm,
     _append_s1_s2_interval,
     _append_s1_s2_contractility,
-    _get_recent_s1_prominences_for_state,
     record_s1_outcome,
 )
 from peak_utils import (
     PeakType,
     _get_peak_type_from_debug,
     _is_s1_paired_debug,
-    _is_lone_s1_debug,
-    _is_noise_debug,
     build_peak_prominence_detail_cache,
     calculate_peak_prominence,
 )

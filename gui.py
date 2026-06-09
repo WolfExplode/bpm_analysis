@@ -8,8 +8,6 @@ import json
 import subprocess
 import platform
 import logging
-import time
-import datetime
 from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
@@ -424,8 +422,7 @@ class BPMApp:
 
                 self._update_status(f"Auto-loaded {len(self.current_files)} files from the current directory.")
 
-        except Exception as e:
-            # Fails silently if it can't read the directory
+        except Exception:
             pass
 
     def _update_status(self, message):

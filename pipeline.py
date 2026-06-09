@@ -3,7 +3,7 @@ import logging
 import time
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple, Any, Callable, List
+from typing import Dict, Optional, Tuple, Any, Callable
 
 from scipy.interpolate import interp1d
 
@@ -20,8 +20,6 @@ from validation import (
     _append_validation_results_row,
 )
 from classifier import PeakClassifier
-from analysis_data_schema import AnalysisData
-from confidence_engine import calculate_bpm_intervals
 from hrv import (
     calculate_bpm_series,
     calculate_bpm_series_from_s1_state_labels,

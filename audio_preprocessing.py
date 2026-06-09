@@ -528,8 +528,6 @@ def preprocess_audio(
     inverse_band_envelope: Optional[np.ndarray] = None
     audio_inverse_hp_native: Optional[np.ndarray] = None
     native_sr_int: Optional[int] = None  # effective rate for inverse-band FIR/Hilbert (working or native)
-    # Noise envelope FIR taper band (for logging / debug); not tied to bandpass highcut.
-    noise_envelope_hp_cut_hz: Optional[float] = None
     smooth_ms = float(params.get("envelope_smooth_window_ms", 50))
     taper_lo_cfg = float(params.get("inverse_band_taper_low_hz", 300.0))
     taper_hi_cfg = float(params.get("inverse_band_taper_high_hz", 600.0))
@@ -582,7 +580,6 @@ def preprocess_audio(
                 )
                 del audio_native
             else:
-                noise_envelope_hp_cut_hz = taper_hi
                 try:
                     # Piecewise-linear FIR: 0 → ramp → 1 (firls), zero-phase via filtfilt.
                     t_fir = time.perf_counter()

@@ -1,13 +1,11 @@
 import os
 import logging
-import time
 import urllib.parse
 import re
 from time_utils import seconds_to_datetime
 import csv
 import shutil
 import json
-import tempfile
 from typing import Dict, Optional, List, Any, Tuple
 from peak_utils import PeakType, _get_peak_type_from_debug, format_debug_entry, get_peak_prominence_details
 import numpy as np
@@ -18,7 +16,6 @@ from plotly.subplots import make_subplots
 from config import DEFAULT_OUTPUT_OPTIONS
 from file_io import find_companion_wav, normalize_output_filename_stem, output_stem_from_path
 from confidence_engine import calculate_bpm_intervals
-from hrv import compute_systole_interval_curve
 
 import librosa
 import librosa.display

@@ -1,6 +1,6 @@
 """Time conversion and formatting for reports and plots."""
 import datetime
-from typing import Tuple, Optional
+from typing import Optional
 
 import numpy as np
 
