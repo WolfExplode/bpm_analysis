@@ -94,7 +94,7 @@ def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
         median_rr_sec = np.median(np.diff(anchor_beats) / sample_rate)
         if median_rr_sec > 0:
             global_bpm_estimate = 60.0 / median_rr_sec
-            logging.info(f"Automatically determined Global BPM Estimate: {global_bpm_estimate:.1f} BPM")
+            logging.info("Automatically determined Global BPM Estimate: %.1f BPM", global_bpm_estimate)
 
     start_bpm = start_bpm_hint or global_bpm_estimate or 80.0
 
@@ -316,7 +316,7 @@ def analyze_wav_file(
             active_filters.append((handler, filt))
 
     start_time = time.time()
-    logging.info(f"--- Processing file: {os.path.basename(original_file_path)} ---")
+    logging.info("--- Processing file: %s ---", os.path.basename(original_file_path))
 
     # STAGE 1: Initialization
     _ui("Preprocessing audio...")
@@ -648,10 +648,10 @@ def analyze_wav_file(
             else:
                 analysis_data["fft_separation"] = None
         except Exception as e:
-            logging.warning(f"FFT profiles generation failed: {e}")
+            logging.warning("FFT profiles generation failed: %s", e)
 
     duration = time.time() - start_time
-    logging.info(f"--- Analysis stage finished in {duration:.2f} seconds (post-conversion). ---")
+    logging.info("--- Analysis stage finished in %.2f seconds (post-conversion). ---", duration)
 
     # Remove filters so this setting is scoped to the analysis call.
     for handler, filt in active_filters:

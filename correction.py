@@ -2122,7 +2122,7 @@ def _pass3_insert_missing_states_in_large_gaps(
                     "dry_run": bool(dry_run),
                 })
             except Exception:
-                pass
+                logging.debug("Pass 3 gap insert: failed to build window diagnostics", exc_info=True)
 
     if not insert_windows:
         logging.info("Pass 3 gap insert: no qualifying windows — nothing to insert.")
@@ -2594,7 +2594,7 @@ def run_pass3_correction(
             noise_ivs=list(noise_ivs_final) if noise_ivs_final else [],
         )
     except Exception:
-        pass
+        logging.debug("Pass 3: failed to compute before-repair phase curves", exc_info=True)
 
     if not _noise_repair_on:
         logging.info(
@@ -2644,7 +2644,7 @@ def run_pass3_correction(
                 noise_ivs=list(noise_ivs_final) if noise_ivs_final else [],
             )
         except Exception:
-            pass
+            logging.debug("Pass 3: failed to compute for-gap-insert phase curves", exc_info=True)
 
         # ── Single canonical gap detection ────────────────────────────────────
         _gap_quiet_debug: List[Dict[str, Any]] = []
@@ -2812,7 +2812,7 @@ def run_pass3_correction(
         analysis_data["pass3_measured_diastole_t"] = analysis_data.get("pass3_measured_phase_final_diastole_t")
         analysis_data["pass3_measured_diastole_dur"] = analysis_data.get("pass3_measured_phase_final_diastole_dur")
     except Exception:
-        pass
+        logging.debug("Pass 3: failed to compute final phase curves", exc_info=True)
 
     analysis_data["pass3_state_labels"]          = state_labels
     analysis_data["pass3_state_labels_encoding"] = dict(STATE_LABELS_ENCODING)

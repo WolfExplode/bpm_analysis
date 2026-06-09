@@ -1,3 +1,17 @@
+"""
+confidence_engine.py — Peak pairing confidence model for S1/S2 classification.
+
+Section map (Ctrl+F the section title to jump)
+-----------------------------------------------
+  AnalysisState dataclass                   line ~17
+  Interval / timing helpers                 line ~87
+  Contractility confidence model            line ~203
+  Lone S1 gradient confidence               line ~335
+  State history helpers                     line ~512
+  Pairing engine (PairingEngine class)      line ~587
+  Lookahead skipper (LookaheadSkipper)      line ~897
+"""
+
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
@@ -12,6 +26,10 @@ from peak_utils import (
     _AMPLITUDE_SCORE_YPOINTS,
 )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AnalysisState — mutable state carried through the classification loop
+# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class AnalysisState:
@@ -80,8 +98,9 @@ class AnalysisState:
 
 
 # ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Interval / timing helpers
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def calculate_bpm_intervals(bpm: float, params: Dict) -> Dict[str, float]:
     """
@@ -197,8 +216,9 @@ def update_long_term_bpm(new_rr_sec: float, current_long_term_bpm: float, params
 
 
 # ---------------------------------------------------------------------------
-# Contractility / confidence helpers
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Contractility confidence model — S1/S2 prominence ratio vs. expected
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _contractility_expected_ratio_bpm(bpm: float, params: Dict) -> float:
     """Expected S1/S2 ratio from BPM using a power curve (non-linear; steep rise at low BPM then flatter)."""
@@ -329,6 +349,10 @@ def adjust_confidence_with_contractility(
 
     return confidence, {"step": "Contractility", "detail": detail, "result": confidence}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lone S1 gradient confidence — confidence score for isolated beats
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _count_consecutive_noise_raw_peaks_before(
     all_peaks: np.ndarray,
@@ -506,8 +530,9 @@ def calculate_lone_s1_confidence(
 
 
 # ---------------------------------------------------------------------------
-# State history helpers
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# State history helpers — per-beat outcome recording and history management
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _append_s1_s2_interval(state: AnalysisState, interval_sec: float, params: Dict) -> None:
     """Append an accepted systole (S1→S2) interval to history and cap to last N for history-based expected systole."""
@@ -580,8 +605,9 @@ def _get_recent_s1_prominences_for_state(
 
 
 # ---------------------------------------------------------------------------
-# Pairing engine
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Pairing engine — evaluates and scores S1→S2 (systole) pair candidates
+# ─────────────────────────────────────────────────────────────────────────────
 
 class PairingEngine:
     """
@@ -890,8 +916,9 @@ class PairingEngine:
 
 
 # ---------------------------------------------------------------------------
-# Lookahead skipper
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Lookahead skipper — detects when a peak should be skipped based on context
+# ─────────────────────────────────────────────────────────────────────────────
 
 class LookaheadSkipper:
     """

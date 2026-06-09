@@ -142,7 +142,7 @@ def _detect_and_remove_stationary_hum(
         nperseg = max(256, min(len(audio_data), nperseg))
         freqs, psd = welch(audio_data, fs=sample_rate, nperseg=nperseg)
     except Exception as e:
-        logging.warning(f"Hum detection skipped (PSD computation failed): {e}")
+        logging.warning("Hum detection skipped (PSD computation failed): %s", e)
         return audio_data, None
 
     # Restrict search to a low-frequency band where hums typically live
@@ -169,7 +169,7 @@ def _detect_and_remove_stationary_hum(
     try:
         peak_indices, properties = find_peaks(psd_db_rel, prominence=min_prom_db)
     except Exception as e:
-        logging.warning(f"Hum detection skipped (peak finding failed): {e}")
+        logging.warning("Hum detection skipped (peak finding failed): %s", e)
         return audio_data, None
 
     if peak_indices.size == 0:
@@ -269,14 +269,14 @@ def convert_to_wav(file_path: str, target_path: str) -> bool:
     if not AudioSegment:
         raise ImportError("Pydub/FFmpeg is required for audio conversion.")
 
-    logging.info(f"Converting {os.path.basename(file_path)} to WAV format...")
+    logging.info("Converting %s to WAV format...", os.path.basename(file_path))
     try:
         sound = AudioSegment.from_file(file_path)
         # Preserve original channel layout; downstream logic may choose to split channels.
         sound.export(target_path, format="wav")
         return True
     except Exception as e:
-        logging.error(f"Could not convert file {file_path}. Error: {e}")
+        logging.error("Could not convert file %s. Error: %s", file_path, e)
         return False
 
 
@@ -502,7 +502,7 @@ def preprocess_audio(
         # Preserve historical behavior: simple mono mix of all channels.
         audio_downsampled, new_sample_rate = librosa.load(file_path, sr=target_sample_rate, mono=True)
     except Exception as e:
-        logging.error(f"Librosa failed to load file: {e}")
+        logging.error("Librosa failed to load file: %s", e)
         raise
     _dur_min = (float(audio_downsampled.size) / float(new_sample_rate)) / 60.0 if new_sample_rate else 0.0
     t_step = _log_preprocess_elapsed(
@@ -685,7 +685,7 @@ def preprocess_audio(
                 debug_sample_rate,
             )
         except Exception as e:
-            logging.error(f"Failed to write filtered debug WAV file {debug_path}: {e}")
+            logging.error("Failed to write filtered debug WAV file %s: %s", debug_path, e)
 
         if audio_inverse_hp_native is not None and audio_inverse_hp_native.size > 0 and native_sr_int:
             inv_path = os.path.join(output_directory, f"{base_name}_filtered_inverse_debug.wav")
@@ -701,7 +701,7 @@ def preprocess_audio(
                     native_sr_int,
                 )
             except Exception as e:
-                logging.error(f"Failed to write inverse-band debug WAV file {inv_path}: {e}")
+                logging.error("Failed to write inverse-band debug WAV file %s: %s", inv_path, e)
         if audio_inverse_hp_native is not None:
             del audio_inverse_hp_native
             audio_inverse_hp_native = None

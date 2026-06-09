@@ -42,7 +42,7 @@ class ReportGenerator:
             )
             self._write_heartbeat_data_table(f, metrics.get("smoothed_bpm"), metrics.get("bpm_times"))
 
-        logging.info(f"Markdown analysis summary saved to {output_path}")
+        logging.info("Markdown analysis summary saved to %s", output_path)
 
     def create_chronological_log(
         self,
@@ -54,7 +54,7 @@ class ReportGenerator:
     ):
         """Creates a detailed, readable debug log file. metrics: BPM/HRV from latest pass."""
         output_log_path = os.path.join(self.output_directory, f"{self.base_name}_Debug_Log.md")
-        logging.info(f"Generating readable debug log at '{output_log_path}'...")
+        logging.info("Generating readable debug log at '%s'...", output_log_path)
         merged_df = self._prepare_log_data(
             audio_envelope,
             sample_rate,

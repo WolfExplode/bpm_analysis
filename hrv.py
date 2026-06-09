@@ -124,7 +124,7 @@ def _lombscargle_band_powers(
     try:
         periodogram = lombscargle(ts, rr, angular_freqs, normalize=True)
     except Exception as e:
-        logging.warning(f"Lomb-Scargle: lombscargle() failed: {e}")
+        logging.warning("Lomb-Scargle: lombscargle() failed: %s", e)
         return None
     # Task Force bands: VLF 0.003-0.04, LF 0.04-0.15, HF 0.15-0.40 Hz
     # With normalize=True the periodogram is dimensionless; scale by RR variance to get power in ms² (Task Force convention).
@@ -165,7 +165,7 @@ def calculate_windowed_hrv(s1_peaks: np.ndarray, sample_rate: int, params: Dict)
 
     # First, calculate all R-R intervals from the S1 peaks
     if len(s1_peaks) < window_size_beats:
-        logging.warning(f"Not enough beats ({len(s1_peaks)}) to perform windowed HRV analysis with a window of {window_size_beats} beats.")
+        logging.warning("Not enough beats (%d) to perform windowed HRV analysis with a window of %d beats.", len(s1_peaks), window_size_beats)
         return pd.DataFrame(columns=['time', 'rmssdc', 'sdnn', 'bpm'])
 
     rr_intervals_sec = np.diff(s1_peaks) / sample_rate
@@ -232,7 +232,7 @@ def calculate_windowed_hrv(s1_peaks: np.ndarray, sample_rate: int, params: Dict)
         logging.warning("Could not perform windowed HRV analysis. Recording may be too short or have too few beats.")
         return pd.DataFrame(columns=['time', 'rmssdc', 'sdnn', 'bpm'])
 
-    logging.info(f"Beat-based windowed HRV analysis complete. Generated {len(results)} data points.")
+    logging.info("Beat-based windowed HRV analysis complete. Generated %d data points.", len(results))
     return pd.DataFrame(results)
 
 
@@ -735,5 +735,5 @@ def find_recovery_phase(bpm_values: np.ndarray, bpm_times_sec: np.ndarray, param
         return None, None
     peak_time_sec = float(bpm_times_sec[peak_idx])
     recovery_end_time_sec = peak_time_sec + params.get("recovery_phase_duration_sec", 120.0)
-    logging.info(f"Peak BPM detected in pass 1 at {peak_time_sec:.2f}s ({peak_bpm:.1f} BPM). High-contractility state defined until {recovery_end_time_sec:.2f}s.")
+    logging.info("Peak BPM detected in pass 1 at %.2fs (%.1f BPM). High-contractility state defined until %.2fs.", peak_time_sec, peak_bpm, recovery_end_time_sec)
     return peak_time_sec, recovery_end_time_sec

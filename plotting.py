@@ -378,11 +378,11 @@ class Plotter:
             plt.close(fig)
 
             basename = os.path.basename(output_path)
-            logging.info(f"Generated spectrogram image for background overlay: {basename}")
+            logging.info("Generated spectrogram image for background overlay: %s", basename)
             return basename
 
         except Exception as e:
-            logging.warning(f"Failed to generate spectrogram image: {e}")
+            logging.warning("Failed to generate spectrogram image: %s", e)
             return None
 
     def plot_and_save(
@@ -497,7 +497,7 @@ class Plotter:
                         self.audio_source_path or self.file_name, spec_path
                     )
                 except Exception as e:
-                    logging.warning(f"Failed to generate original spectrogram: {e}")
+                    logging.warning("Failed to generate original spectrogram: %s", e)
             else:
                 logging.info("Skipping original spectrogram generation as requested (spectrogram output disabled).")
 
@@ -518,7 +518,7 @@ class Plotter:
 
             with open(output_html_path, 'w', encoding='utf-8') as f:
                 f.write(custom_html)
-            logging.info(f"Interactive plot with audio player saved to {output_html_path}")
+            logging.info("Interactive plot with audio player saved to %s", output_html_path)
         else:
             logging.info("Skipping HTML plot generation as requested.")
 
@@ -536,9 +536,9 @@ class Plotter:
             }
             try:
                 self.fig.write_image(output_png_path, **write_kwargs)
-                logging.info(f"Plot PNG exported via Kaleido to {output_png_path}")
+                logging.info("Plot PNG exported via Kaleido to %s", output_png_path)
             except Exception as e:
-                logging.warning(f"Failed to export Plot PNG (requires kaleido): {e}")
+                logging.warning("Failed to export Plot PNG (requires kaleido): %s", e)
                 logging.debug("Kaleido PNG export traceback (set log level DEBUG for details)", exc_info=True)
 
         if output_options is None or output_options.get("csv", True):
@@ -560,9 +560,9 @@ class Plotter:
                         for t, bpm in zip(np.asarray(bpm_times, dtype=float), np.asarray(smoothed_bpm, dtype=float)):
                             if not np.isnan(bpm):
                                 writer.writerow([f"{t:.3f}", f"{bpm:.3f}"])
-                    logging.info(f"BPM plot data saved to {csv_path}")
+                    logging.info("BPM plot data saved to %s", csv_path)
                 except Exception as e:
-                    logging.error(f"Failed to write BPM plot CSV: {e}")
+                    logging.error("Failed to write BPM plot CSV: %s", e)
         else:
             logging.info("Skipping CSV generation as requested.")
 
@@ -789,7 +789,7 @@ class Plotter:
         )
         with open(output_html_path, "w", encoding="utf-8") as f:
             f.write(custom_html)
-        logging.info(f"Preliminary pass plot saved to {output_html_path}")
+        logging.info("Preliminary pass plot saved to %s", output_html_path)
 
         self.fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -925,7 +925,7 @@ class Plotter:
         factor = self.params.get("plot_downsample_factor", 5)
         n = len(audio_envelope)
         if factor > 1 and n >= factor:
-            logging.info(f"Downsampling envelope and noise floor by factor {factor} for plotting.")
+            logging.info("Downsampling envelope and noise floor by factor %d for plotting.", factor)
             plot_secs = np.arange(0, n, factor, dtype=np.float64) / self.sample_rate
             plot_time_axis_dt = _elapsed_seconds_to_plot_datetimes(plot_secs)
             plot_envelope = audio_envelope[::factor]
@@ -1800,25 +1800,25 @@ class Plotter:
         if copy_from and os.path.abspath(copy_from) != os.path.abspath(dest_audio_path):
             try:
                 shutil.copy2(copy_from, dest_audio_path)
-                logging.info(f"Copied audio file to {dest_audio_path}")
+                logging.info("Copied audio file to %s", dest_audio_path)
             except Exception as e:
-                logging.error(f"Could not copy audio file: {e}")
+                logging.error("Could not copy audio file: %s", e)
         elif not copy_from:
-            logging.error(f"Audio source file does NOT exist: {self.audio_source_path}")
+            logging.error("Audio source file does NOT exist: %s", self.audio_source_path)
 
         if os.path.exists(dest_audio_path):
             audio_src = output_audio_basename.replace('\\', '/')
             if not copy_from or os.path.abspath(copy_from) != os.path.abspath(dest_audio_path):
-                logging.info(f"Found audio file in output directory: {dest_audio_path}")
+                logging.info("Found audio file in output directory: %s", dest_audio_path)
         else:
-            logging.error(f"Audio file not found anywhere: {output_audio_basename}")
+            logging.error("Audio file not found anywhere: %s", output_audio_basename)
 
         filtered_debug_file_name = f"{base_name}_filtered_debug.wav"
         filtered_debug_path = os.path.join(self.output_directory, filtered_debug_file_name)
         filtered_available = os.path.exists(filtered_debug_path)
         filtered_audio_src = filtered_debug_file_name.replace('\\', '/') if filtered_available else ""
         if filtered_available:
-            logging.info(f"Using filtered debug audio: {filtered_debug_path}")
+            logging.info("Using filtered debug audio: %s", filtered_debug_path)
 
         filtered_inverse_debug_file_name = f"{base_name}_filtered_inverse_debug.wav"
         filtered_inverse_debug_path = os.path.join(
@@ -1829,9 +1829,9 @@ class Plotter:
             filtered_inverse_debug_file_name.replace('\\', '/') if filtered_inverse_available else ""
         )
         if filtered_inverse_available:
-            logging.info(f"Using inverse-band debug audio: {filtered_inverse_debug_path}")
+            logging.info("Using inverse-band debug audio: %s", filtered_inverse_debug_path)
 
-        logging.info(f"HTML audio source path: '{audio_src}'")
+        logging.info("HTML audio source path: '%s'", audio_src)
         audio_src_escaped = urllib.parse.quote(audio_src)
         filtered_audio_src_escaped = urllib.parse.quote(filtered_audio_src) if filtered_audio_src else ""
         filtered_inverse_audio_src_escaped = (
@@ -1859,7 +1859,7 @@ class Plotter:
                             spectrogram_original_src = spec_name
                             spectrogram_available_original = True
                 except Exception as e:
-                    logging.warning(f"Failed to generate on-demand original spectrogram: {e}")
+                    logging.warning("Failed to generate on-demand original spectrogram: %s", e)
 
             if filtered_available:
                 try:
@@ -1873,7 +1873,7 @@ class Plotter:
                         spectrogram_filtered_src = spec_filtered_name
                         spectrogram_available_filtered = True
                 except Exception as e:
-                    logging.warning(f"Failed to generate filtered spectrogram: {e}")
+                    logging.warning("Failed to generate filtered spectrogram: %s", e)
         else:
             logging.info("Spectrogram generation disabled; no spectrogram images generated.")
 
@@ -2048,13 +2048,13 @@ class Plotter:
                 js_dest_path = os.path.join(self.output_directory, "interactive_plot.js")
                 if os.path.exists(js_src_path):
                     shutil.copy2(js_src_path, js_dest_path)
-                    logging.info(f"Copied interactive_plot.js to {js_dest_path}")
+                    logging.info("Copied interactive_plot.js to %s", js_dest_path)
                 else:
                     logging.error(
-                        f"interactive_plot.js not found at {js_src_path}; HTML will reference a missing script."
+                        "interactive_plot.js not found at %s; HTML will reference a missing script.", js_src_path
                     )
             except Exception as e:
-                logging.error(f"Failed to copy interactive_plot.js: {e}")
+                logging.error("Failed to copy interactive_plot.js: %s", e)
         else:
             logging.info("HTML uses embedded minimal script (no interactive_plot.js copy).")
 
@@ -2064,7 +2064,7 @@ class Plotter:
                 with open(minimal_js_path, encoding="utf-8") as jf:
                     minimal_js_body = jf.read()
             except OSError as e:
-                logging.error(f"Could not load {minimal_js_path}: {e}")
+                logging.error("Could not load %s: %s", minimal_js_path, e)
                 raise
             minimal_js_body = minimal_js_body.replace("</script>", "<\\/script>")
             scripts_tail = (
@@ -2087,7 +2087,7 @@ class Plotter:
             with open(template_path, encoding="utf-8") as f:
                 template = f.read()
         except OSError as e:
-            logging.error(f"Could not load HTML template from {template_path}: {e}")
+            logging.error("Could not load HTML template from %s: %s", template_path, e)
             raise
 
         total_time_str = f"{int(duration_sec // 60):02d}:{int(duration_sec % 60):02d}"

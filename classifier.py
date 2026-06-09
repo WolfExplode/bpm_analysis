@@ -375,7 +375,7 @@ class PeakClassifier:
         prominence_thresh = np.quantile(self.audio_envelope, self.params['peak_prominence_quantile'])
         min_peak_dist_samples = int(self.params['min_peak_distance_sec'] * self.sample_rate)
         peaks, _ = find_peaks(self.audio_envelope, height=height_threshold, prominence=prominence_thresh, distance=min_peak_dist_samples)
-        logging.info(f"Found {len(peaks)} raw peaks using dynamic height threshold.")
+        logging.info("Found %d raw peaks using dynamic height threshold.", len(peaks))
         return peaks
 
     def _refine_peaks_by_center_of_mass(self, peaks: np.ndarray) -> np.ndarray:
