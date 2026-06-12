@@ -3,6 +3,8 @@
 # Values are tuned for typical PCG recordings from consumer hardware.
 # See Documentation.md "Parameter Tuning Rationale" for reasoning behind specific values.
 
+import logging
+
 DEFAULT_PARAMS = {
     # =================================================================================
     # 1. General & Preprocessing Settings
@@ -288,3 +290,19 @@ DEFAULT_OUTPUT_OPTIONS = {
     "fft_profiles": True,
     "regression_log": False,
 }
+
+# Keys already warned about — each unknown key is logged once per process, not once per file.
+_warned_unknown_param_keys: set = set()
+
+def validate_params(params: dict) -> None:
+    """Warn once per process for any key in params not present in DEFAULT_PARAMS.
+
+    Catches typos and stale keys that would otherwise silently fall back to
+    their hardcoded defaults in params.get("key", default) calls.
+    Call this at the start of analyze_wav_file.
+    """
+    known = set(DEFAULT_PARAMS)
+    new_unknown = set(params) - known - _warned_unknown_param_keys
+    for key in sorted(new_unknown):
+        logging.warning("Unknown param key %r — not in DEFAULT_PARAMS (typo or stale key?)", key)
+    _warned_unknown_param_keys.update(new_unknown)

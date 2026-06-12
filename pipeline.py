@@ -9,7 +9,7 @@ from scipy.interpolate import interp1d
 
 from audio_preprocessing import preprocess_audio
 from noise_segments import compute_noise_event_segments
-from config import DEFAULT_OUTPUT_OPTIONS
+from config import DEFAULT_OUTPUT_OPTIONS, validate_params
 from file_io import output_stem_from_path
 from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
 from plotting import Plotter, prewarm_kaleido_png_export
@@ -300,6 +300,8 @@ def analyze_wav_file(
                 progress_callback(label)
             except Exception:
                 pass
+
+    validate_params(params)
 
     # Honor optional verbose logging flag from params to control how noisy the console is.
     # When disabled, we keep stage-level INFO logs but suppress very chatty algorithm-detail INFO logs.

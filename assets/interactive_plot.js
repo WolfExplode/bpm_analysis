@@ -35,7 +35,7 @@
   let pass3SegmentsActive = PASS3_SEGMENTS_DEFAULT_VIEW === "before" ? PASS3_SEGMENTS_BEFORE : PASS3_SEGMENTS_AFTER;
 
   function pass3SegmentsToManual(segments) {
-    const validStates = new Set(["S1", "S2", "systole", "diastole"]);
+    const validStates = new Set(["S1", "S2", "systole", "diastole", "noisy"]);
     const out = [];
     for (const seg of segments || []) {
       if (!seg) continue;
@@ -149,26 +149,42 @@
   let xAxisRange = null;
   let fullXAxisRange = null;
   // Manual state segments: [{start_sec, end_sec, state, source, bpm_at_mid}, ...]
-  // Seeded from Pass 3 algorithm labels; manual edits use source "manual".
-  let manualStateSegments = pass3SegmentsToManual(_initialPass3ForManual);
+  // Seeded from Pass 3 algorithm labels (source "auto"); user edits use source "manual".
+  //
+  // Performance note: _autoBaseline is an immutable reference — never mutated, never cloned.
+  // Undo snapshots store only "manual" source segments (the user's explicit placements),
+  // which are tiny even for long files. Auto and regenerated segments are always re-derived.
+  const _autoBaseline = pass3SegmentsToManual(_initialPass3ForManual);
+  let manualStateSegments = _autoBaseline.map((s) => ({ ...s }));
   let manualStripEdited = false;
   const manualStateUndoStack = [];
   const manualStateRedoStack = [];
   const MANUAL_STATE_UNDO_MAX = 50;
 
-  function cloneManualStateSegments(segs) {
-    return segs.map((seg) => ({ ...seg }));
+  function _snapshotManualEdits() {
+    // Only snapshot user-placed segments — auto and regenerated are always re-derived on restore.
+    return manualStateSegments.filter((s) => s.source === "manual").map((s) => ({ ...s }));
+  }
+
+  // Rebuild manualStateSegments from the auto baseline + a snapshot of manual edits.
+  // Manual segments punch holes in the auto baseline; regenerated fills are re-derived after.
+  function _restoreFromSnapshot(snapshot) {
+    const autoSegs = _autoBaseline
+      .filter((a) => !snapshot.some((m) => m.end_sec > a.start_sec && m.start_sec < a.end_sec))
+      .map((s) => ({ ...s }));
+    manualStateSegments = [...autoSegs, ...snapshot].sort((a, b) => a.start_sec - b.start_sec);
+    rebuildRegenGaps();
   }
 
   function captureManualStateForUndo() {
-    manualStateUndoStack.push(cloneManualStateSegments(manualStateSegments));
+    manualStateUndoStack.push(_snapshotManualEdits());
     if (manualStateUndoStack.length > MANUAL_STATE_UNDO_MAX) {
       manualStateUndoStack.shift();
     }
   }
 
   function captureManualStateForRedo() {
-    manualStateRedoStack.push(cloneManualStateSegments(manualStateSegments));
+    manualStateRedoStack.push(_snapshotManualEdits());
     if (manualStateRedoStack.length > MANUAL_STATE_UNDO_MAX) {
       manualStateRedoStack.shift();
     }
@@ -182,21 +198,25 @@
   function undoManualState() {
     if (manualStateUndoStack.length === 0) return;
     captureManualStateForRedo();
-    manualStateSegments = manualStateUndoStack.pop();
+    const snapshot = manualStateUndoStack.pop();
     if (manualStateUndoStack.length === 0) {
       manualStripEdited = false;
+      manualStateSegments = _autoBaseline.map((s) => ({ ...s }));
+    } else {
+      _restoreFromSnapshot(snapshot);
     }
     scheduleDrawPass3StateStrip();
-    console.log(`Undo: restored ${manualStateSegments.length} state segment(s).`);
+    console.log(`Undo: restored ${snapshot.length} manual edit(s).`);
   }
 
   function redoManualState() {
     if (manualStateRedoStack.length === 0) return;
     captureManualStateForUndo();
-    manualStateSegments = manualStateRedoStack.pop();
+    const snapshot = manualStateRedoStack.pop();
     manualStripEdited = true;
+    _restoreFromSnapshot(snapshot);
     scheduleDrawPass3StateStrip();
-    console.log(`Redo: restored ${manualStateSegments.length} state segment(s).`);
+    console.log(`Redo: restored ${snapshot.length} manual edit(s).`);
   }
 
   function revealManualStateStrip() {
@@ -377,6 +397,7 @@
     systole: "#666666",
     S2: "#f0a030",
     diastole: "#999999",
+    noisy: "#c0392b",
   };
   const MANUAL_S1_S2_SATURATED = { S1: "#e36f6f", S2: "#f0a030" };
   const MANUAL_S1_S2_FADED = { S1: "#633838", S2: "#735028" };
@@ -647,7 +668,7 @@
     if (!seg) return null;
     const r = seg.reasoning;
     const stateName = seg.state;
-    const labelMap = { S1: "S1", systole: "Systole", S2: "S2", diastole: "Diastole" };
+    const labelMap = { S1: "S1", systole: "Systole", S2: "S2", diastole: "Diastole", noisy: "Noisy" };
     const label = labelMap[stateName] || stateName;
     const tStart = typeof seg.start === "number" ? seg.start.toFixed(2) : "?";
     let lines = [`${label} @ ${tStart}s`];
@@ -1424,7 +1445,7 @@
     };
   }
 
-  // Place a manual S1 or S2 state centered on the current playhead.
+  // Place a manual state centered on the current playhead.
   // Removes any existing segment (manual or regenerated) that overlaps the new span.
   function applyManualState(state) {
     if (!audio) return;
@@ -1432,17 +1453,21 @@
     const tCenter = audio.currentTime;
     const bpm = getBpmSmoothedAtTime(tCenter) || 70;
     const durations = calcPhaseDurations(bpm);
-    const dur = state === "S1" ? durations.s1 : durations.s2;
+    const dur = state === "S1" ? durations.s1 : state === "S2" ? durations.s2 : 0.5;
     const half = dur / 2;
     const start = Math.max(0, tCenter - half);
     const end   = Math.min(TOTAL_DURATION > 0 ? TOTAL_DURATION : 1e9, tCenter + half);
+
+    // Regen only needed when this edit adds an S1/S2 or displaces one already there.
+    const regenNeeded = state === "S1" || state === "S2" ||
+      manualStateSegments.some((s) => (s.state === "S1" || s.state === "S2") && s.end_sec > start && s.start_sec < end);
 
     manualStateSegments = manualStateSegments.filter(
       (seg) => seg.end_sec <= start || seg.start_sec >= end
     );
     manualStateSegments.push({ start_sec: start, end_sec: end, state, source: "manual", bpm_at_mid: bpm });
     manualStateSegments.sort((a, b) => a.start_sec - b.start_sec);
-    finishManualStateEdit(`Manual ${state} placed at t=${tCenter.toFixed(3)}s [${start.toFixed(3)}, ${end.toFixed(3)}]`);
+    finishManualStateEdit(`Manual ${state} placed at t=${tCenter.toFixed(3)}s [${start.toFixed(3)}, ${end.toFixed(3)}]`, regenNeeded, start, end);
   }
 
   // Remove whichever state segment contains the current playhead.
@@ -1454,7 +1479,8 @@
 
     pushManualStateUndo();
     manualStateSegments = manualStateSegments.filter((s) => s !== seg);
-    finishManualStateEdit(`Removed ${seg.state} at t=${t.toFixed(3)}s [${seg.start_sec.toFixed(3)}, ${seg.end_sec.toFixed(3)}]`);
+    const regenNeeded = seg.state === "S1" || seg.state === "S2";
+    finishManualStateEdit(`Removed ${seg.state} at t=${t.toFixed(3)}s [${seg.start_sec.toFixed(3)}, ${seg.end_sec.toFixed(3)}]`, regenNeeded, seg.start_sec, seg.end_sec);
   }
 
   // Flip S1↔S2 for all anchor segments whose center is >= playhead.
@@ -1465,27 +1491,26 @@
     const cutoff = audio.currentTime;
     let flippedCount = 0;
 
-    manualStateSegments = manualStateSegments.filter((seg) => {
-      const center = (seg.start_sec + seg.end_sec) / 2;
-      if (center < cutoff) return true;
-      if (seg.source === "regenerated") return false;
-      return true;
-    });
-
-    manualStateSegments.forEach((seg) => {
-      const center = (seg.start_sec + seg.end_sec) / 2;
-      if (center < cutoff || (seg.state !== "S1" && seg.state !== "S2")) return;
-      seg.state = seg.state === "S1" ? "S2" : "S1";
-      seg.source = "manual";
-      flippedCount++;
-    });
+    // Build new array — use spread instead of in-place mutation to avoid corrupting
+    // any shared object references from _autoBaseline.
+    manualStateSegments = manualStateSegments
+      .filter((seg) => {
+        const center = (seg.start_sec + seg.end_sec) / 2;
+        return center < cutoff || seg.source !== "regenerated";
+      })
+      .map((seg) => {
+        const center = (seg.start_sec + seg.end_sec) / 2;
+        if (center < cutoff || (seg.state !== "S1" && seg.state !== "S2")) return seg;
+        flippedCount++;
+        return { ...seg, state: seg.state === "S1" ? "S2" : "S1", source: "manual" };
+      });
 
     if (flippedCount === 0) {
       manualStateUndoStack.pop(); // no change made
       alert("No S1/S2 states to flip to the right of the playhead.");
       return;
     }
-    finishManualStateEdit(`Flipped ${flippedCount} S1/S2 state(s) right of t=${cutoff.toFixed(3)}s`);
+    finishManualStateEdit(`Flipped ${flippedCount} S1/S2 state(s) right of t=${cutoff.toFixed(3)}s`, true);
   }
 
   function getRegenAnchors() {
@@ -1494,8 +1519,8 @@
       .sort((a, b) => a.start_sec - b.start_sec);
   }
 
-  // Fill gaps between S1/S2 anchors with systole/diastole.
-  // S1→S2 gap → systole; S2→S1 gap → diastole. Other pairings are left empty.
+  // Full file-wide gap rebuild. Used by flip-right, undo/redo restore, and the Regenerate button.
+  // S1→S2 gap → systole; S2→S1 gap → diastole. Other pairings left empty.
   function rebuildRegenGaps() {
     const anchors = getRegenAnchors();
     if (anchors.length < 2) {
@@ -1503,23 +1528,66 @@
       return { ok: false, anchorCount: anchors.length, fillCount: 0 };
     }
 
-    const newSegs = [];
+    const newSegs = _buildFills(anchors);
+
+    // Exclude auto systole/diastole — regenerated fills replace them, avoiding duplicates.
+    const other = manualStateSegments.filter((s) =>
+      s.source !== "regenerated" && s.state !== "S1" && s.state !== "S2" &&
+      !(s.source === "auto" && (s.state === "systole" || s.state === "diastole"))
+    );
+    manualStateSegments = [...anchors, ...newSegs, ...other].sort((a, b) => a.start_sec - b.start_sec);
+    return { ok: true, anchorCount: anchors.length, fillCount: newSegs.length };
+  }
+
+  // Local gap rebuild around a single edit — only touches the window between the nearest
+  // S1/S2 anchors bracketing [editStart, editEnd]. O(local) instead of O(file).
+  function rebuildRegenGapsLocal(editStart, editEnd) {
+    const allAnchors = getRegenAnchors(); // sorted
+    if (allAnchors.length < 2) {
+      manualStateSegments = manualStateSegments.filter((s) => s.source !== "regenerated");
+      return;
+    }
+
+    // Expand window outward to the nearest anchors on each side of the edit.
+    let winStart = editStart, winEnd = editEnd;
+    for (let i = allAnchors.length - 1; i >= 0; i--) {
+      if (allAnchors[i].end_sec <= editStart) { winStart = allAnchors[i].start_sec; break; }
+    }
+    for (let i = 0; i < allAnchors.length; i++) {
+      if (allAnchors[i].start_sec >= editEnd) { winEnd = allAnchors[i].end_sec; break; }
+    }
+
+    // Remove stale fills (both auto and regenerated) inside the window only.
+    manualStateSegments = manualStateSegments.filter((s) => {
+      const inWin = s.end_sec > winStart && s.start_sec < winEnd;
+      if (!inWin) return true;
+      if (s.source === "regenerated") return false;
+      if (s.source === "auto" && (s.state === "systole" || s.state === "diastole")) return false;
+      return true;
+    });
+
+    // Rebuild fills only for anchors inside the window.
+    const winAnchors = allAnchors.filter((a) => a.end_sec > winStart && a.start_sec < winEnd);
+    const newSegs = _buildFills(winAnchors);
+    if (newSegs.length > 0) {
+      manualStateSegments = [...manualStateSegments, ...newSegs].sort((a, b) => a.start_sec - b.start_sec);
+    }
+  }
+
+  function _buildFills(anchors) {
+    const segs = [];
     for (let i = 0; i < anchors.length - 1; i++) {
-      const a = anchors[i];
-      const b = anchors[i + 1];
-      const gapStart = a.end_sec;
-      const gapEnd   = b.start_sec;
+      const a = anchors[i], b = anchors[i + 1];
+      const gapStart = a.end_sec, gapEnd = b.start_sec;
       if (gapEnd <= gapStart) continue;
       let fillState = null;
       if (a.state === "S1" && b.state === "S2") fillState = "systole";
       else if (a.state === "S2" && b.state === "S1") fillState = "diastole";
       if (!fillState) continue;
       const tMid = (gapStart + gapEnd) / 2;
-      newSegs.push({ start_sec: gapStart, end_sec: gapEnd, state: fillState, source: "regenerated", bpm_at_mid: getBpmSmoothedAtTime(tMid) || 70 });
+      segs.push({ start_sec: gapStart, end_sec: gapEnd, state: fillState, source: "regenerated", bpm_at_mid: getBpmSmoothedAtTime(tMid) || 70 });
     }
-
-    manualStateSegments = [...anchors, ...newSegs].sort((a, b) => a.start_sec - b.start_sec);
-    return { ok: true, anchorCount: anchors.length, fillCount: newSegs.length };
+    return segs;
   }
 
   function applyAutoRegenAfterEdit() {
@@ -1530,9 +1598,17 @@
     }
   }
 
-  function finishManualStateEdit(logMsg) {
+  // editStart/editEnd: when provided, uses local regen (fast); otherwise falls back to
+  // full file-wide regen (used by flip-right and other bulk operations).
+  function finishManualStateEdit(logMsg, regenNeeded = true, editStart = null, editEnd = null) {
     revealManualStateStrip();
-    applyAutoRegenAfterEdit();
+    if (regenNeeded) {
+      if (editStart !== null && editEnd !== null) {
+        rebuildRegenGapsLocal(editStart, editEnd);
+      } else {
+        applyAutoRegenAfterEdit();
+      }
+    }
     scheduleDrawPass3StateStrip();
     if (logMsg) console.log(logMsg);
   }
@@ -1621,7 +1697,7 @@
       return;
     }
 
-    const validStates = new Set(["S1", "S2", "systole", "diastole"]);
+    const validStates = new Set(["S1", "S2", "systole", "diastole", "noisy"]);
     const imported = [];
     for (let i = 1; i < lines.length; i++) {
       const cells = lines[i].split(",");
@@ -1630,7 +1706,10 @@
       const state = (cells[iState] || "").trim();
       if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
       if (!validStates.has(state)) continue;
-      const source = iSource !== -1 ? (cells[iSource] || "manual").trim() : "manual";
+      // Normalize "auto" → "manual": imported segments are always user-controlled and must
+      // survive in undo snapshots (which only store "manual" source segments).
+      const rawSource = iSource !== -1 ? (cells[iSource] || "manual").trim() : "manual";
+      const source = rawSource === "auto" ? "manual" : rawSource;
       const bpm    = iBpm !== -1 ? parseFloat(cells[iBpm]) : NaN;
       imported.push({ start_sec: start, end_sec: end, state, source, bpm_at_mid: Number.isFinite(bpm) ? bpm : null });
     }
@@ -1811,6 +1890,11 @@
         e.preventDefault();
         if (labelTypeSelect) labelTypeSelect.value = "S2";
         applyManualState("S2");
+        break;
+      case "Digit3":
+        e.preventDefault();
+        if (labelTypeSelect) labelTypeSelect.value = "noisy";
+        applyManualState("noisy");
         break;
       case "Backspace":
       case "Delete":
