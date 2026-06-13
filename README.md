@@ -21,7 +21,7 @@ _This script includes a spectrogram view for debugging but it is very slow to ge
 ![brave_ykQQ36DQv](https://github.com/user-attachments/assets/7a10acc5-0208-455a-9a3a-0300e5a4d722)
 
 ## Configuration
-All tunable parameters for the `bpm_analysis.py` engine are located in `config.py`
+All tunable parameters for the `pipeline.py` engine are located in `config.py`
 The parameters are organized into logical categories for easier navigation and tuning.
 - Multi-Format Audio Support: Accepts most common media files such as WAV, MP3, M4A, MOV, by converting them to .wav format for analysis.
 
@@ -58,11 +58,47 @@ From the project directory in a terminal:
 ```bash
 python main.py
 ```
-Or use the windowless launcher:
+
+## Command-Line (Headless Batch)
+
+For scripting, automation, or processing many files at once, use `batch_cli.py`. It runs the same analysis pipeline as the GUI, with no window.
+
 ```bash
-python main.pyw
+# Analyze one or more files
+python batch_cli.py path/to/a.wav path/to/b.mp3
+
+# Run 4 files in parallel, write PNGs instead of HTML
+python batch_cli.py --jobs 4 --png --no-html *.wav
+
+# Custom output directory, parse starting BPM from each file name
+python batch_cli.py --output-dir out --bpm-from-filename inputs/*.wav
 ```
-Tip: You can double-click `main.pyw` to launch the app without opening a command prompt.
+
+Defaults come from `ui_settings.json` (the same settings the GUI writes), so the CLI behaves like your last GUI configuration unless you override a setting with a flag. At least one output type must be enabled.
+
+See the full list with:
+```bash
+python batch_cli.py --help
+```
+
+**Common options**
+
+| Flag | Description |
+|------|-------------|
+| `PATH ...` | One or more audio files to analyze (required). |
+| `--jobs N` | Number of parallel worker processes (default 1). |
+| `--output-dir DIR` | Output base directory (default `processed_files`). |
+| `--output-next-to-input` / `--no-output-next-to-input` | Write outputs beside each input vs. under `--output-dir`. |
+| `--bpm FLOAT` | Global starting-BPM hint for all files. |
+| `--bpm-from-filename` / `--no-bpm-from-filename` | Parse starting BPM from each file name. |
+| `--channel {mixed,left,right,all}` | Channel selection (`all` analyzes each stereo channel separately). |
+| `--rename-input-with-bpm` / `--no-...` | After success, rename each input file with a detected-BPM tag. |
+| `--quiet` | Reduce console logging to warnings/errors. |
+| `--algorithm-verbose` / `--no-algorithm-verbose` | Toggle verbose per-pass algorithm logs. |
+
+**Output toggles** (each has a `--no-` counterpart): `--html`, `--png`, `--csv`, `--summary`, `--debug`, `--filtered-wav`, `--working-wav-in-output`, `--spectrogram`, `--fft-profiles`.
+
+**HTML extras**: `--output-all-passes`, `--html-s1-s2-hover-on`, `--html-inline-script` (each with a `--no-` counterpart).
 
 ## Build
 
@@ -74,6 +110,23 @@ pyinstaller BPM_Analyzer.spec
 ```
 
 PyInstaller writes the standalone app under `dist/` (for example `dist/BPM_Analyzer.exe` on Windows).
+
+## Testing
+
+Two layers of tests guard the pipeline:
+
+**Unit tests** — fast, deterministic checks on the pure helper functions (math/logic), no audio fixtures or GUI:
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q
+```
+See [tests/README.md](tests/README.md) for the per-module coverage table.
+
+**Regression runner** — validates the full end-to-end pipeline against manually labelled recordings. For each WAV with a `_manual_state_sequence.csv`, it runs analysis and compares predicted S1 segments against ground truth, reporting per-file error counts (`phase_flip`, `miss`, `extra`):
+```bash
+python run_regression.py [input_dir]   # default input_dir: inputs/Difficulty 3
+```
+A JSON summary is written to `regression_result.json`.
 
 ## Extra Features:
 Import the generated heart rate graph into Blender to easily calculate the change in bpm over time.

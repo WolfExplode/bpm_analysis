@@ -1,61 +1,5 @@
----
-Created on: 2025-12-04
-Last Modified: 2026-06-13
-File Folder: Programming
-tags:
-Parent:
----
-
-# BPM Analysis - Design Notes
-
-> Developer journal for the PCG heartbeat-analysis tool: the reasoning behind design
-> choices, not implementation detail. Reorganized 2026-06-13 into themed sections;
-> all original thoughts preserved verbatim. Dates in _(written ~YYYY-MM-DD)_ tags are
-> derived from git blame (last-touched date of that block) and are approximate.
-
-## Project timeline (overview)
-
-_Derived from git history; see commit log for detail._
-
-- **2025-07** - v3.9 era: basic bpm/time plotting and peak detection.
-- **2026-01** - First documentation pass + regression testing. Prominence / dynamic
-  noise floor, HRV, trapezoid-artifact detection, parameter-tuning rationale, known limitations.
-- **2026-03** - Pairing overhaul: multi-band S1/S2 spectral fingerprint, Weissler expected
-  systolic interval, S1-S2 timing penalty, Lomb-Scargle HRV, hover info + systolic-interval graphs.
-- **2026-06** - Pass 3 state-timeline architecture (noise repair, gap fill) and a codebase
-  cleanup sweep (config single-source `param()`, dead-code removal, unit tests).
-
----
-
-## Contents
-
-1. [Design goals & scope](#design)
-2. [Domain background: PCG & signal processing](#background)
-3. [Preprocessing & envelope](#preprocess)
-4. [S1/S2 spectral discrimination (FFT profiles)](#spectral)
-5. [S1 to S2 pairing & timing](#pairing)
-6. [Contractility & exertion physiology](#contractility)
-7. [Prominence & noise floor](#prominence)
-8. [HRV](#hrv)
-9. [Pass 3: state timeline, correction, noise repair, gap fill](#pass3)
-10. [Trapezoid artifacts](#trapezoid)
-11. [Parameter tuning rationale](#tuning)
-12. [Known limitations & edge cases](#limitations)
-13. [Optimizations & codebase notes](#codebase)
-14. [Unimplemented / future ideas](#future)
-
----
-
-<a id="design"></a>
-## 1. Design goals & scope
-
-### Design theory  _(written ~2026-01-05)_
-The goal is to take PCG data recorded via consumer household equipment and convert it into usable data. to plot changes in heart rate, beats per minute (bpm) over time. Normally, clinical PCG data is captured via advanced and expensive equipment that may not be easily accessible to the general public such as digital stethoscopes etc. My goal is to extract information by using a algorithm to compensate for inadequate hardware. 
-
-The script will track bpm over time like a heart rate monitor, but using a recording of a patient's heartbeat instead. The resulting plot should accurately reflect fast changes in heart rate.
-
-I don't like the idea of using a `start_bpm_hint` as a user input since it makes batch processing impossible. I want the algorithm to be automatic and independent. 
-In a ideal world, the user should only need to enter a file, press run, and get the data out. All other logic should be handled by the script
+# **BPM Analysis documentation**
+*(and developer notes)*
 
 > [!say]
 > I want to write my code to be "self documenting". I need to decrease the "mental entropy" required to determine if a future change in the code will clash or make previous bits of code redundant or not. Ideally, a lot of these "band aid fixes" that are currently in the code will be replaced with a more robust algorithm if I can come up with the proper solution. 
@@ -63,8 +7,24 @@ In a ideal world, the user should only need to enter a file, press run, and get 
 > To improve maintainability of my codebase, this documentation.md organizes my brainstorming notes. This documentation file will be used to store the entire explanation behind design choices while brief explanations are written in the code as comments. Documentation should be reserved for reasoning and not the specific details on how the idea is implemented. This keeps our documentation flexible to massive algorithm changes with no changes in documentation. 
 > I'm treating the documentation like a developer's journal since I'm currently the only user of the tool. One of the best ways to make my codebase more maintainable is to write documentation to help explain the design decisions that led to the current state of the codebase.
 
+## Disclamer
+This documentation file is to document why something is done, not how. Therefore all references to code in this documentation are examples. How the code is actually written may differ.
+This documentation should not document where and how logic is implemented.
 
-### Design requirements:  _(written ~2026-03-11)_
+
+---
+
+# Design goals & scope
+The goal is to take PCG data recorded via consumer household equipment and convert it into usable data. to plot changes in heart rate, beats per minute (bpm) over time. Normally, clinical PCG data is captured via advanced and expensive equipment that may not be easily accessible to the general public such as digital stethoscopes etc. My goal is to extract information by using a algorithm to compensate for inadequate hardware. 
+
+The script will track bpm over time like a heart rate monitor, but using a recording of a patient's heartbeat instead. The resulting plot should accurately reflect fast changes in heart rate.
+
+I don't like the idea of using a `start_bpm_hint` as a user input since it makes batch processing impossible. I want the algorithm to be automatic and independent. 
+In a ideal world, the user should only need to enter a file, press run, and get the data out. All other logic should be handled by the script
+
+
+
+## Design requirements:
 It's important to lay out the design requirements and scope of this project. Initially I just made this project to plot bpm/time but we have since move way beyond that. simply plotting bpm/time now seems trivial.
 Now I'm updating the design requirement to:
 **Find the locations of every S1 and S2 heart sound**
@@ -80,12 +40,8 @@ Future design requirements:
 
 
 ---
-
-<a id="background"></a>
-## 2. Domain background: PCG & signal processing
-
-### General knowledge:  _(written ~2026-01-05)_
-### Phonocardiography (PCG)  _(written ~2026-03-05)_
+# General knowledge:
+## Phonocardiography (PCG)
 **Phonocardiography (PCG)** is a non-invasive technique that records and analyzes heart sounds and murmurs. It uses a sensitive microphone (phonocardiograph) placed on the chest wall to convert acoustic vibrations into electronic signals, which are then displayed as a waveform (phonocardiogram).
 **Key points:**
 - **Purpose**: Provides a visual representation of heart sounds (S1, S2, S3, S4) and any pathological murmurs, allowing detailed timing and frequency analysis.
@@ -102,7 +58,7 @@ As the diaphragm descends, the heart itself shifts slightly in the chest cavity.
 For example, the heart's rotation might simultaneously move the pulmonic valve closer or into a better acoustic alignment with the stethoscope resulting in a S1 being louder or quieter throughout the recording. 
 
 
-### Existing methods  _(written ~2026-03-05)_
+## Existing methods
 It's important to acknowledge and aggregate existing methods to do what I'm trying to accomplish
 ```embed
 title: "Logistic Regression-HSMM-based Heart Sound Segmentation v1.0"
@@ -133,7 +89,7 @@ aspectRatio: "62.5"
 
 
 
-### Comparing my method with existing heart sound segmentation algorithms  _(written ~2026-03-05)_
+## Comparing my method with existing heart sound segmentation algorithms
 [springer2015](https://physionet.org/content/hss/1.0/)
 Springer's pipeline was not made to process PCG information at different/changing heart rates. It expects the bpm to be constant across time.
 - **Springer:** Calculates **one global HR estimate per recording** before segmentation begins. It uses this single value to parameterize the Gaussian duration distributions (S1, Systole, S2, Diastole) for the **entire sequence**.
@@ -144,7 +100,7 @@ Springer's pipeline was not made to process PCG information at different/changin
 https://pmc.ncbi.nlm.nih.gov/articles/PMC7199391/
 
 
-### Existing PCG code/libraries  _(written ~2026-03-05)_
+## Existing PCG code/libraries
 ```embed
 title: "biosppy.signals — BioSPPy 2.2.2 documentation"
 image: "https://biosppy.readthedocs.io/en/stable/_images/math/8045a195c2f29ae10ca11ed1a5cd3dd2801a79d3.png"
@@ -164,7 +120,7 @@ favicon: ""
 
 
 
-### Background Info on time frequency analysis  _(written ~2026-03-05)_
+## Background Info on time frequency analysis
 ```embed
 title: "Time and frequency domains"
 image: "https://i.ytimg.com/vi/fYtVHhk3xJ0/maxresdefault.jpg"
@@ -290,12 +246,8 @@ aspectRatio: "56.25"
 
 
 ---
-
-<a id="preprocess"></a>
-## 3. Preprocessing & envelope
-
-### Explanation of PCG Preprocessing  _(written ~2026-03-05)_
-### Generating our audio envelope:  _(written ~2026-03-05)_
+# Explanation of PCG Preprocessing
+## Generating our audio envelope:
 ### How was the Audio Envelope calculated?
 Previously, the Audio Envelope is abs(filtered audio) then a centered 100ms rolling mean at 500 Hz. Peak detection currently returns the top of that envelope
 #### Trapezoidal waveforms causes the middle of the sound to not be the peak amplitude
@@ -352,14 +304,17 @@ Homomorphic filtering explicitly separates the envelope from the carrier.
 
 After implementing Homomorphic envelope, it doesn't really make a improvement... I think I'll just use Hilbert
 
+### Three-envelope design
 
+The pipeline builds three envelopes from the same audio. The **in-band envelope** is the Hilbert envelope of the heart-sound bandpass. This is where S1 and S2 are expected to be most audable. The **inverse-band (HF) envelope** is taken from the content *above* the heart-sound band. The opposite of where we expect heart sounds to exist. The **noise-removed envelope** is simply the in-band envelope with that HF-noise envelope subtracted out.
+
+Peak detection runs on the noise-removed envelope. 
 
 ---
+# Explanation of algorithm logic decision making
+## S1/S2 spectral discrimination (FFT profiles)
 
-<a id="spectral"></a>
-## 4. S1/S2 spectral discrimination (FFT profiles)
-
-### Find a way to help the algorithm identify S1 and S2  _(written ~2026-03-07)_
+### Find a way to help the algorithm identify S1 and S2
 [Transfer Learning in Heart Sound Classification using Mel Spectrogram](https://cinc.org/archives/2022/pdf/CinC2022-046.pdf)
 > [!think]
 > Right now, the algorithms confidence is artificially boosted
@@ -458,9 +413,7 @@ I want to be able to aggregate the spectral profile data across multiple input f
 
 
 
-### Data-driven S1/S2 frequency separation (FFT profile)  _(~2026-06-08)_
-
-_From Brainstorming.md:_
+### Data-driven S1/S2 frequency separation (FFT profile)
 
 I'm plotting a frequency "profile" for S1 and S2 by taking the already labeled peaks and sampling around that peak with FFT to generate the frequency. Then adding up all the frequency values to average them up and plotting it. This gives me the pure frequency domain profile of my S1 and S2 beats. The goal is to determine the frequency separation for S1 vs S2 beats and use that to affect the algorithm. 
 
@@ -474,17 +427,8 @@ I don't want to restrict to the same range we plot, I want to do this between th
 
 
 
-
-
-
-
 ---
-
-<a id="pairing"></a>
-## 5. S1 to S2 pairing & timing
-
-### Explanation of algorithm logic decision making  _(written ~2026-03-05)_
-### Temporal Features  _(written ~2026-03-07)_
+## Temporal Features
 
 ### Brainstorming:
 > [!think]
@@ -518,6 +462,8 @@ since everything is based on the `Long-Term BPM`, we need to make sure it's accu
 - `instant_bpm`: Raw calculation from last interval, used only to update the belief
 **Why this works:** Allows the algorithm to self-correct. If instant BPM spikes to 240 but long-term is 120, we know we double-counted S2 and can trigger corrective logic.
 
+**Refined across passes, not just within one.** The long-term BPM belief isn't a single fixed quantity — it's the algorithm's *running best estimate of the true BPM-over-time signal*, and the whole pipeline is built around progressively sharpening that estimate. Each pass guesses, then updates its understanding as better evidence arrives: Pass 1 forms a first, rough estimate from sparse high-confidence anchors, and Pass 3 re-estimates it once the full corrected beat set exists. See [Why Pass 3 re-estimates the BPM/time belief](#why-pass-3-re-estimates-the-bpmtime-belief).
+
 ### Dynamic S1-S2 Pairing Window
 **Problem:** At 90 BPM, true S1-S1 interval is 0.67s. But if s1_s2_max_interval is 0.33s, then at 170 BPM (true interval 0.35s), the algorithm merges separate beats.
 **Solution:** The maximum allowed S1-S2 interval is derived from the stable long-term BPM belief rather than the last instantaneous interval.
@@ -534,6 +480,7 @@ Also, if the timing deviates too much from expected, we hard reject the pairing 
 #### How is the expected interval calculated from BPM?
 using the Weissler regression (ET vs HR slope of approximately -1.0 to -1.7 ms per bpm increase)
 for example, At 135 bpm: 300 - (75 × 1.0) ≈ 225 ms 
+
 #### Math for nerds:
 $I_{obs}$ = observed S1–S2 interval in ms
 $I_{exp}$ = expected S1–S2 interval in ms
@@ -567,14 +514,18 @@ aspectRatio: "100"
 ```
 
 
-> [!think] 📌
+> [!think]
 > so at runtime, using the belief BPM to calculate intervals is a bit flawed. belief determines intervals and intervals determine belief. this type of sequential decision making is too greedy. 
 > If I ever update the iterative code/ second pass correction etc. I should pass the calculated Average BPM from the first pass and remove outliers, then make a line of best fit and pass that new assumed BPM into this function to make the algorithm behave more holistically
-- [ ] implemented
+- [x] implemented
+
+**Implemented as the Pass 1 → Pass 2 BPM prior.** Pass 1's anchor-beat BPM curve (outlier-cleaned and smoothed) is handed to Pass 2 as a time-varying prior. At every peak, Pass 2 reads its long-term BPM belief from that curve at the current timestamp, instead of evolving the belief from its own running R-R intervals. The belief no longer feeds off the very decisions it is steering, so a single local mislabel can't drag the pairing window off course for the rest of the run.
+
+Note, this does not make Pass 2 fully holistic. The algorithm trends from local/greedy toward global/holistic as it moves Pass 1 → Pass N.
 
 > [!think]
 > Let's only use weissler, remove the other calculation 
-- [ ] implemented
+- [x] implemented
 
 > [!think]
 > we should make this a function of past S1-S2 pairs instead of BPM. I want to test how that would look. Maybe average the past 10 S1-S2 pairs to get a expected value. 
@@ -587,11 +538,7 @@ aspectRatio: "100"
 
 
 
-### Factors that affect the S1-S2 / systolic interval  _(~2026-06-08)_
-
-_From Brainstorming.md:_
-
-##### Factors that affect S1-S2 interval, systolic interval:
+### Factors that affect the S1-S2 / systolic interval
 Normal beat-to-beat variation in healthy subjects: ~7–11 ms
 Systolic interval remains relatively constant across moderate heart rate changes 60–120 bpm
 At 180–200 bpm, systole must shorten significantly to preserve minimal diastolic filling time, and the heart approaches the limits of mechanical efficiency.
@@ -625,12 +572,33 @@ also increases A2-P2 split, split S2
 
 
 
+## The confidence engine - passes and scoring lenses
+
+### The role of each pass
+The pipeline is a sequence of passes, each with a distinct job:
+1. **Pass 1 - preliminary / anchor pass:** a high-confidence run that only keeps strong S1-S2 pairs ("anchor beats"). From those anchors it forms the algorithm's *initial estimate of the BPM/time belief* and locates the recovery-phase window. It establishes the rhythm context the later passes rely on. (This is a first, deliberately sparse estimate — Pass 3 re-estimates it once the full beat set exists; see [Why Pass 3 re-estimates the BPM/time belief](#why-pass-3-re-estimates-the-bpmtime-belief).)
+2. **Pass 2 - main classification (`PeakClassifier`):** the *initial detective*. It goes through the audio peak by peak, scoring each candidate S1-S2 pair in local context and assigning an initial label (`S1 (Paired)`, `Lone S1`, `Noise`). Greedy and sequential.
+3. **Pass 3 - correction (`run_pass3_correction`):** the *supervisor reviewing the detective's report*. It does not re-score every peak; it builds a dense S1 / systole / S2 / diastole state timeline and looks for the _consequences_ of earlier mistakes - rhythmic discontinuities, long gaps, noise windows - which are only visible after the initial pass is complete, and repairs them holistically.
+4. **Pass 4 - Viterbi (unimplemented):** an optional global decoder, currently disabled (`enable_pass4=False`).
+
+(The original two-pass write-up named `find_heartbeat_peaks` + `_fix_rhythmic_discontinuities`; those names are superseded, but the detective/supervisor split still holds.)
+
+### The four scoring lenses
+The Pass 2 pairing confidence combines several independent checks. Each is deliberately blind to what the others measure, so they catch different failure modes:
+
+**1. Shape check - amplitude / contractility.** Answers "are the relative volumes of the two heart sounds physiologically normal?" Compares the S1/S2 prominence ratio against an expected ratio (from recent accepted pairs, or a BPM power-curve fallback). Boost when S1 is appropriately stronger than S2; penalty when S2 is unexpectedly stronger (often noise or arrhythmia). _Vulnerability:_ it knows nothing about time - it would happily boost two peaks with a great amplitude ratio even a full second apart.
+
+**2. Timing check - S1-S2 interval.** Answers "is the second sound happening quickly enough after the first to be part of the same cardiac cycle?" A V-shaped penalty around the expected systole interval (mean of recent S1-S2 pairs, or Weissler-from-BPM), shrinking as heart rate rises. _Vulnerability:_ it knows nothing about amplitude - it would not penalize two perfectly-timed peaks where the "S2" is a massive noise spike 10x louder than S1.
+
+**3. Stability check - historical performance.** Does not measure the time between the current peaks; instead it looks at the algorithm's recent classification history (the `pairing_ratio` over ~20 beats) to ask "how successful have I been at finding clean pairs lately?" High stability -> small boost to the next attempt; low stability (many Lone S1 / Noise) -> skepticism penalty. This is a macro-level feedback system about overall rhythm quality, not the specific beat being analyzed right now.
+
+**4. Physical-reality check - hard interval bounds.** A fundamental physiological rule applied at the micro-level to every pair: "are these two specific peaks close enough in time to possibly be from the same heartbeat?" The absolute min / max S1-S2 interval (`min_s1_s2_interval_sec`, `s1_s2_interval_cap_sec`) hard-reject implausible pairs regardless of how perfect recent stability has been - correctly identifying that two far-apart peaks must be separate beats.
+
+
 ---
+# Contractility & exertion physiology
 
-<a id="contractility"></a>
-## 6. Contractility & exertion physiology
-
-### As BPM increases, the S1-S2 prominence differential increases  _(written ~2026-01-05)_
+## As BPM increases, the S1-S2 prominence differential increases
 > [!ask]
 > At higher bpm, the loudness of S1 is much louder than S2. why is this?
 > I'm looking at the waveform of a heartbeat recording and I can't see S2 at all. at 200 bpm, S1 Is very loud and prominent. 
@@ -704,7 +672,7 @@ For post Post-Exercise contractility, we can increase the Exponent in this funct
 
 
 
-### Post-Exercise, S1 amplitude remains elevated despite BPM decreasing  _(written ~2026-01-05)_
+## Post-Exercise, S1 amplitude remains elevated despite BPM decreasing
 > [!ask]
 > I'm listening to a audio file and I notice something interesting. This is a recording of the heart during a period exercise and recovery. At rest, the volume of S1 and S2 are very similar, but at higher bpm, S1 is significantly louder than S2. After the workout ends and heart rate decreases but it seems like the contractile force of the heart sill causes S1 to be significantly louder than S2. 
 > 
@@ -762,7 +730,7 @@ While S1 remains augmented, S2 normalization lags because:
 - This prevents noise spikes from being accepted as valid heartbeats even when their timing is plausible.
 
 
-### S2 disappears and reappears in some recordings  _(written ~2026-01-05)_
+## S2 disappears and reappears in some recordings
 **Problem:**
 In some recordings, when bpm increases, S1 becomes so much louder that S2 is not longer audible in the recording at all. 
 When bpm decreases again post exertion, S2 becomes visible again
@@ -774,20 +742,43 @@ right now, the pairing history shows 0% pairs made after bpm starts to decrease 
 Kick-Start Recovery Mechanism feels like a band aid fix to this issue. A more robust solution should be used instead
 
 ### Kick-Start Recovery Mechanism
-**Problem:** When paring ratio reaches, 0 it's very difficult to begin paring again since lack of pairing decreases pairing ratio. This is a negative feedback loop. 
-During recovery, S2 disappears. The algorithm enters a "Lone S1 only" mode and can't exit even when S2 reappears.
-**Solution:** Scan last 4 beats. If pattern is S1→Noise repeated 3+ times, temporarily boost pairing ratio to 0.60.
-**Why this works:** S2 re-emerges as faint peaks that fail normal confidence thresholds. Kick-start gives them a chance to anchor the rhythm again.
+- [x] Deprecated feature
+
+> [! Deprecated]-
+> **Problem:** When paring ratio reaches, 0 it's very difficult to begin paring again since lack of pairing decreases pairing ratio. This is a negative feedback loop. 
+> During recovery, S2 disappears. The algorithm enters a "Lone S1 only" mode and can't exit even when S2 reappears.
+> **Solution:** Scan last 4 beats. If pattern is S1→Noise repeated 3+ times, temporarily boost pairing ratio to 0.60.
+> **Why this works:** S2 re-emerges as faint peaks that fail normal confidence thresholds. Kick-start gives them a chance to anchor the rhythm again.
 
 
 
+## Heart Rate Kinetics
+
+Implemented in `scripts/hr_reactivity.py`; HRR, peak-recovery-rate, and peak-exertion-rate also live in `hrv.py`.
+
+Heart-rate kinetics studies the _time course_ of the HR response at the onset, during, and cessation of exercise. The rise is often modeled with exponential functions to obtain a **time constant** (half-time): a smaller constant means faster acceleration and generally better cardiovascular fitness.
+
+Useful metrics from a bpm/time curve (age and resting HR as inputs):
+- `MaxHR = 220 - age`,  `HRReserve = MaxHR - RestingHR`
+- **Heart Rate Recovery (HRR):** drop in BPM within N seconds after peak exercise. Fast recovery indicates efficient parasympathetic reactivation. `HRR = PeakHR - HR_after_1min`.
+- **Heart Rate Acceleration (HRA / rHRI):** slope of the HR rise at exercise onset, in bpm/s. `HRA = (HR2 - HR1) / (t2 - t1)`. Steeper means a more rapid autonomic response. rHRI is the first-derivative maximum of HR(t).
+
+### Detecting the exercise period
+All timing must be inferred from the bpm/time curve alone:
+- Define `inc_threshold` / `dec_threshold` as functions of age, sex, resting HR. Then `is_increasing = dbpm > inc_threshold`, `is_decreasing = dbpm < dec_threshold`.
+- Find contiguous increasing segments (minimum duration ~30 s) followed by decreasing segments; allow a small "discontinuity duration" so brief intra-exercise dips do not split one effort into two.
+- `t_start`: scan back from `t_peak` until HR < `resting + 0.1*reserve`, or the slope stops being positive for ~10 s. `t_end`: scan forward from `t_peak` until the slope stays negative for ~10 s.
+- "Find the forest from inside the trees": ignore small temporal bumps; treat each large hill as its own exercise period, compute HRA/HRR per hill, then average and report the max.
+
+### Two HRA / two HRR
+Because sustained exercise plateaus asymptotically, measuring t2 at the absolute BPM peak inflates the denominator and flattens the slope. So compute both:
+- `HRA_peak = (HR_peak - HR_start) / (t_peak - t_start)`
+- `HRA_90   = (0.9*HR_peak - HR_start) / (t_90 - t_start)`
+
+and similarly two HRR (measured from `t_peak` vs from `t_end`), to capture the most intense, cleanest segment. Hard physiological limits help disambiguate: e.g. a low measured HRR combined with high HRA and a low resting HR suggests continued lower-intensity exertion (a steady decline) rather than a true recovery phase.
 
 ---
-
-<a id="prominence"></a>
-## 7. Prominence & noise floor
-
-### Explanation of prominence calculation  _(written ~2026-01-05)_
+## Prominence & noise floor
 ### Peak Prominence Calculation
 **Purpose:** Prominence measures how much a peak stands above its local background, making it robust against global volume changes and temporary noise.
 Initially, I only compared peaks by their amplitudes but background noise (the noise floor) needed to be accounted for. 
@@ -815,13 +806,10 @@ It's important to note that prominence is calculated against the troughs adjacen
 > Is it a good idea to have it implemented in this way? I find it a bit questionable but I have no proof that it causes any issues so I'll leave a developer's note here
 
 
-
 ---
+## HRV
 
-<a id="hrv"></a>
-## 8. HRV
-
-### HRV calculation  _(written ~2026-03-07)_
+### HRV calculation
 **[Lomb–Scargle periodogram](https://archive.physionet.org/physiotools/lomb/lomb.html)** for HRV calculation to obtain frequency-domain data such as VLF, LF, HF, LF/HF ratio
 - FFT assumes evenly spaced samples, R–R (beat-to-beat) data is inherently uneven. 
 - (SDNN/RMSSD is time domain data)
@@ -830,13 +818,15 @@ It's important to note that prominence is calculated against the troughs adjacen
 
 
 ---
+## Pass 3: state timeline, correction, noise repair, gap fill
 
-<a id="pass3"></a>
-## 9. Pass 3: state timeline, correction, noise repair, gap fill
+### Why Pass 3 re-estimates the BPM/time belief
 
-### Pass 3 design dialogue (state timeline, noise repair, gap fill)  _(~2026-06-08)_
+By the time Pass 3 runs, the algorithm has a far better picture of the recording than Pass 1 did. Pass 1's BPM/time belief was built from only a sparse set of high-confidence anchor beats — strong, clean pairs, kept deliberately conservative — so it can miss whole stretches of the true rhythm. Pass 3 has the full *corrected* beat set coming out of Pass 2, which is denser and more representative of what actually happened. With better evidence now available, Pass 3 re-estimates the BPM/time belief so it reflects what the algorithm currently knows.
 
-_From Brainstorming.md:_
+This is the same principle the whole pipeline runs on (see [Long-Term BPM vs Instantaneous BPM](#long-term-bpm-vs-instantaneous-bpm)): the BPM/time belief is one evolving best-guess, and every pass refines it as the evidence improves. Conceptually Pass 3 *refines* that belief; in practice it re-derives it from scratch on the corrected beats rather than carrying the old estimate forward.
+
+One thing the re-estimate deliberately ignores: stretches flagged as HF-noise. Those spans are exactly where the beat data is least trustworthy — and they're also where the belief later gets *used* to rebuild missing beats. Feeding the noise back into the belief would corrupt the very estimate meant to repair it, so those spans are excluded.
 
 > [!say]
 > We're doing a lot of outlier detection logic in our code. can you check if outlier logic needs to be refactored so it's more reusable in our code? 
@@ -947,6 +937,13 @@ maybe we should build a more custom pass 3 pipeline that utilizes some of the sa
 > [!think]
 > to identify when stethoscope lifts cause noise, we can do the reverse of our post processing pass and look at all the frequency range outside where we might expect heartbeats to be. This will give us a inverse of our current Hubert envelope where the sum of both envelopes should in theory be the envelope of the entire audio since it encompasses all frequencies. Then if there is a lot of "not so heartbeat sounding noise at high amplitude at this location" then we know that it's likely to be noise. we can use this to generate our continuous noise score emission.
 - [x] implemented
+
+### HF noise-segment detection (inverse-band gate)
+The idea above is now an explicit pass: the preprocessing stage builds an **inverse-band envelope** (energy outside the heart-sound passband), and a gate turns that continuous signal into discrete "this span is noise" intervals that Pass 3 can act on.
+
+**Why outside the band:** real heart sounds live in the low passband. Energy in the out-of-band region (above the taper, `inverse_band_taper_low_hz` -> `inverse_band_taper_high_hz`) is mostly not heartbeat - it is stethoscope handling, clothing rub, bumps, lung/airflow noise. So a loud inverse-band envelope is direct evidence of contamination at that moment, independent of how the passband looks. This is the reverse of the normal envelope: it asks "how much non-heartbeat sound is here?" rather than "how much heartbeat sound is here?"
+
+
 
 
 
@@ -1122,67 +1119,49 @@ in the case where the more sensitive pass doesn't generate any new peaks at that
 
 
 ---
-
-<a id="trapezoid"></a>
-## 10. Trapezoid artifacts
-
-### Trapezoid Artifacts  _(written ~2026-01-05)_
-### Trapezoid Artifact Detection
-**Problem:** A single noise peak causes S1/S2 swap, then another noise swap flips them back. BPM graph shows characteristic "notch."
-**This is what It looks like:**
-https://github.com/WolfExplode/bpm_analysis/blob/main/Examples/R18%E5%BF%83%E9%9F%B31_bpm_plot.html
-![|716x195](https://imgur.com/sIfPq8w.jpg)
-![|716x195](https://imgur.com/b7TKFmS.jpg)
-**It is caused by these failure modes:**
-trapezoid artifact #1
-![|422x267](https://imgur.com/jRHjahH.jpg)
-trapezoid artifact #2
-![|422x246](https://imgur.com/jTFakMB.jpg)
-In this case, this file contains two Trapezoid Artifacts. the first one was caused by some noise or PVC during a period where S1 and S2 prominence is similar.
-This causes the labeling of S1 and S2 to switch until S1 and S2 prominence deviates enough for the algorithm to correct the mistake resulting in the second trapezoid artifact.
-the second trapezoid artifact is caused by peaks labeled LoneS1 followed by S1.
-
-**Solution:**
-📌The solution of this issue is only half implemented. I only implemented a way to identify trapezoid artifacts but not a way to use them to make the script more robust
-
-The human eye can easily identify errors in the BPM/time graph so I implemented a function to allow the script to identify them automatically.
-Detects trapezoid-shaped discontinuities in the average BPM series that are characteristic of a brief extra-beat artifact:
-  - A very fast rise
-  - A sustained plateau
-  - A very fast fall that returns to baseline
-
+## Trapezoid artifacts
+- [x] Deprecated feature
+> [! Deprecated feature]-
+> ### Trapezoid Artifact Detection
+> **Problem:** A single noise peak causes S1/S2 swap, then another noise swap flips them back. BPM graph shows characteristic "notch."
+> **This is what It looks like:**
+> https://github.com/WolfExplode/bpm_analysis/blob/main/Examples/R18%E5%BF%83%E9%9F%B31_bpm_plot.html
+> ![|716x195](https://imgur.com/sIfPq8w.jpg)
+> ![|716x195](https://imgur.com/b7TKFmS.jpg)
+> **It is caused by these failure modes:**
+> trapezoid artifact #1
+> ![|422x267](https://imgur.com/jRHjahH.jpg)
+> trapezoid artifact #2
+> ![|422x246](https://imgur.com/jTFakMB.jpg)
+> In this case, this file contains two Trapezoid Artifacts. the first one was caused by some noise or PVC during a period where S1 and S2 prominence is similar.
+> This causes the labeling of S1 and S2 to switch until S1 and S2 prominence deviates enough for the algorithm to correct the mistake resulting in the second trapezoid artifact.
+> the second trapezoid artifact is caused by peaks labeled LoneS1 followed by S1.
+> 
+> **Solution:**
+> 📌The solution of this issue is only half implemented. I only implemented a way to identify trapezoid artifacts but not a way to use them to make the script more robust
+> 
+> The human eye can easily identify errors in the BPM/time graph so I implemented a function to allow the script to identify them automatically.
+> Detects trapezoid-shaped discontinuities in the average BPM series that are characteristic of a brief extra-beat artifact:
+>   - A very fast rise
+>   - A sustained plateau
+>   - A very fast fall that returns to baseline
 
 ---
 
-<a id="tuning"></a>
-## 11. Parameter tuning rationale
-
-### Parameter Tuning Rationale  _(written ~2026-01-04)_
+### Parameter Tuning Rationale
 Parameters in `config.py` were hand-tuned across multiple PCG recordings from consumer hardware.
 A known limitation: tightening a parameter to reduce errors on one file can increase errors on another.
 This is partly unavoidable given how much recording conditions vary (microphone position, movement noise, BPM range).
 If you find yourself re-tuning frequently, the underlying algorithm is probably not robust enough for that class of recording -- see the "Known Limitations" section.
 
-### Noise Floor Parameters
-- `trough_rejection_multiplier=4.0`: Reject troughs >4x draft floor. Calibrated to keep physiological troughs while rejecting movement artifacts.
-- `noise_window_sec=4`: Rolling window for noise floor. Long enough to smooth out temporary noise, short enough to track gradual changes in background noise.
-### Confidence Thresholds
-- `pairing_confidence_threshold=0.55`: Empirically determined. Lower values increase false pairs; higher values miss faint S2s.
-- `lone_s1_confidence_threshold=0.50`: Must be strong enough to avoid noise, but lenient enough to catch valid single beats when S2 is absent.
-### Lookahead Parameters
-- `noise_prominence_threshold=0.35`: Middle peak must be <35% of S1 prominence to be considered skippable. Prevents skipping valid S2s.
-- `enable_lookahead_skipping=True`: Master switch because lookahead is aggressive. Can be disabled for clean recordings.
+
 
 
 
 ---
+# Known limitations & edge cases
 
-<a id="limitations"></a>
-## 12. Known limitations & edge cases
-
-### Known Limitations & Edge Cases  _(written ~2026-01-04)_
-
-### Sequential Decision Making
+## Sequential Decision Making
 Currently, peak labeling is assigned locally and greedily as each peak is classified based on immediate context.
 **The problem**: A local decision can force suboptimal future choices. If you label a weak peak as S1, you may miss a stronger S1-S2 pair just milliseconds later.
 The majority of the issues in our algorithm come from sequential decision making. If only there was a way to give our code a more holistic view. 
@@ -1221,7 +1200,7 @@ aspectRatio: "56.25"
 
 
 
-### Cold Start Problem
+## Cold Start Problem
 The cold start is a consequence of sequential decision making
 **Issue:** First 4 seconds often misclassified because long_term_bpm hasn't stabilized. 
 **Workaround:** Provide `start_bpm_hint` when possible. The `_kickstart_check` helps but isn't perfect.
@@ -1250,7 +1229,7 @@ In this case, the very first peak was mislabeled as Lone S1 while it was S2. Sin
 
 
 
-### Noisy audio
+## Noisy audio
 There's no real way to solve this issue... just don't input noisy audio I guess
 
 ### Heartbeat audio with Arrhythmia/PVCs
@@ -1275,11 +1254,9 @@ There's no real way to solve this issue... just don't input noisy audio I guess
 
 
 ---
+# Optimizations & codebase notes
 
-<a id="codebase"></a>
-## 13. Optimizations & codebase notes
-
-### Optimizations:  _(written ~2026-01-04)_
+## Optimizations:
 60% of the script's runtime is conversion time, which is fundamentally unavoidable because it's dominated by FFmpeg decoding the compressed MP4 audio stream
 Attempting to optimize the remaining 40% of our script's runtime seems kinda silly in comparison...
 **Decode time dominates because:**
@@ -1290,12 +1267,9 @@ Attempting to optimize the remaining 40% of our script's runtime seems kinda sil
 
 
 
-### Notes about the current state of my codebase  _(written ~2026-01-05)_
-Let's do a **Codebase audit**
+### Notes about the current state of my codebase
 
-So far, our code has
-**Technical debt**: 
-If I can find a better solution these band aid fixes would not be here: (e.g., "kick-start" recovery mechanisms, cascade resets)
+
 
 
 
@@ -1356,11 +1330,7 @@ The code has several issues that don't fundamentally change the bpm estimation:
 
 
 ---
-
-<a id="future"></a>
-## 14. Unimplemented / future ideas
-
-### Unimplemented/Incomplete Ideas:  _(written ~2026-01-05)_
+# Unimplemented / future ideas
 
 > [!think]
 > I mean, if you really just want a accurate enough bpm/time graph, we can just plot all R-R intervals, remove the outliers and plot a line of best fit
@@ -1399,7 +1369,7 @@ what if we have a interactive way for the user to correct the peak labeling outp
 
 
 
-### The S1-S2 interval changes post exertion
+## The S1-S2 interval changes post exertion
 I'm listening to another audio file and I make another observation. This is a recording the heart during a period exertion and recovery
 
 The S1-S2 interval is the time between S1 and S2, Systolic Time Interval (STI). This should logically decrease as heart rate increases. 
@@ -1458,7 +1428,7 @@ I was considering this but I can no longer find a example of the issue this is d
 
 
 
-### Split S2 
+## Split S2 
 Split S2 visible in the Hilbert transform waveform envelope:
 ![|1018x182](https://imgur.com/dm8zzsY.jpg)
 
@@ -1482,7 +1452,7 @@ In some files with low noise and a prominent S2 peak(s), it's easy to identify a
 
 
 
-### Breathing:
+## Breathing:
 #### How Heavy Breathing Modifies Heart Sounds
 **During Inspiration:**
 - Increased venous return causes right ventricular preload to increase
@@ -1547,7 +1517,7 @@ By looking at the noise floor and toughs, we can clearly see the affect of breat
 
 
 
-### Modeling Heart contractility
+## Modeling Heart contractility
 Regarding The idea of contractile force, what if we could display how hard the heart contracts by examining the amplitude deviation between S1 and S2 and mapping a trend.
 
 Nah but that depends on how the audio is recorded. just because S1 is louder than S2 in this recording, doesn't specifically mean that the heart is contracting strongly. 
@@ -1590,7 +1560,7 @@ Contractility can also be used to visualize RSA.
 
 ``` title:"Mermaid diagram for algorithm's logic flow"
 flowchart TD
-    %% Input Stage
+    %% Input
     A[Input Audio File] --> B{Is .wav?}
     B -- NO --> C[Convert to WAV via FFmpeg]
     B -- YES --> D
@@ -1598,134 +1568,125 @@ flowchart TD
 
     %% Stage 1: Preprocessing
     subgraph Stage1[Stage 1: Preprocessing]
-        D[Resample & Bandpass Filter] --> D1{Hum removal\nenabled?}
-        D1 -- YES --> D2[Detect & Notch-Filter\nStationary Hum]
+        D[Resample & Bandpass Filter] --> D1{Hum removal enabled?}
+        D1 -- YES --> D2[Detect & Notch-Filter Stationary Hum]
         D1 -- NO --> E
         D2 --> E
-        E[Extract Hilbert Envelope] --> E1[Extract Multi-Band\nS1 & S2 Band Envelopes]
-        E1 --> F[Find All Potential Troughs]
-        F --> G{Enough troughs?\n>= 5}
-        G -- YES --> G1[Calculate Dynamic Noise Floor\n& Sanitize Troughs]
-        G -- NO --> G2[Use Static Noise Floor\nFallback]
+        E[Extract Hilbert Envelope of bandpass] --> E1[Extract Inverse-Band HF Envelope and Noise-Removed Envelope]
+        E1 --> E2[Detect HF Noise Event Segments: gate + merge + pad]
+        E2 --> F[Find Potential Troughs]
+        F --> G{Enough troughs >= 5?}
+        G -- YES --> G1[Dynamic Noise Floor & Sanitize Troughs]
+        G -- NO --> G2[Static Noise Floor Fallback]
         G1 --> H
         G2 --> H
-        H[Find Raw Peaks Above Noise Floor]
+        H[Find Raw Peaks Above Noise Floor & Refine to Center-of-Mass]
     end
-
     H --> I
 
-    %% Stage 2: Preliminary Pass
-    subgraph Stage2[Stage 2: Preliminary Pass]
-        I[Run High-Confidence PeakClassifier\npairing threshold elevated] --> I2[Extract Anchor Beats]
-        I2 --> I3{Anchor beats\n>= 10?}
-        I3 -- YES --> I4[Estimate Global BPM\nfrom Median R-R]
-        I3 -- NO --> I5[Use start_bpm_hint\nor Default 80 BPM]
+    %% Stage 2: Pass 1 - Preliminary / Anchor Pass
+    subgraph Stage2[Stage 2: Pass 1 - Preliminary / Anchor Pass]
+        I[Run High-Confidence PeakClassifier, elevated pairing threshold] --> I2[Extract Anchor Beats]
+        I2 --> I3{Anchor beats >= 10?}
+        I3 -- YES --> I4[Estimate Global BPM from median R-R]
+        I3 -- NO --> I5[Use start_bpm_hint or default]
         I4 --> I6
         I5 --> I6
-        I6[Detect Peak BPM Time\n& Recovery Phase Window]
+        I6[Build Pass 1 BPM curve prior + Detect Peak-BPM Time & Recovery Window]
     end
-
     I6 --> J
 
-    %% Stage 3: Main Classification Loop
-    subgraph Stage3[Stage 3: Main Classification Loop]
-        J[Initialize PeakClassifier\nwith BPM & recovery context] --> M
-
-        M{More peaks\nremaining?} -- NO --> ZZ[Return S1 peaks,\nAll Raw Peaks, Debug Info]
-        M -- YES --> K[Calculate Pairing Ratio\nfrom recent beat history]
-        K --> L[Kick-Start Check:\nif stuck in Lone S1 mode,\ntemporarily boost pairing ratio]
-        L --> Mlast{Is last peak?}
-        Mlast -- YES --> Ylast[Label as Lone S1 Last] --> Z
-        Mlast -- NO --> N[Get Current Peak & Next Peak]
-
-        N --> O{Lookahead enabled &\nweak middle peak present?}
-        O -- YES --> O1{Middle peak below\nskip threshold?}
-        O1 -- YES --> O2[Skip Middle: label as Noise\nPair current & next+1] --> Z
+    %% Stage 3: Pass 2 - Main Classification Loop
+    subgraph Stage3[Stage 3: Pass 2 - Main Classification Loop]
+        J[Init PeakClassifier with BPM prior & recovery context] --> M
+        M{More peaks?} -- NO --> ZZ[Return S1 peaks, raw peaks, S1-S2 pairs, debug]
+        M -- YES --> K[Pairing Ratio from recent beat history]
+        K --> L[Kick-Start: if stuck in Lone-S1 mode, boost pairing ratio]
+        L --> Mlast{Last peak?}
+        Mlast -- YES --> Ylast[Label Lone S1 Last] --> Z
+        Mlast -- NO --> N[Current & Next peak]
+        N --> O{Lookahead: weak middle peak?}
+        O -- YES --> O1{Below skip threshold?}
+        O1 -- YES --> O2[Skip middle as Noise; pair current & next+1] --> Z
         O1 -- NO --> P
         O -- NO --> P
-
-        P[Attempt S1-S2 Pairing] --> P1{Min S1-S2 interval\nconstraint met?}
-        P1 -- NO: too close --> S
+        P[Attempt S1-S2 Pairing] --> P1{Min S1-S2 interval met?}
+        P1 -- NO, too close --> S
         P1 -- YES --> P2["Score Confidence:
-1. Base timing score
-2. Contractility / S1:S2 ratio
-3. Multi-band spectral fingerprint
-4. Stability history adjustment
-5. V-shape interval penalty
-6. Forward-look penalty"]
-        P2 --> Q{Confidence >=\npairing threshold?}
-
-        Q -- YES --> R[Label as S1 Paired + S2 Paired\nUpdate interval & contractility history]
+1. Timing base score
+2. Contractility S1-to-S2 prominence ratio
+3. Stability history adjustment
+4. V-shape interval penalty
+5. Forward-look penalty"]
+        P2 --> Q{Confidence >= threshold?}
+        Q -- YES --> R[Label S1 Paired + S2 Paired; update interval & contractility history]
         Q -- NO --> S
-
         S["Validate Lone S1:
-- Rhythm plausibility check
-- Amplitude vs recent S1 history
-- Forward BPM spike check"] --> U{Lone S1 score\n>= threshold?}
-        U -- YES --> V[Label as Validated Lone S1]
-        U -- NO --> W{Consecutive rejections\n>= cascade threshold?}
-        W -- YES --> X[Label as Cascade Lone S1\nReset rejection counter]
-        W -- NO --> Y[Label as Noise]
-
+- rhythm plausibility
+- amplitude vs recent S1 history
+- forward BPM-spike check"] --> U{Lone S1 >= threshold?}
+        U -- YES --> V[Label Validated Lone S1]
+        U -- NO --> W{Consecutive rejections >= cascade?}
+        W -- YES --> X[Label Cascade Lone S1; reset counter]
+        W -- NO --> Y[Label Noise]
         R --> Z[Update Long-Term BPM Belief]
         V --> Z
         X --> Z
         Y --> Z
         Z --> M
     end
-
     ZZ --> AA
 
-    %% Stages 4 & 5: Correction & Refinement
-    subgraph Stage4["Stages 4 & 5: Correction & Refinement"]
-        AA["Stage 4: Rhythm Correction
-Remove too-close adjacent S1s
-Keep higher amplitude"] --> BB
-
-        BB["Stage 5: Fix Rhythmic Discontinuities
-Iteration start"] --> BB1["Pass 1: Find Long Gaps
-Search noise-labeled peaks for
-strong missed S1-S2 pairs and promote them"]
-        BB1 --> BB4["Pass 2: Find Short Conflicts
-Remove weaker of adjacent S1 pair"]
-        BB4 --> BB6{Corrections made\nthis pass?}
-        BB6 -- "YES: iterate up to 5x" --> BB
-        BB6 -- "NO: stable" --> CC[Final Corrected S1 Peaks & Debug Info]
+    %% Stage 4: Pass 3 - Dense State-Timeline Correction
+    subgraph Stage4[Stage 4: Pass 3 - Dense State-Timeline Correction]
+        AA[Seed S2 from Pass 2 pairs, else nominal fallback] --> AB[Build BPM prior from clean R-R, excluding HF-noise spans]
+        AB --> AC[Paint dense S1 / systole / S2 / diastole timeline via super-Gaussian transient edges]
+        AC --> AD{Noise repair on & HF-noise windows exist?}
+        AD -- YES --> AE[Clear cardiac labels in HF-noise windows; rebuild full cycle from BPM prior]
+        AD -- NO --> AF
+        AE --> AF[Detect large-gap / quiet windows once]
+        AF --> AG{Gap > labeling threshold?}
+        AG -- YES --> AH[Re-run sensitive peak detection in gap; classify Pass-2 style; paint states]
+        AG -- NO --> AI{Gap-state insert enabled?}
+        AI -- YES --> AJ[Clear & rebuild states in gap from BPM prior; optional snap to recovered peaks]
+        AI -- NO --> AK
+        AH --> AK
+        AJ --> AK
+        AK[Trim diastole ends on next S1; emit state labels, boundaries & measured systole/diastole curves]
     end
+    AK --> P4{enable_pass4?}
+    P4 -- YES --> P4V[Pass 4: Viterbi holistic decode, currently gated off] --> GUARD
+    P4 -- NO --> GUARD
 
-    CC --> GUARD{>= 2 S1 peaks\ndetected?}
-    GUARD -- NO --> ABORT[Return None:\nInsufficient peaks warning]
+    GUARD{>= 2 S1 peaks?}
+    GUARD -- NO --> ABORT[Return None: insufficient peaks]
     GUARD -- YES --> DD
 
-    %% Stage 6: Final Metrics & Outputs
-    subgraph Stage5[Stage 6: Final Metrics & Outputs]
-        DD[Calculate Smoothed BPM Series] --> DD1[Detect Trapezoid Artifacts]
+    %% Stage 5: Final Metrics & Outputs
+    subgraph Stage5[Stage 5: Final Metrics & Outputs]
+        DD[Smoothed BPM series from S1 state-label starts or peaks] --> DD1[Detect Trapezoid Artifacts]
         DD1 --> DD2[Find Major HR Inclines & Declines]
-        DD2 --> DD3["Calculate HRR
-Peak Recovery Rate
-Peak Exertion Rate"]
-        DD3 --> DD4["Calculate Windowed HRV
-RMSSD & SDNN per window"]
-        DD4 --> DD5{Frequency domain\nHRV enabled?}
-        DD5 -- YES --> DD6["Lomb-Scargle Periodogram
-LF / HF / VLF / LF:HF ratio"]
-        DD5 -- NO --> EE
-        DD6 --> EE
-
-        EE{Manual labels\nCSV found?}
-        EE -- YES --> EE1[Compare predictions vs manual labels\nAppend to regression log]
-        EE -- NO --> FF
-        EE1 --> FF
-
-        FF["Generate Outputs
-based on output options"]
-        FF --> FF1[HTML Interactive Plot\nwith audio sync & spectrogram]
+        DD2 --> DD3[HRR + Peak Recovery Rate + Peak Exertion Rate]
+        DD3 --> DD4[Windowed HRV: RMSSD & SDNN per window]
+        DD4 --> DD5{Freq-domain HRV enabled?}
+        DD5 -- YES --> DD6[Lomb-Scargle: LF / HF / VLF / LF:HF]
+        DD5 -- NO --> FF
+        DD6 --> FF
+        FF[Generate Outputs per output_options]
+        FF --> FF1[HTML Interactive Plot: audio sync + spectrogram + state strip]
         FF --> FF2[PNG Static Image]
         FF --> FF3[CSV Data Export]
-        FF --> FF4["Analysis Summary
-& Debug Chronological Log"]
+        FF --> FF4[Analysis Summary + Chronological Debug Log]
         FF --> FF5[Filtered WAV]
+        FF --> FF6[S1/S2 FFT Profiles HTML]
     end
 ```
 
----
+
+
+
+
+
+
+
+
