@@ -151,22 +151,19 @@
   // Manual state segments: [{start_sec, end_sec, state, source, bpm_at_mid}, ...]
   // Seeded from Pass 3 algorithm labels (source "auto"); user edits use source "manual".
   //
-  // Performance note: _autoBaseline is an immutable reference — never mutated, never cloned.
-  // Undo snapshots store only "manual" source segments (the user's explicit placements),
-  // which are tiny even for long files. Auto and regenerated segments are always re-derived.
+  // _autoBaseline is an immutable reference — never mutated, never cloned.
+  // Undo/redo stacks store commands (not snapshots), so each entry is O(1) or O(local).
+  // Fills (systole/diastole) are always re-derived and never stored in commands.
   const _autoBaseline = pass3SegmentsToManual(_initialPass3ForManual);
   let manualStateSegments = _autoBaseline.map((s) => ({ ...s }));
   let manualStripEdited = false;
+  // Each stack entry: { undo: cmd, redo: cmd }
+  // Commands: "place" | "unplace" | "remove" | "restore" | "snapshot"
   const manualStateUndoStack = [];
   const manualStateRedoStack = [];
   const MANUAL_STATE_UNDO_MAX = 50;
 
-  function _snapshotManualEdits() {
-    // Only snapshot user-placed segments — auto and regenerated are always re-derived on restore.
-    return manualStateSegments.filter((s) => s.source === "manual").map((s) => ({ ...s }));
-  }
-
-  // Rebuild manualStateSegments from the auto baseline + a snapshot of manual edits.
+  // Rebuild manualStateSegments from the auto baseline + an array of manual edits.
   // Manual segments punch holes in the auto baseline; regenerated fills are re-derived after.
   function _restoreFromSnapshot(snapshot) {
     const autoSegs = _autoBaseline
@@ -176,47 +173,100 @@
     rebuildRegenGaps();
   }
 
-  function captureManualStateForUndo() {
-    manualStateUndoStack.push(_snapshotManualEdits());
-    if (manualStateUndoStack.length > MANUAL_STATE_UNDO_MAX) {
-      manualStateUndoStack.shift();
+  // Re-add auto baseline segments in [start, end] not covered by any current manual segment.
+  // Called after undoing a place to restore auto segments that were displaced.
+  function _restoreAutoInRange(start, end) {
+    const manual = manualStateSegments.filter((s) => s.source === "manual");
+    const toAdd = _autoBaseline
+      .filter((a) => a.end_sec > start && a.start_sec < end &&
+        !manual.some((m) => m.end_sec > a.start_sec && m.start_sec < a.end_sec))
+      .map((s) => ({ ...s }));
+    if (toAdd.length > 0) {
+      manualStateSegments = [...manualStateSegments, ...toAdd].sort((a, b) => a.start_sec - b.start_sec);
     }
   }
 
-  function captureManualStateForRedo() {
-    manualStateRedoStack.push(_snapshotManualEdits());
-    if (manualStateRedoStack.length > MANUAL_STATE_UNDO_MAX) {
-      manualStateRedoStack.shift();
+  // Execute a single undo/redo command against manualStateSegments.
+  // Commands:
+  //   "place"    — clear [editStart,editEnd], add placed, local regen   (redo of place)
+  //   "unplace"  — remove placed, restore displaced+auto, local regen   (undo of place)
+  //   "remove"   — remove segment, local regen                          (redo of remove)
+  //   "restore"  — add segment back, local regen                        (undo of remove)
+  //   "snapshot" — full snapshot restore + full regen (flip, import)
+  function _applyCmd(cmd) {
+    switch (cmd.type) {
+      case "place":
+        manualStateSegments = manualStateSegments.filter((s) => s.end_sec <= cmd.editStart || s.start_sec >= cmd.editEnd);
+        manualStateSegments.push({ ...cmd.placed });
+        manualStateSegments.sort((a, b) => a.start_sec - b.start_sec);
+        if (cmd.regenNeeded) rebuildRegenGapsLocal(cmd.editStart, cmd.editEnd);
+        break;
+      case "unplace":
+        manualStateSegments = manualStateSegments.filter((s) =>
+          !(s.source === "manual" &&
+            Math.abs(s.start_sec - cmd.placed.start_sec) < 1e-9 &&
+            Math.abs(s.end_sec   - cmd.placed.end_sec)   < 1e-9 &&
+            s.state === cmd.placed.state)
+        );
+        manualStateSegments.push(...cmd.displaced.map((s) => ({ ...s })));
+        manualStateSegments.sort((a, b) => a.start_sec - b.start_sec);
+        _restoreAutoInRange(cmd.editStart, cmd.editEnd);
+        if (cmd.regenNeeded) rebuildRegenGapsLocal(cmd.editStart, cmd.editEnd);
+        break;
+      case "remove":
+        manualStateSegments = manualStateSegments.filter((s) =>
+          !(s.source === "manual" &&
+            Math.abs(s.start_sec - cmd.segment.start_sec) < 1e-9 &&
+            Math.abs(s.end_sec   - cmd.segment.end_sec)   < 1e-9 &&
+            s.state === cmd.segment.state)
+        );
+        if (cmd.regenNeeded) rebuildRegenGapsLocal(cmd.editStart, cmd.editEnd);
+        break;
+      case "restore":
+        manualStateSegments = [...manualStateSegments, { ...cmd.segment }].sort((a, b) => a.start_sec - b.start_sec);
+        if (cmd.regenNeeded) rebuildRegenGapsLocal(cmd.editStart, cmd.editEnd);
+        break;
+      case "snapshot":
+        _restoreFromSnapshot(cmd.snapshot);
+        if (!cmd.snapshot.length) manualStripEdited = false;
+        break;
     }
   }
 
-  function pushManualStateUndo() {
-    captureManualStateForUndo();
+  // Record an edit as a {undo, redo} command pair. Clears the redo stack.
+  function _recordEdit(undoCmd, redoCmd) {
+    manualStateUndoStack.push({ undo: undoCmd, redo: redoCmd });
+    if (manualStateUndoStack.length > MANUAL_STATE_UNDO_MAX) manualStateUndoStack.shift();
     manualStateRedoStack.length = 0;
   }
 
+  // Legacy: used by flip and regenerate (snapshot-based, rare operations).
+  function _snapshotManualEdits() {
+    return manualStateSegments
+      .filter((s) => s.source === "manual" && s.state !== "systole" && s.state !== "diastole")
+      .map((s) => ({ ...s }));
+  }
+
   function undoManualState() {
-    if (manualStateUndoStack.length === 0) return;
-    captureManualStateForRedo();
-    const snapshot = manualStateUndoStack.pop();
-    if (manualStateUndoStack.length === 0) {
-      manualStripEdited = false;
-      manualStateSegments = _autoBaseline.map((s) => ({ ...s }));
-    } else {
-      _restoreFromSnapshot(snapshot);
-    }
+    if (!manualStateUndoStack.length) return;
+    const { undo, redo } = manualStateUndoStack.pop();
+    manualStateRedoStack.push({ undo, redo });
+    if (manualStateRedoStack.length > MANUAL_STATE_UNDO_MAX) manualStateRedoStack.shift();
+    _applyCmd(undo);
+    if (!manualStateUndoStack.length) manualStripEdited = false;
     scheduleDrawPass3StateStrip();
-    console.log(`Undo: restored ${snapshot.length} manual edit(s).`);
+    console.log(`Undo: ${undo.type}`);
   }
 
   function redoManualState() {
-    if (manualStateRedoStack.length === 0) return;
-    captureManualStateForUndo();
-    const snapshot = manualStateRedoStack.pop();
+    if (!manualStateRedoStack.length) return;
+    const { undo, redo } = manualStateRedoStack.pop();
+    manualStateUndoStack.push({ undo, redo });
+    if (manualStateUndoStack.length > MANUAL_STATE_UNDO_MAX) manualStateUndoStack.shift();
+    _applyCmd(redo);
     manualStripEdited = true;
-    _restoreFromSnapshot(snapshot);
     scheduleDrawPass3StateStrip();
-    console.log(`Redo: restored ${snapshot.length} manual edit(s).`);
+    console.log(`Redo: ${redo.type}`);
   }
 
   function revealManualStateStrip() {
@@ -1449,7 +1499,6 @@
   // Removes any existing segment (manual or regenerated) that overlaps the new span.
   function applyManualState(state) {
     if (!audio) return;
-    pushManualStateUndo();
     const tCenter = audio.currentTime;
     const bpm = getBpmSmoothedAtTime(tCenter) || 70;
     const durations = calcPhaseDurations(bpm);
@@ -1458,14 +1507,24 @@
     const start = Math.max(0, tCenter - half);
     const end   = Math.min(TOTAL_DURATION > 0 ? TOTAL_DURATION : 1e9, tCenter + half);
 
-    // Regen only needed when this edit adds an S1/S2 or displaces one already there.
     const regenNeeded = state === "S1" || state === "S2" ||
       manualStateSegments.some((s) => (s.state === "S1" || s.state === "S2") && s.end_sec > start && s.start_sec < end);
+
+    // Capture displaced manual segments before clearing the range (for undo).
+    const displaced = manualStateSegments.filter(
+      (seg) => seg.source === "manual" && seg.end_sec > start && seg.start_sec < end
+    ).map((s) => ({ ...s }));
+
+    const placed = { start_sec: start, end_sec: end, state, source: "manual", bpm_at_mid: bpm };
+    _recordEdit(
+      { type: "unplace", placed, displaced, regenNeeded, editStart: start, editEnd: end },
+      { type: "place",   placed, regenNeeded, editStart: start, editEnd: end }
+    );
 
     manualStateSegments = manualStateSegments.filter(
       (seg) => seg.end_sec <= start || seg.start_sec >= end
     );
-    manualStateSegments.push({ start_sec: start, end_sec: end, state, source: "manual", bpm_at_mid: bpm });
+    manualStateSegments.push(placed);
     manualStateSegments.sort((a, b) => a.start_sec - b.start_sec);
     finishManualStateEdit(`Manual ${state} placed at t=${tCenter.toFixed(3)}s [${start.toFixed(3)}, ${end.toFixed(3)}]`, regenNeeded, start, end);
   }
@@ -1477,9 +1536,13 @@
     const seg = manualStateSegments.find((s) => t >= s.start_sec && t < s.end_sec) || null;
     if (!seg) return;
 
-    pushManualStateUndo();
-    manualStateSegments = manualStateSegments.filter((s) => s !== seg);
     const regenNeeded = seg.state === "S1" || seg.state === "S2";
+    const storedSeg = { ...seg };
+    _recordEdit(
+      { type: "restore", segment: storedSeg, regenNeeded, editStart: seg.start_sec, editEnd: seg.end_sec },
+      { type: "remove",  segment: storedSeg, regenNeeded, editStart: seg.start_sec, editEnd: seg.end_sec }
+    );
+    manualStateSegments = manualStateSegments.filter((s) => s !== seg);
     finishManualStateEdit(`Removed ${seg.state} at t=${t.toFixed(3)}s [${seg.start_sec.toFixed(3)}, ${seg.end_sec.toFixed(3)}]`, regenNeeded, seg.start_sec, seg.end_sec);
   }
 
@@ -1487,9 +1550,10 @@
   // Clears regenerated segments right of playhead; gaps are refilled automatically.
   function flipManualStatesRight() {
     if (!audio) return;
-    pushManualStateUndo();
     const cutoff = audio.currentTime;
     let flippedCount = 0;
+
+    const snapshotBefore = _snapshotManualEdits();
 
     // Build new array — use spread instead of in-place mutation to avoid corrupting
     // any shared object references from _autoBaseline.
@@ -1506,11 +1570,16 @@
       });
 
     if (flippedCount === 0) {
-      manualStateUndoStack.pop(); // no change made
       alert("No S1/S2 states to flip to the right of the playhead.");
       return;
     }
-    finishManualStateEdit(`Flipped ${flippedCount} S1/S2 state(s) right of t=${cutoff.toFixed(3)}s`, true);
+
+    const snapshotAfter = _snapshotManualEdits();
+    _recordEdit(
+      { type: "snapshot", snapshot: snapshotBefore },
+      { type: "snapshot", snapshot: snapshotAfter }
+    );
+    finishManualStateEdit(`Flipped ${flippedCount} S1/S2 state(s) right of t=${cutoff.toFixed(3)}s`, true, cutoff, Infinity);
   }
 
   function getRegenAnchors() {
@@ -1530,10 +1599,10 @@
 
     const newSegs = _buildFills(anchors);
 
-    // Exclude auto systole/diastole — regenerated fills replace them, avoiding duplicates.
+    // Systole/diastole are always re-derived — drop them all before rebuilding.
     const other = manualStateSegments.filter((s) =>
-      s.source !== "regenerated" && s.state !== "S1" && s.state !== "S2" &&
-      !(s.source === "auto" && (s.state === "systole" || s.state === "diastole"))
+      s.state !== "S1" && s.state !== "S2" &&
+      s.state !== "systole" && s.state !== "diastole"
     );
     manualStateSegments = [...anchors, ...newSegs, ...other].sort((a, b) => a.start_sec - b.start_sec);
     return { ok: true, anchorCount: anchors.length, fillCount: newSegs.length };
@@ -1557,12 +1626,11 @@
       if (allAnchors[i].start_sec >= editEnd) { winEnd = allAnchors[i].end_sec; break; }
     }
 
-    // Remove stale fills (both auto and regenerated) inside the window only.
+    // Remove all fills inside the window — systole/diastole are always re-derived.
     manualStateSegments = manualStateSegments.filter((s) => {
       const inWin = s.end_sec > winStart && s.start_sec < winEnd;
       if (!inWin) return true;
-      if (s.source === "regenerated") return false;
-      if (s.source === "auto" && (s.state === "systole" || s.state === "diastole")) return false;
+      if (s.state === "systole" || s.state === "diastole") return false;
       return true;
     });
 
@@ -1634,7 +1702,6 @@
       return;
     }
 
-    pushManualStateUndo();
     const result = rebuildRegenGaps();
     revealManualStateStrip();
     scheduleDrawPass3StateStrip();
@@ -1650,8 +1717,7 @@
     const rows = [...manualStateSegments]
       .sort((a, b) => a.start_sec - b.start_sec)
       .map((seg) => {
-        const tMid = (seg.start_sec + seg.end_sec) / 2;
-        const bpm = seg.bpm_at_mid ?? getBpmSmoothedAtTime(tMid);
+        const bpm = seg.bpm_at_mid;
         return [
           seg.start_sec.toFixed(3),
           seg.end_sec.toFixed(3),
@@ -1706,10 +1772,10 @@
       const state = (cells[iState] || "").trim();
       if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
       if (!validStates.has(state)) continue;
-      // Normalize "auto" → "manual": imported segments are always user-controlled and must
-      // survive in undo snapshots (which only store "manual" source segments).
-      const rawSource = iSource !== -1 ? (cells[iSource] || "manual").trim() : "manual";
-      const source = rawSource === "auto" ? "manual" : rawSource;
+      // Import is a clean slate: all segments become "manual" regardless of their original
+      // source. Fills (systole/diastole) will be re-derived by regen; S1/S2/noisy become
+      // user-controlled anchors that survive undo snapshots.
+      const source = "manual";
       const bpm    = iBpm !== -1 ? parseFloat(cells[iBpm]) : NaN;
       imported.push({ start_sec: start, end_sec: end, state, source, bpm_at_mid: Number.isFinite(bpm) ? bpm : null });
     }
@@ -1719,9 +1785,14 @@
       return;
     }
 
-    pushManualStateUndo();
+    const snapshotBefore = _snapshotManualEdits();
     manualStateSegments = imported.sort((a, b) => a.start_sec - b.start_sec);
-    finishManualStateEdit(`Imported ${manualStateSegments.length} state segment(s) from CSV.`);
+    finishManualStateEdit(`Imported ${manualStateSegments.length} state segment(s) from CSV.`, false);
+    const snapshotAfter = _snapshotManualEdits();
+    _recordEdit(
+      { type: "snapshot", snapshot: snapshotBefore },
+      { type: "snapshot", snapshot: snapshotAfter }
+    );
   }
 
   if (applyLabelBtn) {
