@@ -28,7 +28,9 @@ import tempfile
 import glob
 from typing import List, Tuple, Dict, Optional
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+sys.path.insert(0, os.path.dirname(_SCRIPT_DIR))  # project root for config, pipeline, etc.
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-sig"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -599,10 +601,48 @@ def run_regression(input_dir: str) -> None:
         ],
     }
 
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "regression_result.json")
+    import datetime
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    json_path = os.path.join(_script_dir, "regression_result.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(f"\nJSON → {json_path}")
+
+    # Lightweight summary — one row per file, no per-error detail.
+    # Used by compare_fixes.py and other tooling; stable when new files are added.
+    small = {
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "input_dir": input_dir,
+        "tolerance_sec": TOLERANCE_SEC,
+        "files": len(file_results),
+        "total_manual_s1": total_manual_s1,
+        "total_errors": total_errors,
+        "error_rate_pct": round(grand_total_rate, 2),
+        "flip_errors": total_flip,
+        "miss_errors": total_miss,
+        "extra_errors": total_extra,
+        "per_file": [
+            {
+                "file": os.path.basename(r["file"]),
+                "subdir": r["subdir"],
+                "manual_s1": r["manual_s1_count"],
+                "errors": r["total_errors"],
+                "extra": r["extra_errors"],
+                "miss": r["miss_errors"],
+                "flip": r["flip_errors"],
+                "error_rate_pct": round(
+                    r["total_errors"] / r["manual_s1_count"] * 100
+                    if r["manual_s1_count"] else 0.0, 1
+                ),
+            }
+            for r in file_results
+        ],
+    }
+    summary_path = os.path.join(_script_dir, "regression_summary.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(small, f, indent=2)
+    print(f"Summary → {summary_path}")
 
 
 # ---------------------------------------------------------------------------

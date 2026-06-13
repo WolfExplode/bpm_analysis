@@ -1519,7 +1519,8 @@ def _pass3_find_gap_windows(
 
         gap_region_lo = int(new_gap_region_lo)
 
-        if gap_region_hi - gap_region_lo < 4:
+        _min_feasible_samples = int(round(float(ivs.get("min_feasible_cycle", 0.24)) * SR))
+        if gap_region_hi - gap_region_lo < max(4, _min_feasible_samples):
             continue
 
         try:
