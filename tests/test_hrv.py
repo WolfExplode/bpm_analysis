@@ -24,7 +24,7 @@ def test_global_mad_mask_empty():
 def test_time_window_mad_mask_local_outlier():
     t = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
     v = np.array([1.0, 2.0, 9.0, 2.0, 1.0])  # spread keeps local MAD > 0
-    keep = hrv._median_mad_keep_mask_time_window(t, v, half_window_sec=2.0, mad_k=2.0)
+    keep = hrv.median_mad_keep_mask_time_window(t, v, half_window_sec=2.0, mad_k=2.0)
     assert not keep[2]
     assert keep[0] and keep[4]
 

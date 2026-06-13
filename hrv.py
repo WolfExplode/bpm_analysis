@@ -21,7 +21,7 @@ def _lomb_frequency_grid() -> Tuple[np.ndarray, np.ndarray]:
     return _LOMB_FREQS, _LOMB_ANGULAR
 
 
-def _median_mad_keep_mask_time_window(
+def median_mad_keep_mask_time_window(
     times_sec: np.ndarray,
     values: np.ndarray,
     half_window_sec: float,
@@ -30,6 +30,9 @@ def _median_mad_keep_mask_time_window(
     """
     Outlier mask: same rule as |t - t_i| <= half_window on sorted time axis,
     using searchsorted for the window bounds (times_sec must be non-decreasing).
+
+    Public: shared local-window MAD filter used by both hrv (BPM scatter) and
+    correction (Pass 3 phase durations); the global variant below stays hrv-internal.
     """
     n = len(values)
     keep = np.ones(n, dtype=bool)
@@ -349,7 +352,7 @@ def compute_pass1_bpm_curve(
     # Outlier removal: keep point if within median ± k*MAD in local window
     half_window_sec = float(param(params, "pass1_bpm_outlier_window_sec"))
     mad_k = float(param(params, "pass1_bpm_outlier_mad_k"))
-    keep = _median_mad_keep_mask_time_window(times_sec, instant_bpm, half_window_sec, mad_k)
+    keep = median_mad_keep_mask_time_window(times_sec, instant_bpm, half_window_sec, mad_k)
     scatter_bpm = np.asarray(instant_bpm[keep], dtype=float)
     scatter_times = np.asarray(times_sec[keep], dtype=float)
 
@@ -396,7 +399,7 @@ def filter_instant_bpm_mad(
     def _apply_local_mad(
         t_in: np.ndarray, v_in: np.ndarray, half_window_sec: float, mad_k: float
     ) -> Tuple[np.ndarray, np.ndarray]:
-        keep = _median_mad_keep_mask_time_window(t_in, v_in, half_window_sec, mad_k)
+        keep = median_mad_keep_mask_time_window(t_in, v_in, half_window_sec, mad_k)
         return t_in[keep], v_in[keep]
 
     # Pass 1: standard local filter

@@ -21,6 +21,7 @@ python -m pytest tests/ -q
 | `test_peak_label_scores.py` | `peak_label_scores` | label-mass clipping, S2-hint logic, final-confidence extraction |
 | `test_hrv.py`               | `hrv`               | MAD outlier masks (incl. MAD==0 keep-all degeneracy), duration clamps, windowed RMSSD/SDNN |
 | `test_viterbi.py`           | `viterbi`           | log-domain decode, forbidden-transition handling, emission/transition normalization |
+| `test_bpm_input_rename.py`  | `bpm_input_rename`  | BPM tag formatting/rounding, trailing-tag strip (legacy + stacked forms), strip idempotence, no false-strip of legit names |
 
 ## Scope (intentional)
 

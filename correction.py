@@ -34,7 +34,7 @@ import pandas as pd
 from scipy.signal import find_peaks
 from classifier import PeakClassifier
 from confidence_engine import calculate_bpm_intervals
-from hrv import _median_mad_keep_mask_time_window, filter_interval_durations_by_limits
+from hrv import median_mad_keep_mask_time_window, filter_interval_durations_by_limits
 from config import param
 
 
@@ -1213,7 +1213,7 @@ def _pass3_clean_duration_series(
         pc.get("systole_outlier_mad_k", param(pc, "s1_s2_outlier_mad_k")),
     ))
     if len(t) >= 2:
-        keep = _median_mad_keep_mask_time_window(t, d, half_win, mad_k)
+        keep = median_mad_keep_mask_time_window(t, d, half_win, mad_k)
         t = t[keep]
         d = d[keep]
 
