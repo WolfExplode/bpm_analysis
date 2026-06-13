@@ -291,6 +291,21 @@ DEFAULT_OUTPUT_OPTIONS = {
     "regression_log": False,
 }
 
+def param(params: dict, key: str):
+    """Return params[key], falling back to DEFAULT_PARAMS as the single source of truth.
+
+    Prefer this over `params.get(key, <literal>)` for any key that lives in
+    DEFAULT_PARAMS: a hardcoded literal fallback silently drifts when the
+    config default is retuned, so a partial params dict would then behave
+    differently from a full one. Referencing DEFAULT_PARAMS makes that
+    impossible. An unknown key raises KeyError (fail loud — typo guard that
+    complements validate_params).
+    """
+    if key in params:
+        return params[key]
+    return DEFAULT_PARAMS[key]
+
+
 # Keys already warned about — each unknown key is logged once per process, not once per file.
 _warned_unknown_param_keys: set = set()
 

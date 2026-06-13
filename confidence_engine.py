@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any, Callable
+from config import param
 from peak_utils import (
     PeakType,
     get_peak_prominence_details,
@@ -126,16 +127,16 @@ def calculate_bpm_intervals(bpm: float, params: Dict) -> Dict[str, float]:
     bpm = float(max(bpm, 1e-6))
     rr_interval = 60.0 / bpm
 
-    min_frac = params.get("min_s1_s2_interval_rr_fraction", 0.35)
-    min_abs = params.get("min_s1_s2_interval_sec", 0.15)
-    cap_abs = params.get("s1_s2_interval_cap_sec", 0.4)
+    min_frac = param(params, "min_s1_s2_interval_rr_fraction")
+    min_abs = param(params, "min_s1_s2_interval_sec")
+    cap_abs = param(params, "s1_s2_interval_cap_sec")
 
     s1_s2_min = max(rr_interval * min_frac, min_abs)
 
     # Weissler-style: ejection time shortens linearly with rising BPM
-    ref_et_ms = params.get("s1_s2_expected_weissler_ref_et_ms", 300)
-    ref_bpm = params.get("s1_s2_expected_weissler_ref_bpm", 60)
-    slope = params.get("s1_s2_expected_weissler_slope_ms_per_bpm", 1.0)
+    ref_et_ms = param(params, "s1_s2_expected_weissler_ref_et_ms")
+    ref_bpm = param(params, "s1_s2_expected_weissler_ref_bpm")
+    slope = param(params, "s1_s2_expected_weissler_slope_ms_per_bpm")
     expected_et_ms = ref_et_ms - slope * (bpm - ref_bpm)
     s1_s2_nominal = np.clip(expected_et_ms / 1000.0, min_abs, cap_abs)
 
@@ -145,20 +146,20 @@ def calculate_bpm_intervals(bpm: float, params: Dict) -> Dict[str, float]:
     # Diastole plausibility bounds (S2→next S1).
     # min: diastole can compress at high BPM but needs some filling time.
     # max: only relevant for dropout/gap detection (large multiples of nominal).
-    diastole_min_frac = float(params.get("min_diastole_nominal_frac", 0.35))
-    diastole_max_frac = float(params.get("max_diastole_nominal_frac", 2.0))
-    diastole_min_abs = float(params.get("min_diastole_sec", 0.08))
+    diastole_min_frac = float(param(params, "min_diastole_nominal_frac"))
+    diastole_max_frac = float(param(params, "max_diastole_nominal_frac"))
+    diastole_min_abs = float(param(params, "min_diastole_sec"))
     diastole_min = max(diastole_min_abs, s2_s1_nominal * diastole_min_frac)
     diastole_max = s2_s1_nominal * diastole_max_frac
 
     # S1 and S2 acoustic event duration bounds — BPM-independent physiological constants.
     # These are how long the heart sound impulse itself lasts, not the inter-sound intervals.
-    s1_min = float(params.get("s1_min_sec", 0.010))
-    s1_nominal = float(params.get("s1_nominal_sec", 0.040))
-    s1_max = float(params.get("s1_max_sec", 0.080))
-    s2_min = float(params.get("s2_min_sec", 0.010))
-    s2_nominal = float(params.get("s2_nominal_sec", 0.030))
-    s2_max = float(params.get("s2_max_sec", 0.060))
+    s1_min = float(param(params, "s1_min_sec"))
+    s1_nominal = float(param(params, "s1_nominal_sec"))
+    s1_max = float(param(params, "s1_max_sec"))
+    s2_min = float(param(params, "s2_min_sec"))
+    s2_nominal = float(param(params, "s2_nominal_sec"))
+    s2_max = float(param(params, "s2_max_sec"))
 
     # Smallest span that can physically hold one complete cardiac cycle at minimum compression.
     min_feasible_cycle = s1_min + s1_s2_min + s2_min + diastole_min
@@ -205,8 +206,8 @@ def hr_reactivity_factor(hr: float, hr_max: float, hr_rest: float, C: float = RE
 def update_long_term_bpm(new_rr_sec: float, current_long_term_bpm: float, params: Dict) -> float:
     """Updates the long-term BPM belief from a new R-R interval. Only used when no pass 1 BPM prior (e.g. pass 1 run)."""
     instant_bpm = 60.0 / new_rr_sec
-    lr = params.get("bpm_belief_learning_rate", 0.05)
-    max_change_per_beat = params.get("bpm_belief_max_change_per_beat", 3.0)
+    lr = param(params, "bpm_belief_learning_rate")
+    max_change_per_beat = param(params, "bpm_belief_max_change_per_beat")
     target_bpm = ((1 - lr) * current_long_term_bpm) + (lr * instant_bpm)
     max_change = max_change_per_beat * new_rr_sec
     proposed_change = target_bpm - current_long_term_bpm
@@ -222,11 +223,11 @@ def update_long_term_bpm(new_rr_sec: float, current_long_term_bpm: float, params
 
 def _contractility_expected_ratio_bpm(bpm: float, params: Dict) -> float:
     """Expected S1/S2 ratio from BPM using a power curve (non-linear; steep rise at low BPM then flatter)."""
-    bpm_min = params.get("contractility_bpm_min", 60)
-    bpm_max = params.get("contractility_bpm_max", 200)
-    low_ratio = params.get("contractility_low_ratio", 0.9)
-    high_ratio = params.get("contractility_high_ratio", 6.0)
-    exponent = params.get("contractility_power_exponent", 0.7)
+    bpm_min = param(params, "contractility_bpm_min")
+    bpm_max = param(params, "contractility_bpm_max")
+    low_ratio = param(params, "contractility_low_ratio")
+    high_ratio = param(params, "contractility_high_ratio")
+    exponent = param(params, "contractility_power_exponent")
     bpm_clipped = np.clip(bpm, bpm_min, bpm_max)
     t = (bpm_clipped - bpm_min) / max(bpm_max - bpm_min, 1e-9)
     return low_ratio + (high_ratio - low_ratio) * (t ** exponent)
@@ -251,9 +252,9 @@ def adjust_confidence_with_contractility(
     """
     # --- 1. Expected S1/S2: history vs BPM, blended by pair rate in last N seconds ---
     history = getattr(state, "s1_s2_contractility_history", []) if state else []
-    n_use = params.get("contractility_expected_history_count", 10)
+    n_use = param(params, "contractility_expected_history_count")
     min_for_history = max(1, n_use // 2)
-    use_history_flag = params.get("contractility_expected_use_history", True) and len(history) >= min_for_history
+    use_history_flag = param(params, "contractility_expected_use_history") and len(history) >= min_for_history
 
     expected_ratio_bpm = _contractility_expected_ratio_bpm(bpm, params)
     if use_history_flag:
@@ -268,7 +269,7 @@ def adjust_confidence_with_contractility(
     pair_rate = 1.0
     if state is not None and current_time_sec is not None:
         outcomes = getattr(state, "recent_s1_outcomes", [])
-        window_sec = params.get("contractility_pair_rate_window_sec", 5.0)
+        window_sec = param(params, "contractility_pair_rate_window_sec")
         cutoff = current_time_sec - window_sec
         in_window = [(t, p) for t, p in outcomes if t >= cutoff]
         if in_window:
@@ -277,7 +278,7 @@ def adjust_confidence_with_contractility(
 
     if use_history_flag:
         expected_ratio = pair_rate * expected_ratio_history + (1.0 - pair_rate) * expected_ratio_bpm
-        expected_source = f"blend: {pair_rate:.0%} history + {1 - pair_rate:.0%} BPM (pair rate in last {params.get('contractility_pair_rate_window_sec', 5):.0f}s)"
+        expected_source = f"blend: {pair_rate:.0%} history + {1 - pair_rate:.0%} BPM (pair rate in last {param(params, 'contractility_pair_rate_window_sec'):.0f}s)"
     else:
         expected_ratio = expected_ratio_bpm
         expected_source = "BPM power curve"
@@ -286,12 +287,12 @@ def adjust_confidence_with_contractility(
     actual_ratio = s1_prominence / (s2_prominence + 1e-9)
 
     # --- 3. Asymmetric piecewise-linear curve: L2, L1, R_exp, R1, R2 ---
-    a_low = params.get("contractility_zero_crossing_low", 0.2)
-    a_high = params.get("contractility_zero_crossing_high", 0.2)
-    r_low = params.get("contractility_penalty_ramp_fraction_low", 0.4)
-    r_high = params.get("contractility_penalty_ramp_fraction_high", 0.4)
-    boost_max = params.get("contractility_boost_max", 0.10)
-    penalty_max = params.get("contractility_penalty_max", 0.30)
+    a_low = param(params, "contractility_zero_crossing_low")
+    a_high = param(params, "contractility_zero_crossing_high")
+    r_low = param(params, "contractility_penalty_ramp_fraction_low")
+    r_high = param(params, "contractility_penalty_ramp_fraction_high")
+    boost_max = param(params, "contractility_boost_max")
+    penalty_max = param(params, "contractility_penalty_max")
 
     L2 = expected_ratio * (1.0 - r_low)
     L1 = expected_ratio * (1.0 - a_low)
@@ -384,7 +385,7 @@ def _try_lone_s1_missed_beat_rhythm(
     If the k >= 1 raw peaks immediately before the current peak are all NOISE, treat k missed
     beats: expect span last_S1→current ≈ (k+1)× expected RR, score (span/(k+1)) vs expected RR.
     """
-    tol = float(params.get("lone_s1_missed_beat_tolerance_frac", 0.22))
+    tol = float(param(params, "lone_s1_missed_beat_tolerance_frac"))
     if expected_rr_sec <= 1e-12:
         return None
 
@@ -514,8 +515,8 @@ def calculate_lone_s1_confidence(
     )
 
     # --- 3. Combine Scores with Weights ---
-    rhythm_weight = params.get('lone_s1_rhythm_weight', 0.65)
-    amplitude_weight = params.get('lone_s1_amplitude_weight', 0.35)
+    rhythm_weight = param(params, "lone_s1_rhythm_weight")
+    amplitude_weight = param(params, "lone_s1_amplitude_weight")
     final_confidence = (rhythm_score * rhythm_weight) + (amplitude_score * amplitude_weight)
 
     reason_lines = [
@@ -537,7 +538,7 @@ def calculate_lone_s1_confidence(
 def _append_s1_s2_interval(state: AnalysisState, interval_sec: float, params: Dict) -> None:
     """Append an accepted systole (S1→S2) interval to history and cap to last N for history-based expected systole."""
     state.s1_s2_interval_history.append(interval_sec)
-    n_keep = params.get("s1_s2_expected_history_count", 10)
+    n_keep = param(params, "s1_s2_expected_history_count")
     if len(state.s1_s2_interval_history) > n_keep:
         state.s1_s2_interval_history = state.s1_s2_interval_history[-n_keep:]
 
@@ -564,7 +565,7 @@ def _append_s1_s2_contractility(
     s2_prom = s2_details["prominence"]
     ratio = s1_prom / (s2_prom + 1e-9)
     state.s1_s2_contractility_history.append(ratio)
-    n_keep = params.get("contractility_expected_history_count", 10)
+    n_keep = param(params, "contractility_expected_history_count")
     if len(state.s1_s2_contractility_history) > n_keep:
         state.s1_s2_contractility_history = state.s1_s2_contractility_history[-n_keep:]
 
@@ -572,7 +573,7 @@ def _append_s1_s2_contractility(
 def record_s1_outcome(state: AnalysisState, time_sec: float, was_paired: bool, params: Dict) -> None:
     """Record an S1 decision (paired or lone) and trim recent_s1_outcomes to the pair-rate window."""
     state.recent_s1_outcomes.append((time_sec, was_paired))
-    window_sec = params.get("contractility_pair_rate_window_sec", 5.0)
+    window_sec = param(params, "contractility_pair_rate_window_sec")
     cutoff = time_sec - window_sec
     state.recent_s1_outcomes = [(t, p) for t, p in state.recent_s1_outcomes if t >= cutoff]
 
@@ -655,10 +656,10 @@ class PairingEngine:
 
         intervals = calculate_bpm_intervals(bpm, self.params)
         history = getattr(state, "s1_s2_interval_history", []) or []
-        n_use = self.params.get("s1_s2_expected_history_count", 10)
+        n_use = param(self.params, "s1_s2_expected_history_count")
         # Use BPM-based expected until queue is at least half the window (e.g. first 5 of 10); then use history.
         min_for_history = max(1, n_use // 2)
-        use_history = self.params.get("s1_s2_expected_use_history", True) and len(history) >= min_for_history
+        use_history = param(self.params, "s1_s2_expected_use_history") and len(history) >= min_for_history
         if use_history:
             arr = np.array(history[-n_use:])
             if len(arr) > 2:
@@ -668,8 +669,8 @@ class PairingEngine:
         else:
             expected_s1_s2 = intervals["s1_s2_nominal"]
             expected_s1_s2_source = "BPM"
-        short_cutoff = expected_s1_s2 * self.params.get("interval_v_short_ramp_end_fraction", 0.2)
-        long_reject = expected_s1_s2 * self.params.get("interval_v_long_reject_fraction", 3.0)
+        short_cutoff = expected_s1_s2 * param(self.params, "interval_v_short_ramp_end_fraction")
+        long_reject = expected_s1_s2 * param(self.params, "interval_v_long_reject_fraction")
 
         if interval_sec < short_cutoff:
             implied_total_cycle = interval_sec * 2.0
@@ -706,7 +707,7 @@ class PairingEngine:
                 # Allow a small dead zone: no penalty for deviations ≤ 5%; ramp starts beyond that.
                 rr_deviation_for_penalty = max(0.0, rr_deviation_frac - 0.05)
                 rr_score = float(np.interp(rr_deviation_for_penalty, _RHYTHM_DEVIATION_XPOINTS, _RHYTHM_SCORE_YPOINTS))
-                rr_penalty_max = float(self.params.get("pairing_rr_penalty_max", 0.25))
+                rr_penalty_max = float(param(self.params, "pairing_rr_penalty_max"))
                 rr_penalty = rr_penalty_max * float(np.clip(1.0 - rr_score, 0.0, 1.0))
                 if rr_penalty > 0:
                     confidence *= max(0.0, 1.0 - rr_penalty)
@@ -796,10 +797,10 @@ class PairingEngine:
         # Hard cutoffs already applied above.
         interval_v_penalty = 0.0
         interval_v_boost = 0.0
-        v_penalty_max = self.params.get("interval_v_penalty_max", 0.2)
-        v_boost_max = self.params.get("interval_v_boost_max", 0.10)
-        zero_crossing_fraction = self.params.get("interval_zero_crossing_fraction", 0.2)
-        long_ramp_end = expected_s1_s2 * self.params.get("interval_v_long_ramp_end_fraction", 2.0)
+        v_penalty_max = param(self.params, "interval_v_penalty_max")
+        v_boost_max = param(self.params, "interval_v_boost_max")
+        zero_crossing_fraction = param(self.params, "interval_zero_crossing_fraction")
+        long_ramp_end = expected_s1_s2 * param(self.params, "interval_v_long_ramp_end_fraction")
         left_ramp_start = expected_s1_s2 * (1.0 - zero_crossing_fraction)   # below this: left penalty ramp
         right_ramp_start = expected_s1_s2 * (1.0 + zero_crossing_fraction)  # above this: right penalty ramp
 
@@ -866,14 +867,14 @@ class PairingEngine:
             next_s1_prominence = next_s1_details["prominence"]
 
             if s2_prominence > 1e-9 and next_s1_prominence > 1e-9:
-                noise_thresh = self.params.get('noise_prominence_threshold', 0.35)
+                noise_thresh = param(self.params, "noise_prominence_threshold")
                 if next_s1_prominence >= s2_prominence * noise_thresh:
                     # Next peak is strong enough to evaluate; apply penalty if needed.
                     drop_ratio = next_s1_prominence / (s2_prominence + 1e-9)
-                    threshold = self.params.get('forward_look_drop_threshold', 0.4)
+                    threshold = param(self.params, "forward_look_drop_threshold")
                     if drop_ratio < threshold:
                         severity = (threshold - drop_ratio) / threshold
-                        forward_look_penalty = severity * self.params.get('forward_look_max_penalty', 0.3)
+                        forward_look_penalty = severity * param(self.params, "forward_look_max_penalty")
                         confidence = max(0.0, confidence - forward_look_penalty)
                         steps.append({
                             "step": "Forward-Look",
@@ -884,15 +885,15 @@ class PairingEngine:
         # --- Stability (pairing ratio) multiplier applied last ---
         # Scale confidence by recent pairing success so we don't over-penalize when S2 was absent at high BPM.
         if len(state.candidate_beats) >= 5:
-            floor = self.params.get("stability_confidence_floor", 0.85)
-            ceiling = self.params.get("stability_confidence_ceiling", 1.10)
+            floor = param(self.params, "stability_confidence_floor")
+            ceiling = param(self.params, "stability_confidence_ceiling")
             current_time_sec = s1_candidate_idx / self.sample_rate
             # During recovery, pairing_ratio can be low because S2 was physiologically absent at high BPM.
             # Use a higher floor so we don't penalize valid systole (S1→S2) pairs when S2 re-emerges.
             if (self.peak_bpm_time_sec is not None and
                 self.recovery_end_time_sec is not None and
                 self.peak_bpm_time_sec <= current_time_sec <= self.recovery_end_time_sec):
-                recovery_floor = self.params.get("recovery_phase_stability_floor", 0.95)
+                recovery_floor = param(self.params, "recovery_phase_stability_floor")
                 floor = max(floor, recovery_floor)
                 steps.append({"step": "Recovery Phase", "detail": f"using floor {floor:.2f}", "result": confidence})
             stability_factor = np.interp(pairing_ratio, [0.0, 1.0], [floor, ceiling])
@@ -959,7 +960,7 @@ class LookaheadSkipper:
 
         If no lookahead skip is appropriate, returns None.
         """
-        if not self.params.get('enable_lookahead_skipping', True):
+        if not param(self.params, "enable_lookahead_skipping"):
             return None
 
         all_peaks = state.all_peaks
@@ -982,7 +983,7 @@ class LookaheadSkipper:
         next_next_prom = calculate_peak_prominence(
             next_next_peak_idx, self.audio_envelope, state.trough_indices, detail_cache=dc
         )
-        noise_thresh = self.params.get('noise_prominence_threshold', 0.35)
+        noise_thresh = param(self.params, "noise_prominence_threshold")
 
         bpm = state.long_term_bpm
         intervals = calculate_bpm_intervals(bpm, self.params)

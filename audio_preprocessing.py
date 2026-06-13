@@ -16,6 +16,7 @@ import pandas as pd
 from scipy.io import wavfile
 from scipy.signal import butter, filtfilt, firls, sosfiltfilt, welch, iirnotch, find_peaks, hilbert
 import librosa
+from config import param
 
 try:
     from pydub import AudioSegment
@@ -116,7 +117,7 @@ def _detect_and_remove_stationary_hum(
     if audio_data.size == 0:
         return audio_data, None
 
-    if not params.get("enable_hum_removal", True):
+    if not param(params, "enable_hum_removal"):
         return audio_data, None
 
     skip_over = params.get("hum_removal_skip_if_longer_than_min")
@@ -137,7 +138,7 @@ def _detect_and_remove_stationary_hum(
 
     try:
         # Use a relatively long window for a stable PSD estimate
-        window_sec = float(params.get("hum_psd_window_sec", 4.0))
+        window_sec = float(param(params, "hum_psd_window_sec"))
         nperseg = int(sample_rate * window_sec)
         nperseg = max(256, min(len(audio_data), nperseg))
         freqs, psd = welch(audio_data, fs=sample_rate, nperseg=nperseg)
@@ -146,8 +147,8 @@ def _detect_and_remove_stationary_hum(
         return audio_data, None
 
     # Restrict search to a low-frequency band where hums typically live
-    fmin = float(params.get("hum_min_freq_hz", 30.0))
-    fmax = float(params.get("hum_max_freq_hz", 120.0))
+    fmin = float(param(params, "hum_min_freq_hz"))
+    fmax = float(param(params, "hum_max_freq_hz"))
     band_mask = (freqs >= fmin) & (freqs <= fmax)
 
     if not np.any(band_mask):
@@ -164,7 +165,7 @@ def _detect_and_remove_stationary_hum(
     median_db = float(np.median(psd_db))
     psd_db_rel = psd_db - median_db
 
-    min_prom_db = float(params.get("hum_min_prominence_db", 10.0))
+    min_prom_db = float(param(params, "hum_min_prominence_db"))
 
     try:
         peak_indices, properties = find_peaks(psd_db_rel, prominence=min_prom_db)
@@ -192,7 +193,7 @@ def _detect_and_remove_stationary_hum(
     else:
         second_best = 0.0
 
-    min_gap_db = float(params.get("hum_min_prominence_over_second_db", 3.0))
+    min_gap_db = float(param(params, "hum_min_prominence_over_second_db"))
     if second_best > 0.0 and (best_prom - second_best) < min_gap_db:
         logging.info(
             "Hum removal: strongest peak not clearly dominant (Δ%.1f dB). Skipping.",
@@ -206,7 +207,7 @@ def _detect_and_remove_stationary_hum(
     if hum_freq_hz <= 0.0 or hum_freq_hz >= (sample_rate / 2.0):
         return audio_data, None
 
-    q = float(params.get("hum_notch_q", 30.0))
+    q = float(param(params, "hum_notch_q"))
 
     try:
         # Normalized frequency (0-1) for iirnotch
@@ -232,9 +233,9 @@ def apply_bandpass_only(audio: np.ndarray, sample_rate: int, params: Dict) -> np
     """
     if audio.size == 0:
         return audio
-    lowcut = float(params.get("preprocess_bandpass_low_hz", 20.0))
-    highcut = float(params.get("preprocess_bandpass_high_hz", 220.0))
-    order = int(params.get("preprocess_bandpass_order", 2))
+    lowcut = float(param(params, "preprocess_bandpass_low_hz"))
+    highcut = float(param(params, "preprocess_bandpass_high_hz"))
+    order = int(param(params, "preprocess_bandpass_order"))
     nyquist = 0.5 * sample_rate
     low, high = lowcut / nyquist, highcut / nyquist
     if high >= 1.0:
@@ -253,9 +254,9 @@ def apply_signal_preprocessing(
     if audio.size == 0:
         return audio
     filtered, _ = _detect_and_remove_stationary_hum(audio, sample_rate, params)
-    lowcut = float(params.get("preprocess_bandpass_low_hz", 20.0))
-    highcut = float(params.get("preprocess_bandpass_high_hz", 220.0))
-    order = int(params.get("preprocess_bandpass_order", 2))
+    lowcut = float(param(params, "preprocess_bandpass_low_hz"))
+    highcut = float(param(params, "preprocess_bandpass_high_hz"))
+    order = int(param(params, "preprocess_bandpass_order"))
     nyquist = 0.5 * sample_rate
     low, high = lowcut / nyquist, highcut / nyquist
     if high >= 1.0:
@@ -443,7 +444,7 @@ def _calculate_dynamic_noise_floor(
     )
 
     # --- STEP 3: Sanitize troughs (vectorized; same rule as per-index loop + pd.isna check) ---
-    rejection_multiplier = params.get('trough_rejection_multiplier', 4.0)
+    rejection_multiplier = param(params, "trough_rejection_multiplier")
     floor_at = draft_floor_arr[all_trough_indices]
     trough_amps = audio_envelope[all_trough_indices]
     keep = np.isfinite(floor_at) & (trough_amps <= rejection_multiplier * floor_at)
@@ -494,7 +495,7 @@ def preprocess_audio(
         output_options = DEFAULT_OUTPUT_OPTIONS.copy()
 
     save_debug_file = params["save_filtered_wav"] and output_options.get("filtered_wav", True)
-    target_sample_rate = int(params.get("preprocess_target_sample_rate", 500))
+    target_sample_rate = int(param(params, "preprocess_target_sample_rate"))
 
     t_preprocess = time.perf_counter()
     t_step = time.perf_counter()
@@ -519,18 +520,18 @@ def preprocess_audio(
         logging.info("Detected and removed stationary hum at ~%.2f Hz.", detected_hum)
 
     # Bandpass for S1/S2 detection: typical PCG range where first and second heart sounds have most energy.
-    lowcut = float(params.get("preprocess_bandpass_low_hz", 20.0))
-    highcut = float(params.get("preprocess_bandpass_high_hz", 220.0))
-    order = int(params.get("preprocess_bandpass_order", 2))
+    lowcut = float(param(params, "preprocess_bandpass_low_hz"))
+    highcut = float(param(params, "preprocess_bandpass_high_hz"))
+    order = int(param(params, "preprocess_bandpass_order"))
     nyquist = 0.5 * new_sample_rate
 
     # Out-of-band path: high-pass taper + Hilbert at inverse_band_working_sample_rate (or native if disabled in params).
     inverse_band_envelope: Optional[np.ndarray] = None
     audio_inverse_hp_native: Optional[np.ndarray] = None
     native_sr_int: Optional[int] = None  # effective rate for inverse-band FIR/Hilbert (working or native)
-    smooth_ms = float(params.get("envelope_smooth_window_ms", 50))
-    taper_lo_cfg = float(params.get("inverse_band_taper_low_hz", 300.0))
-    taper_hi_cfg = float(params.get("inverse_band_taper_high_hz", 600.0))
+    smooth_ms = float(param(params, "envelope_smooth_window_ms"))
+    taper_lo_cfg = float(param(params, "inverse_band_taper_low_hz"))
+    taper_hi_cfg = float(param(params, "inverse_band_taper_high_hz"))
 
     if highcut <= 0.0:
         logging.warning("Inverse-band (noise envelope) skipped: preprocess_bandpass_high_hz must be > 0.")

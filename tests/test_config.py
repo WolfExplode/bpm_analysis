@@ -40,3 +40,19 @@ def test_validate_params_silent_for_known_keys(caplog):
     with caplog.at_level(logging.WARNING):
         config.validate_params(dict(config.DEFAULT_PARAMS))
     assert not [r for r in caplog.records if "not in DEFAULT_PARAMS" in r.getMessage()]
+
+
+def test_param_returns_supplied_value():
+    assert config.param({"min_bpm": 33}, "min_bpm") == 33
+
+
+def test_param_falls_back_to_default_when_missing():
+    # Empty params -> single source of truth in DEFAULT_PARAMS, never a stale literal.
+    assert config.param({}, "min_bpm") == config.DEFAULT_PARAMS["min_bpm"]
+    assert config.param({}, "s1_min_sec") == config.DEFAULT_PARAMS["s1_min_sec"]
+
+
+def test_param_unknown_key_raises():
+    import pytest
+    with pytest.raises(KeyError):
+        config.param({}, "totally_made_up_key")

@@ -29,6 +29,9 @@ inputs
 dist/
 build/
 
+# Test caches
+.pytest_cache/
+
 # Binary packages
 *.exe
 *.pkg

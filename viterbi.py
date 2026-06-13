@@ -37,6 +37,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from confidence_engine import calculate_bpm_intervals
+from config import param
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ def build_transition_matrix(bpm: float, sample_rate: int, params: Dict) -> np.nd
     disallowed transitions.
     """
     ivs = calculate_bpm_intervals(bpm, params)
-    sl_weight = float(params.get("pass4_transition_self_loop_weight", 0.85))
+    sl_weight = float(param(params, "pass4_transition_self_loop_weight"))
 
     s1_dur_samp  = max(2, int(round(float(ivs.get("s1_nominal",    0.040)) * sample_rate)))
     sys_dur_samp = max(2, int(round(float(ivs.get("s1_s2_nominal", 0.300)) * sample_rate)))
@@ -123,7 +124,7 @@ def _build_4state_log_obs(emissions: np.ndarray, params: Dict) -> np.ndarray:
     The emission_weight param blends spectral evidence with a uniform prior.
     """
     T = len(emissions)
-    w = float(np.clip(params.get("pass4_emission_weight", 0.7), 0.0, 1.0))
+    w = float(np.clip(param(params, "pass4_emission_weight"), 0.0, 1.0))
     uniform = 0.25  # uniform over 4 states → 0.25 each
 
     obs = np.zeros((T, N_STATES), dtype=np.float64)

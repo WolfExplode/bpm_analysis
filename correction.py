@@ -35,6 +35,7 @@ from scipy.signal import find_peaks
 from classifier import PeakClassifier
 from confidence_engine import calculate_bpm_intervals
 from hrv import _median_mad_keep_mask_time_window, filter_interval_durations_by_limits
+from config import param
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ def _detect_sensitive_peaks_in_large_gap_windows(
     if not gap_windows_samples or not isinstance(gap_windows_samples, list):
         return np.asarray([], dtype=np.int64)
 
-    min_peak_dist_samples = int(float(params.get("min_peak_distance_sec", 0.18)) * float(sample_rate))
+    min_peak_dist_samples = int(float(param(params, "min_peak_distance_sec")) * float(sample_rate))
     min_peak_dist_samples = max(1, int(min_peak_dist_samples))
 
     if prominence_quantile is None:
@@ -95,7 +96,7 @@ def _detect_sensitive_peaks_in_large_gap_windows(
         q = float(prominence_quantile)
     q = float(np.clip(q, 0.0, 1.0))
     if height_scale_override is None:
-        height_scale = float(params.get("pass3_gap_recovery_height_scale", 0.85))
+        height_scale = float(param(params, "pass3_gap_recovery_height_scale"))
     else:
         height_scale = float(height_scale_override)
     height_scale = float(np.clip(height_scale, 0.0, 1.0))
@@ -1204,11 +1205,11 @@ def _pass3_clean_duration_series(
     # 2. Local MAD outlier removal (time window around each point).
     half_win = float(pc.get(
         "pass3_measured_phase_outlier_window_sec",
-        pc.get("systole_outlier_window_sec", pc.get("s1_s2_outlier_window_sec", 8.0)),
+        pc.get("systole_outlier_window_sec", param(pc, "s1_s2_outlier_window_sec")),
     ))
     mad_k = float(pc.get(
         "pass3_measured_phase_outlier_mad_k",
-        pc.get("systole_outlier_mad_k", pc.get("s1_s2_outlier_mad_k", 2.5)),
+        pc.get("systole_outlier_mad_k", param(pc, "s1_s2_outlier_mad_k")),
     ))
     if len(t) >= 2:
         keep = _median_mad_keep_mask_time_window(t, d, half_win, mad_k)
@@ -1411,7 +1412,7 @@ def _pass3_find_gap_windows(
 
     SR = float(sample_rate)
     MAX_SCALE = 0.30  # must match _pass3_rebuild_unknown_runs
-    _q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
+    _q_sens = float(param(params, "pass3_gap_recovery_peak_prominence_quantile_sensitive"))
 
     def _bpm_at_sample(ix: int) -> float:
         t = float(ix) / SR
@@ -1582,12 +1583,12 @@ def _pass3_apply_peaks_labeling_in_large_gaps(
     insensitive peaks + the same S1/S2/Noise labeling as Pass 2, then paint cardiac states
     into the gap. Runs after noise repair, consuming shared gap windows.
     """
-    if not bool(params.get("pass3_enable_peaks_labeling_in_large_gaps", True)):
+    if not bool(param(params, "pass3_enable_peaks_labeling_in_large_gaps")):
         return state_labels, state_boundaries
     if not gap_windows:
         return state_labels, state_boundaries
 
-    min_sec = float(params.get("pass3_peaks_labeling_in_large_gaps_min_sec", 10.0))
+    min_sec = float(param(params, "pass3_peaks_labeling_in_large_gaps_min_sec"))
     nf = analysis_data.get("dynamic_noise_floor_series")
     tr = analysis_data.get("trough_indices")
     if nf is None or tr is None or not isinstance(nf, pd.Series):
@@ -1626,7 +1627,7 @@ def _pass3_apply_peaks_labeling_in_large_gaps(
         [(float(_c.get("s1", _c.get("s1_prev", 0))) / _sr_f, _c) for _c in corrections],
         key=lambda x: x[0],
     )
-    q_ins = float(params.get("pass3_gap_recovery_peak_prominence_quantile_insensitive", 0.70))
+    q_ins = float(param(params, "pass3_gap_recovery_peak_prominence_quantile_insensitive"))
     bd: List[Tuple] = list(state_boundaries)
 
     for gw in large_gaps:
@@ -2089,7 +2090,7 @@ def _pass3_insert_missing_states_in_large_gaps(
         return state_labels, state_boundaries
 
     SR = float(sample_rate)
-    _gap_insert_max_sec = float(params.get("pass3_peaks_labeling_in_large_gaps_min_sec", 10.0))
+    _gap_insert_max_sec = float(param(params, "pass3_peaks_labeling_in_large_gaps_min_sec"))
     if not np.isfinite(_gap_insert_max_sec) or _gap_insert_max_sec <= 0:
         _gap_insert_max_sec = 10.0
 
@@ -2317,17 +2318,17 @@ def run_pass3_correction(
     state_labels = np.full(n_samples, STATE_DIASTOLE, dtype=np.int8)
 
     # ── Read params ──────────────────────────────────────────────────────────
-    s1_window_ms = float(params.get("pass3_state_s1_window_ms", 80.0))
-    s2_window_ms = float(params.get("pass3_state_s2_window_ms", 80.0))
+    s1_window_ms = float(param(params, "pass3_state_s1_window_ms"))
+    s2_window_ms = float(param(params, "pass3_state_s2_window_ms"))
     s1_half = max(1, int(round(0.5 * s1_window_ms * sample_rate / 1000.0)))
     s2_half = max(1, int(round(0.5 * s2_window_ms * sample_rate / 1000.0)))
 
-    edge_alpha  = float(params.get("pass3_state_edge_alpha",  0.03))
-    edge_n_exp  = float(params.get("pass3_state_edge_n_exp",  4.0))
-    s1_min_half = max(1, int(round(float(params.get("s1_min_sec", 0.030)) * 0.5 * sample_rate)))
-    s1_max_half = max(1, int(round(float(params.get("s1_max_sec", 0.080)) * 0.5 * sample_rate)))
-    s2_min_half = max(1, int(round(float(params.get("s2_min_sec", 0.030)) * 0.5 * sample_rate)))
-    s2_max_half = max(1, int(round(float(params.get("s2_max_sec", 0.080)) * 0.5 * sample_rate)))
+    edge_alpha  = float(param(params, "pass3_state_edge_alpha"))
+    edge_n_exp  = float(param(params, "pass3_state_edge_n_exp"))
+    s1_min_half = max(1, int(round(float(param(params, "s1_min_sec")) * 0.5 * sample_rate)))
+    s1_max_half = max(1, int(round(float(param(params, "s1_max_sec")) * 0.5 * sample_rate)))
+    s2_min_half = max(1, int(round(float(param(params, "s2_min_sec")) * 0.5 * sample_rate)))
+    s2_max_half = max(1, int(round(float(param(params, "s2_max_sec")) * 0.5 * sample_rate)))
 
     fallback_bpm = 80.0
     try:
@@ -2577,8 +2578,8 @@ def run_pass3_correction(
     _noise_repair_on = bool(
         params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True)),
     )
-    _gap_apply = bool(params.get("pass3_enable_gap_state_insert", True))
-    _gap_calc = bool(params.get("pass3_calculate_large_gaps", True))
+    _gap_apply = bool(param(params, "pass3_enable_gap_state_insert"))
+    _gap_calc = bool(param(params, "pass3_calculate_large_gaps"))
     _did_noise_repair = bool(_noise_repair_on and noise_ivs_final)
 
     # Always compute and store measured curves from the initially-painted boundaries.
@@ -2632,8 +2633,8 @@ def run_pass3_correction(
     # ── Gap logic: detect windows once, then route to labeling (>threshold) and insert (≤threshold) ──
     # _pass3_find_gap_windows runs once on post-repair boundaries and is the canonical source
     # for both paths. BPM prior raster was already computed unconditionally above.
-    _lg_label_on = bool(params.get("pass3_enable_peaks_labeling_in_large_gaps", True))
-    _gap_peak_apply = bool(params.get("pass3_enable_gap_snap_to_peaks", True))
+    _lg_label_on = bool(param(params, "pass3_enable_peaks_labeling_in_large_gaps"))
+    _gap_peak_apply = bool(param(params, "pass3_enable_gap_snap_to_peaks"))
 
     if _gap_calc or _gap_apply or _lg_label_on:
         # Refresh measured rasters from post-repair boundaries.
@@ -2731,8 +2732,8 @@ def run_pass3_correction(
             analysis_data["pass3_large_gap_recovered_peaks_insensitive"] = []
             analysis_data["pass3_large_gap_recovered_peaks_sensitive"] = []
         if want_peak_detect:
-            q_ins = float(params.get("pass3_gap_recovery_peak_prominence_quantile_insensitive", 0.70))
-            q_sens = float(params.get("pass3_gap_recovery_peak_prominence_quantile_sensitive", 0.50))
+            q_ins = float(param(params, "pass3_gap_recovery_peak_prominence_quantile_insensitive"))
+            q_sens = float(param(params, "pass3_gap_recovery_peak_prominence_quantile_sensitive"))
             recovered_ins = _detect_sensitive_peaks_in_large_gap_windows(
                 audio_envelope, sample_rate, gap_wins_for_peaks, params,
                 prominence_quantile=q_ins,
@@ -2761,7 +2762,7 @@ def run_pass3_correction(
                 dtype=np.int64,
             )
             _snap_window = int(round(
-                float(params.get("pass3_gap_snap_window_ms", 80.0)) * sample_rate / 1000.0
+                float(param(params, "pass3_gap_snap_window_ms")) * sample_rate / 1000.0
             ))
             state_labels, state_boundaries = _pass3_snap_rebuilt_states_to_recovered_peaks(
                 state_labels,

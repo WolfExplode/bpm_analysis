@@ -23,6 +23,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend for spectrogram generation
 import matplotlib.pyplot as plt
+from config import param
 
 
 def _elapsed_seconds_to_plot_datetimes(seconds: np.ndarray) -> np.ndarray:
@@ -418,8 +419,8 @@ class Plotter:
         self._pass3_large_gap_recovered_peaks_sensitive = analysis_data.get("pass3_large_gap_recovered_peaks_sensitive") or []
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
-        optimize_long_plots = bool(self.params.get("optimize_long_plots", False))
-        long_threshold_sec = float(self.params.get("long_plot_duration_threshold_sec", 600.0))
+        optimize_long_plots = bool(param(self.params, "optimize_long_plots"))
+        long_threshold_sec = float(param(self.params, "long_plot_duration_threshold_sec"))
         # Only skip details if the recording is longer than the threshold; shorter files always show full detail.
         self.skip_detailed_debug_traces = optimize_long_plots and self.audio_duration_sec > long_threshold_sec
 
@@ -594,14 +595,14 @@ class Plotter:
 
         self.spectrogram_enabled = False
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        optimize_long_plots_pass1 = bool(self.params.get("optimize_long_plots", False))
-        long_plot_threshold_sec = float(self.params.get("long_plot_duration_threshold_sec", 600.0))
+        optimize_long_plots_pass1 = bool(param(self.params, "optimize_long_plots"))
+        long_plot_threshold_sec = float(param(self.params, "long_plot_duration_threshold_sec"))
         skip_heavy_pass1_traces = optimize_long_plots_pass1 and self.audio_duration_sec > long_plot_threshold_sec
         if skip_heavy_pass1_traces:
             logging.info("Pass 1 HTML: skipping envelope and anchor beat traces (optimize_long_plots on long recording).")
 
         if not skip_heavy_pass1_traces:
-            factor = self.params.get("plot_downsample_factor", 5)
+            factor = param(self.params, "plot_downsample_factor")
             n = len(audio_envelope)
             if factor > 1 and n >= factor:
                 plot_secs = np.arange(0, n, factor, dtype=np.float64) / self.sample_rate
@@ -846,7 +847,7 @@ class Plotter:
             if envelope_values is not None and envelope_values.size > 0:
                 robust_upper_limit = float(np.quantile(envelope_values, 0.95))
 
-        amplitude_scale = self.params.get("plot_amplitude_scale_factor", 60.0)
+        amplitude_scale = param(self.params, "plot_amplitude_scale_factor")
         self.fig.update_yaxes(
             title_text="Signal Amplitude",
             secondary_y=False,
@@ -922,7 +923,7 @@ class Plotter:
         plot_noise_floor = analysis_data.get("dynamic_noise_floor_series")
 
         # Downsample only envelope and noise floor for performance; other traces (contractility, BPM, HRV) use full data
-        factor = self.params.get("plot_downsample_factor", 5)
+        factor = param(self.params, "plot_downsample_factor")
         n = len(audio_envelope)
         if factor > 1 and n >= factor:
             logging.info("Downsampling envelope and noise floor by factor %d for plotting.", factor)
@@ -1227,7 +1228,7 @@ class Plotter:
     def _add_s1_s2_amplitude_traces(self, s1_indices, s2_indices, audio_envelope, trough_indices=None):
         """Add line traces for Average S1, S2, and combined contractility (prominence-based, averaged over time segments).
         Uses a fixed-duration segment (default 2 s) so trends reflect: long-term contractility vs BPM; short-term S1 vs inhale/exhale."""
-        segment_sec = float(self.params.get("contractility_average_window_sec", 2.0))
+        segment_sec = float(param(self.params, "contractility_average_window_sec"))
         troughs = np.array(trough_indices) if trough_indices is not None and len(trough_indices) > 0 else np.array([], dtype=np.intp)
 
         def prominence_at(peak_idx):
@@ -1916,13 +1917,13 @@ class Plotter:
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
             "htmlS1S2HoverOnByDefault": hover_on_by_default,
             "bpmIntervalParams": {
-                "s1_nominal_sec":             float(self.params.get("s1_nominal_sec", 0.080)),
-                "s2_nominal_sec":             float(self.params.get("s2_nominal_sec", 0.080)),
-                "weissler_ref_et_ms":         float(self.params.get("s1_s2_expected_weissler_ref_et_ms", 300)),
-                "weissler_ref_bpm":           float(self.params.get("s1_s2_expected_weissler_ref_bpm", 60)),
-                "weissler_slope_ms_per_bpm":  float(self.params.get("s1_s2_expected_weissler_slope_ms_per_bpm", 1.0)),
-                "min_s1_s2_interval_sec":     float(self.params.get("min_s1_s2_interval_sec", 0.15)),
-                "s1_s2_interval_cap_sec":     float(self.params.get("s1_s2_interval_cap_sec", 0.4)),
+                "s1_nominal_sec":             float(param(self.params, "s1_nominal_sec")),
+                "s2_nominal_sec":             float(param(self.params, "s2_nominal_sec")),
+                "weissler_ref_et_ms":         float(param(self.params, "s1_s2_expected_weissler_ref_et_ms")),
+                "weissler_ref_bpm":           float(param(self.params, "s1_s2_expected_weissler_ref_bpm")),
+                "weissler_slope_ms_per_bpm":  float(param(self.params, "s1_s2_expected_weissler_slope_ms_per_bpm")),
+                "min_s1_s2_interval_sec":     float(param(self.params, "min_s1_s2_interval_sec")),
+                "s1_s2_interval_cap_sec":     float(param(self.params, "s1_s2_interval_cap_sec")),
             },
         }
         # Pass 3: state timeline overlay (compact strip above chart).
@@ -1958,7 +1959,7 @@ class Plotter:
             config_payload["pass3SegmentsEncoding"] = getattr(self, "_pass3_state_labels_encoding", {}) or {}
             config_payload["pass3SegmentsDefaultView"] = "after" if segs_after else "before"
         noise_segs = getattr(self, "_noise_event_segments", None) or []
-        calc_noise_strip = bool(self.params.get("pass3_calculate_noisy_regions", True))
+        calc_noise_strip = bool(param(self.params, "pass3_calculate_noisy_regions"))
         p3_noise_ivs = getattr(self, "_pass3_noise_unreliable_windows_samples", None) or []
         if calc_noise_strip and p3_noise_ivs:
             try:

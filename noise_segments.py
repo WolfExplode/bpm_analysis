@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+from config import param
+
 def compute_noise_event_segments(
     inverse_band_envelope: np.ndarray,
     sample_rate: int,
@@ -33,9 +35,9 @@ def compute_noise_event_segments(
     if not np.any(fin):
         return []
 
-    gate_q = float(params.get("noise_segment_gate_quantile", 0.85))
+    gate_q = float(param(params, "noise_segment_gate_quantile"))
     gate_q = float(np.clip(gate_q, 0.0, 1.0))
-    min_amp = float(params.get("noise_segment_gate_min_amplitude", 0.02))
+    min_amp = float(param(params, "noise_segment_gate_min_amplitude"))
     min_amp = max(0.0, min_amp)
 
     T = float(np.quantile(env[fin], gate_q))
@@ -53,14 +55,14 @@ def compute_noise_event_segments(
         runs.append((i, j))
         i = j
 
-    merge_gap_ms = float(params.get("noise_segment_merge_gap_ms", 100.0))
+    merge_gap_ms = float(param(params, "noise_segment_merge_gap_ms"))
     merge_gap = max(0, int(round(merge_gap_ms * sample_rate / 1000.0)))
     merged = _merge_intervals(runs, merge_gap)
 
-    min_ms = float(params.get("noise_segment_min_duration_ms", 40.0))
+    min_ms = float(param(params, "noise_segment_min_duration_ms"))
     min_samples = max(1, int(round(min_ms * sample_rate / 1000.0)))
 
-    expand_ms = float(params.get("noise_segment_expand_ms", 10.0))
+    expand_ms = float(param(params, "noise_segment_expand_ms"))
     pad = max(0, int(round(expand_ms * sample_rate / 1000.0)))
 
     expanded_prep: List[Tuple[int, int]] = []
@@ -77,7 +79,7 @@ def compute_noise_event_segments(
     merged_expanded = _merge_intervals(expanded_prep, merge_gap)
 
     sr_f = float(sample_rate)
-    max_cov = float(params.get("noise_segment_max_coverage", 0.40))
+    max_cov = float(param(params, "noise_segment_max_coverage"))
     max_cov = float(np.clip(max_cov, 0.0, 1.0))
     if merged_expanded and n > 0:
         noise_samples = sum(int(b) - int(a) for a, b in merged_expanded)

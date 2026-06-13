@@ -36,6 +36,7 @@ from fft_profiles import (
     save_fft_profiles_html,
 )
 from correction import run_pass3_correction
+from config import param
 
 # Recordings longer than this skip PNG export (Kaleido), but still allow HTML/CSV/etc.
 # Independent of optimize_long_plots (that flag only trims heavy traces in Plotter when plots are produced).
@@ -76,9 +77,7 @@ def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
     """
     logging.info("--- STAGE 2: Pass 1 — high-confidence anchor beats ---")
     params_pass1 = params.copy()
-    params_pass1["pairing_confidence_threshold"] = params.get(
-        "pass1_pairing_confidence_threshold", 0.7
-    )
+    params_pass1["pairing_confidence_threshold"] = param(params, "pass1_pairing_confidence_threshold")
 
     classifier = PeakClassifier(audio_envelope, sample_rate, params_pass1, start_bpm_hint,
                                noise_floor, troughs, None, None)
@@ -162,7 +161,7 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
     metrics['peak_recovery_stats'] = find_peak_recovery_rate(smoothed_bpm)
     metrics['peak_exertion_stats'] = find_peak_exertion_rate(smoothed_bpm)
     metrics['windowed_hrv_df'] = calculate_windowed_hrv(peaks, sample_rate, params)
-    if params.get("enable_hrv_frequency_domain", False):
+    if param(params, "enable_hrv_frequency_domain"):
         metrics['hrv_global_freq'] = calculate_global_hrv_frequency(peaks, sample_rate, params)
     else:
         metrics['hrv_global_freq'] = None
@@ -175,7 +174,7 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
     if not metrics['windowed_hrv_df'].empty:
         hrv_summary_stats['avg_rmssdc'] = metrics['windowed_hrv_df']['rmssdc'].mean()
         hrv_summary_stats['avg_sdnn'] = metrics['windowed_hrv_df']['sdnn'].mean()
-        if params.get("enable_hrv_frequency_domain", False) and "lf_hf_ratio" in metrics['windowed_hrv_df'].columns:
+        if param(params, "enable_hrv_frequency_domain") and "lf_hf_ratio" in metrics['windowed_hrv_df'].columns:
             wdf = metrics['windowed_hrv_df']
             hrv_summary_stats['avg_lf_power'] = wdf['lf_power'].mean()
             hrv_summary_stats['avg_hf_power'] = wdf['hf_power'].mean()
@@ -478,7 +477,7 @@ def analyze_wav_file(
 
     # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
     peaks_after_pass4 = peaks_after_pass3
-    if params.get("enable_pass4", False):
+    if param(params, "enable_pass4"):
         from viterbi import run_pass4_viterbi
         _ui("Pass 4: Viterbi holistic decode...")
         peaks_after_pass4, analysis_data = run_pass4_viterbi(
@@ -570,13 +569,13 @@ def analyze_wav_file(
 
     # FFT profiles: aggregate S1/S2 frequency spectra from raw audio (separate minimal HTML)
     fft_aggregate_data = None
-    if params.get("enable_fft_profiles", True) and output_options.get("fft_profiles", True):
+    if param(params, "enable_fft_profiles") and output_options.get("fft_profiles", True):
         _ui("Generating FFT profiles (HTML)...")
         try:
             base_name = output_stem_from_path(original_file_path)
             fft_output_path = os.path.join(output_directory, f"{base_name}_fft_profiles.html")
             if collect_fft_for_aggregate:
-                target_sr = int(params.get("fft_aggregate_sr", 32000))
+                target_sr = int(param(params, "fft_aggregate_sr"))
                 fft_result = compute_fft_profiles(
                     wav_file_path,
                     analysis_data.get("peak_classifications", {}),

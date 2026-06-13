@@ -6,6 +6,7 @@ from scipy.signal import find_peaks, lombscargle
 from typing import List, Dict, Tuple, Optional
 
 from time_utils import dense_time_grid, STANDARD_DT_SEC
+from config import param
 
 _LOMB_FREQS: Optional[np.ndarray] = None
 _LOMB_ANGULAR: Optional[np.ndarray] = None
@@ -82,11 +83,11 @@ def filter_interval_durations_by_limits(
         return t, v
 
     if kind == "systole":
-        lo = float(pc.get("systole_duration_clamp_min_sec", 0.01))
-        hi = float(pc.get("systole_duration_clamp_max_sec", 8.0))
+        lo = float(param(pc, "systole_duration_clamp_min_sec"))
+        hi = float(param(pc, "systole_duration_clamp_max_sec"))
     elif kind == "diastole":
-        lo = float(pc.get("diastole_duration_clamp_min_sec", 0.005))
-        hi = float(pc.get("diastole_duration_clamp_max_sec", 180.0))
+        lo = float(param(pc, "diastole_duration_clamp_min_sec"))
+        hi = float(param(pc, "diastole_duration_clamp_max_sec"))
     else:
         return t, v
 
@@ -161,7 +162,7 @@ def calculate_windowed_hrv(s1_peaks: np.ndarray, sample_rate: int, params: Dict)
     """ Calculates HRV metrics using R-R intervals based on changing heart rate """
     window_size_beats = params['hrv_window_size_beats']
     step_size_beats = params['hrv_step_size_beats']
-    enable_freq = params.get("enable_hrv_frequency_domain", False)
+    enable_freq = param(params, "enable_hrv_frequency_domain")
 
     # First, calculate all R-R intervals from the S1 peaks
     if len(s1_peaks) < window_size_beats:
@@ -246,7 +247,7 @@ def calculate_global_hrv_frequency(
     rr_ms = rr_sec * 1000.0
     times_sec = s1_peaks[:-1] / float(sample_rate)
     duration_sec = float(times_sec[-1] - times_sec[0]) + (rr_sec[-1] if len(rr_sec) else 0)
-    min_duration = params.get("hrv_global_min_duration_sec", 300.0)
+    min_duration = param(params, "hrv_global_min_duration_sec")
     if duration_sec < min_duration or len(rr_ms) < 20:
         return None
     band_powers = _lombscargle_band_powers(times_sec, rr_ms, include_vlf=True)
@@ -346,13 +347,13 @@ def compute_pass1_bpm_curve(
     raw_scatter_bpm = np.asarray(instant_bpm, dtype=float)
 
     # Outlier removal: keep point if within median ± k*MAD in local window
-    half_window_sec = float(params.get("pass1_bpm_outlier_window_sec", 10.0))
-    mad_k = float(params.get("pass1_bpm_outlier_mad_k", 2.5))
+    half_window_sec = float(param(params, "pass1_bpm_outlier_window_sec"))
+    mad_k = float(param(params, "pass1_bpm_outlier_mad_k"))
     keep = _median_mad_keep_mask_time_window(times_sec, instant_bpm, half_window_sec, mad_k)
     scatter_bpm = np.asarray(instant_bpm[keep], dtype=float)
     scatter_times = np.asarray(times_sec[keep], dtype=float)
 
-    global_mad_k = float(params.get("pass1_bpm_global_outlier_mad_k", 6.0))
+    global_mad_k = float(param(params, "pass1_bpm_global_outlier_mad_k"))
     if global_mad_k > 0 and len(scatter_bpm) > 0:
         gkeep = _median_mad_keep_mask_global(scatter_bpm, global_mad_k)
         scatter_bpm = np.asarray(scatter_bpm[gkeep], dtype=float)
@@ -361,7 +362,7 @@ def compute_pass1_bpm_curve(
     if len(scatter_times) < 3:
         return None
 
-    gaussian_frac = float(params.get("pass1_bpm_gaussian_frac", 0.2))
+    gaussian_frac = float(param(params, "pass1_bpm_gaussian_frac"))
     # Canonical dense curve on the standardized dt raster.
     curve_times = dense_time_grid(float(scatter_times.max()), STANDARD_DT_SEC)
     curve_times = curve_times[curve_times >= float(scatter_times.min())]
@@ -404,13 +405,13 @@ def compute_systole_interval_curve(
         return None
 
     # Outlier removal: keep point if within median ± k*MAD in local time window
-    half_window_sec = float(params.get("systole_outlier_window_sec", params.get("s1_s2_outlier_window_sec", 8.0)))
-    mad_k = float(params.get("systole_outlier_mad_k", params.get("s1_s2_outlier_mad_k", 2.5)))
+    half_window_sec = float(params.get("systole_outlier_window_sec", param(params, "s1_s2_outlier_window_sec")))
+    mad_k = float(params.get("systole_outlier_mad_k", param(params, "s1_s2_outlier_mad_k")))
     keep = _median_mad_keep_mask_time_window(obs_times, obs_intervals, half_window_sec, mad_k)
     scatter_times = obs_times[keep]
     scatter_intervals = obs_intervals[keep]
 
-    global_mad_k = float(params.get("systole_global_outlier_mad_k", params.get("s1_s2_global_outlier_mad_k", 5.0)))
+    global_mad_k = float(params.get("systole_global_outlier_mad_k", param(params, "s1_s2_global_outlier_mad_k")))
     if global_mad_k > 0 and len(scatter_intervals) > 0:
         gkeep = _median_mad_keep_mask_global(scatter_intervals, global_mad_k)
         scatter_times = scatter_times[gkeep]
@@ -419,7 +420,7 @@ def compute_systole_interval_curve(
     if len(scatter_times) < 3:
         return None
 
-    gaussian_frac = float(params.get("systole_gaussian_frac", 0.05))
+    gaussian_frac = float(param(params, "systole_gaussian_frac"))
     curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
     sigma_sec = _gaussian_sigma_from_frac_and_spacing(scatter_times, gaussian_frac)
     curve_intervals = _gaussian_kernel_smooth(curve_times, scatter_times, scatter_intervals, sigma_sec)
@@ -460,8 +461,8 @@ def filter_instant_bpm_mad(
         return t_in[keep], v_in[keep]
 
     # Pass 1: standard local filter
-    half_window_sec = float(params.get("pass2_instant_bpm_outlier_window_sec", 10.0))
-    mad_k = float(params.get("pass2_instant_bpm_outlier_mad_k", 2.5))
+    half_window_sec = float(param(params, "pass2_instant_bpm_outlier_window_sec"))
+    mad_k = float(param(params, "pass2_instant_bpm_outlier_mad_k"))
     t_out, b_out = _apply_local_mad(bpm_times, instant_bpm, half_window_sec, mad_k)
 
     # Pass 2: wider window, gentler threshold
@@ -484,7 +485,7 @@ def smooth_bpm_series_from_instant(
         return pd.Series(dtype=np.float64), np.array([]), np.array([])
     bpm_times = np.asarray(bpm_times, dtype=float)
     instant_bpm = np.asarray(instant_bpm, dtype=float)
-    smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
+    smoothing_window_sec = float(param(params, "output_smoothing_window_sec"))
     # Gaussian sigma chosen so that ±3σ spans roughly the same width as the old rolling window.
     sigma_sec = max(0.05, smoothing_window_sec / 3.0)
     smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
@@ -510,7 +511,7 @@ def calculate_bpm_series(peaks: np.ndarray, sample_rate: int, params: Dict) -> T
     if avg_heart_rate <= 0:
         return pd.Series(dtype=np.float64), bpm_times, instant_bpm
 
-    smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
+    smoothing_window_sec = float(param(params, "output_smoothing_window_sec"))
     sigma_sec = max(0.05, smoothing_window_sec / 3.0)
     smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
     start_time = datetime.datetime(1970, 1, 1)
@@ -554,7 +555,7 @@ def calculate_bpm_series_from_s1_state_labels(
     if avg_heart_rate <= 0:
         return pd.Series(dtype=np.float64), bpm_times, instant_bpm
 
-    smoothing_window_sec = float(params.get("output_smoothing_window_sec", 5.0))
+    smoothing_window_sec = float(param(params, "output_smoothing_window_sec"))
     sigma_sec = max(0.05, smoothing_window_sec / 3.0)
     smoothed_vals = _gaussian_kernel_smooth(bpm_times, bpm_times, instant_bpm, sigma_sec)
     start_time = datetime.datetime(1970, 1, 1)
@@ -726,7 +727,7 @@ def find_recovery_phase(bpm_values: np.ndarray, bpm_times_sec: np.ndarray, param
         return None, None
     peak_idx = np.argmax(bpm_values)
     peak_bpm = float(bpm_values[peak_idx])
-    min_peak_bpm = params.get("recovery_phase_min_peak_bpm", 95.0)
+    min_peak_bpm = param(params, "recovery_phase_min_peak_bpm")
     if peak_bpm < min_peak_bpm:
         logging.info(
             f"Recovery phase not used: peak BPM in pass 1 is {peak_bpm:.1f} (below {min_peak_bpm:.0f}). "
@@ -734,6 +735,6 @@ def find_recovery_phase(bpm_values: np.ndarray, bpm_times_sec: np.ndarray, param
         )
         return None, None
     peak_time_sec = float(bpm_times_sec[peak_idx])
-    recovery_end_time_sec = peak_time_sec + params.get("recovery_phase_duration_sec", 120.0)
+    recovery_end_time_sec = peak_time_sec + param(params, "recovery_phase_duration_sec")
     logging.info("Peak BPM detected in pass 1 at %.2fs (%.1f BPM). High-contractility state defined until %.2fs.", peak_time_sec, peak_bpm, recovery_end_time_sec)
     return peak_time_sec, recovery_end_time_sec

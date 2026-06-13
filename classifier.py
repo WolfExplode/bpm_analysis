@@ -34,6 +34,7 @@ from peak_label_scores import (
     label_scores_paired_s1,
     label_scores_paired_s2,
 )
+from config import param
 
 
 class PeakClassifier:
@@ -179,7 +180,7 @@ class PeakClassifier:
 
     def _calculate_pairing_ratio(self) -> float:
         """Calculate recent rhythm stability ratio."""
-        history_window = self.params.get("stability_history_window", 20)
+        history_window = param(self.params, "stability_history_window")
         if len(self.state.candidate_beats) < history_window:
             return 0.5
 
@@ -388,9 +389,9 @@ class PeakClassifier:
             return peaks
         envelope = self.audio_envelope
         n_samples = len(envelope)
-        window_ms = float(self.params.get("peak_refine_window_ms", 100))
-        max_shift_ms = float(self.params.get("peak_refine_max_shift_ms", 10))
-        n_exp = float(self.params.get("peak_refine_super_gaussian_n", 4))
+        window_ms = float(param(self.params, "peak_refine_window_ms"))
+        max_shift_ms = float(param(self.params, "peak_refine_max_shift_ms"))
+        n_exp = float(param(self.params, "peak_refine_super_gaussian_n"))
         window_samples = int(window_ms * self.sample_rate / 1000)
         half = max(1, window_samples // 2)
         max_shift_samples = max(0, int(max_shift_ms * self.sample_rate / 1000))
@@ -532,7 +533,7 @@ class PeakClassifier:
                 next_amp = self.audio_envelope[next_raw_peak_idx]
 
                 # If not MUCH stronger, it's likely S2, not S1
-                s1_vs_s2_ratio = float(self.params.get("lone_s1_forward_s1_vs_s2_min_ratio", 1.69))
+                s1_vs_s2_ratio = float(param(self.params, "lone_s1_forward_s1_vs_s2_min_ratio"))
                 if current_amp < next_amp * s1_vs_s2_ratio:
                     detail_lines.append(
                         f"Forward check: next peak too close ({forward_interval_sec:.3f}s) and not strong enough "
@@ -541,7 +542,7 @@ class PeakClassifier:
                     confidence = 0.0  # Hard veto
 
         # --- 4. Final threshold check ---
-        threshold = self.params.get("lone_s1_confidence_threshold", 0.6)
+        threshold = param(self.params, "lone_s1_confidence_threshold")
         if confidence < threshold:
             detail_lines.append(
                 f"Outcome: score {confidence:.2f} < threshold {threshold:.2f} → Rejected Lone S1 → {confidence:.2f}"

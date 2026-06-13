@@ -35,6 +35,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-s
 
 from config import DEFAULT_PARAMS
 from pipeline import analyze_wav_file
+from config import param
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -288,7 +289,7 @@ def run_regression(input_dir: str) -> None:
         "regression_log": False,
     }
 
-    sample_rate = int(params.get("preprocess_target_sample_rate", 600))
+    sample_rate = int(param(params, "preprocess_target_sample_rate"))
 
     total_errors = total_flip = total_miss = total_extra = total_manual_s1 = 0
     file_results = []

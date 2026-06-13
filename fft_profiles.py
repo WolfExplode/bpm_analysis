@@ -13,6 +13,7 @@ import librosa
 
 from audio_preprocessing import apply_bandpass_only
 from peak_utils import PeakType, _get_peak_type_from_debug
+from config import param
 
 
 def _get_pairing_confidence(entry) -> Optional[float]:
@@ -187,8 +188,8 @@ def compute_fft_profiles(
         (freqs, raw_s1_db, raw_s2_db, bandpass_s1_db, bandpass_s2_db, n_s1, n_s2)
     """
     params = params or {}
-    window_ms = float(params.get("fft_window_ms", 100.0))
-    max_peaks_per_type = int(params.get("fft_max_peaks_per_type", 100))
+    window_ms = float(param(params, "fft_window_ms"))
+    max_peaks_per_type = int(param(params, "fft_max_peaks_per_type"))
 
     if target_sr is not None:
         audio_raw, full_sr = librosa.load(audio_path, sr=target_sr, mono=True)
@@ -227,8 +228,8 @@ def compute_fft_profiles(
     )
 
     # Align S2 to S1 in a neutral high band so curves converge there (shape-only difference in 0–500 Hz)
-    neutral_low = float(params.get("fft_neutral_band_low_hz", 3000.0))
-    neutral_high = float(params.get("fft_neutral_band_high_hz", 5000.0))
+    neutral_low = float(param(params, "fft_neutral_band_low_hz"))
+    neutral_high = float(param(params, "fft_neutral_band_high_hz"))
     raw_s1_db, raw_s2_db = _align_s2_to_s1_in_band(freqs, raw_s1_db, raw_s2_db, neutral_low, neutral_high)
     preproc_s1_db, preproc_s2_db = _align_s2_to_s1_in_band(freqs, preproc_s1_db, preproc_s2_db, neutral_low, neutral_high)
 
@@ -273,8 +274,8 @@ def compute_frequency_separation(
     if len(profile_s1_db) != len(freqs) or len(profile_s2_db) != len(freqs):
         return None
     params = params or {}
-    low_hz = float(params.get("fft_separation_low_hz", 10.0))
-    high_hz = float(params.get("fft_separation_high_hz", 15000.0))
+    low_hz = float(param(params, "fft_separation_low_hz"))
+    high_hz = float(param(params, "fft_separation_high_hz"))
     mask = (freqs >= low_hz) & (freqs <= high_hz)
     if not np.any(mask):
         return None
@@ -322,8 +323,8 @@ def aggregate_fft_profiles(
         sum_raw_s2 /= total_n_s2
         sum_bandpass_s2 /= total_n_s2
     params = params or {}
-    neutral_low = float(params.get("fft_neutral_band_low_hz", 3000.0))
-    neutral_high = float(params.get("fft_neutral_band_high_hz", 5000.0))
+    neutral_low = float(param(params, "fft_neutral_band_low_hz"))
+    neutral_high = float(param(params, "fft_neutral_band_high_hz"))
     sum_raw_s1, sum_raw_s2 = _align_s2_to_s1_in_band(freqs, sum_raw_s1, sum_raw_s2, neutral_low, neutral_high)
     sum_bandpass_s1, sum_bandpass_s2 = _align_s2_to_s1_in_band(freqs, sum_bandpass_s1, sum_bandpass_s2, neutral_low, neutral_high)
     return (freqs, sum_raw_s1, sum_raw_s2, sum_bandpass_s1, sum_bandpass_s2)
@@ -462,7 +463,7 @@ def save_fft_profiles_html(
         if freqs.size == 0:
             logging.warning("No FFT data to plot; skipping FFT profiles HTML.")
             return
-        window_ms = float(params.get("fft_window_ms", 100.0))
+        window_ms = float(param(params, "fft_window_ms"))
         fig = _build_fft_figure(freqs, raw_s1_db, raw_s2_db, preproc_s1_db, preproc_s2_db, window_ms)
         _write_fft_html(fig, output_path, f"S1 / S2 FFT Profiles - {os.path.basename(audio_path)}", os.path.basename(audio_path))
         return
@@ -487,7 +488,7 @@ def save_fft_profiles_html(
         logging.warning("No FFT data to plot; skipping FFT profiles HTML.")
         return
 
-    window_ms = float(params.get("fft_window_ms", 100.0))
+    window_ms = float(param(params, "fft_window_ms"))
     fig = _build_fft_figure(freqs, raw_s1_db, raw_s2_db, preproc_s1_db, preproc_s2_db, window_ms)
     audio_file_name = os.path.basename(audio_path)
     _write_fft_html(fig, output_path, f"S1 / S2 FFT Profiles - {audio_file_name}", audio_file_name)
@@ -504,7 +505,7 @@ def save_aggregate_fft_profiles_html(
 ) -> None:
     """Save aggregated FFT profiles (from aggregate_fft_profiles) to HTML."""
     params = params or {}
-    window_ms = float(params.get("fft_window_ms", 100.0))
+    window_ms = float(param(params, "fft_window_ms"))
     if freqs.size == 0:
         logging.warning("No FFT data for aggregate; skipping aggregate FFT HTML.")
         return
