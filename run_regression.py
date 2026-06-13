@@ -33,9 +33,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-sig"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+import numpy as np
 from config import DEFAULT_PARAMS
 from pipeline import analyze_wav_file
-from config import param
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -113,6 +113,160 @@ def _find_closest(target: float, centers: List[float], tolerance: float) -> Opti
 
 
 # ---------------------------------------------------------------------------
+# Per-segment context metrics
+# ---------------------------------------------------------------------------
+
+def _compute_segment_metrics(
+    start_sec: float,
+    end_sec: float,
+    analysis_data: Dict,
+    sample_rate: int,
+) -> Dict:
+    """Envelope + BPM metrics over [start_sec, end_sec]."""
+    envelope = analysis_data.get("noise_removed_envelope")
+    if envelope is None:
+        envelope = analysis_data.get("bandpass_envelope")
+    if envelope is None:
+        return {}
+
+    sr = float(sample_rate)
+    start_s = max(0, int(start_sec * sr))
+    end_s = min(len(envelope), int(end_sec * sr))
+    if end_s <= start_s:
+        return {}
+
+    seg = np.asarray(envelope[start_s:end_s], dtype=np.float64)
+    duration = (end_s - start_s) / sr
+    auc = float(np.trapezoid(seg)) / sr
+    env_peak = float(np.max(seg))
+    env_mean = float(np.mean(seg))
+
+    center_s = (start_s + end_s) // 2
+    center_sec_val = center_s / sr
+
+    nf = None
+    noise_series = analysis_data.get("dynamic_noise_floor_series")
+    if noise_series is not None:
+        try:
+            idx_arr = np.asarray(noise_series.index, dtype=np.float64)
+            val_arr = np.asarray(noise_series.values, dtype=np.float64)
+            nf = float(np.interp(center_s, idx_arr, val_arr))
+        except Exception:
+            pass
+
+    bpm = None
+    bpm_times = analysis_data.get("pass2_lt_bpm_times")
+    bpm_vals = analysis_data.get("pass2_lt_bpm")
+    if bpm_times is not None and bpm_vals is not None and len(bpm_times) > 1:
+        bpm = float(np.interp(center_sec_val, np.asarray(bpm_times), np.asarray(bpm_vals)))
+
+    result: Dict = {
+        "duration_sec": round(duration, 4),
+        "envelope_auc": round(auc, 6),
+        "envelope_peak": round(env_peak, 4),
+        "envelope_mean": round(env_mean, 4),
+    }
+    if nf is not None:
+        result["noise_floor"] = round(nf, 4)
+        if env_peak > 0:
+            result["snr"] = round(env_peak / nf, 3) if nf > 0 else None
+    if bpm is not None:
+        result["bpm_at_time"] = round(bpm, 1)
+    return result
+
+
+def _get_peak_label_scores_in_window(
+    start_sec: float,
+    end_sec: float,
+    analysis_data: Dict,
+    sample_rate: int,
+) -> Dict:
+    """Return label_scores of the highest-amplitude detected peak in [start_sec, end_sec]."""
+    peak_classifications = analysis_data.get("peak_classifications") or {}
+    if not peak_classifications:
+        return {}
+    envelope = analysis_data.get("noise_removed_envelope")
+    if envelope is None:
+        envelope = analysis_data.get("bandpass_envelope")
+
+    sr = float(sample_rate)
+    start_s = int(start_sec * sr)
+    end_s = int(end_sec * sr)
+
+    best_amp = -1.0
+    best_scores: Optional[Dict] = None
+    for idx, entry in peak_classifications.items():
+        try:
+            s = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if not (start_s <= s < end_s):
+            continue
+        amp = float(envelope[s]) if envelope is not None and s < len(envelope) else 0.0
+        if amp > best_amp:
+            best_amp = amp
+            best_scores = entry.get("label_scores", {})
+
+    if not best_scores:
+        return {}
+    return {
+        "label_score_s1": round(float(best_scores.get("S1", 0.0)), 4),
+        "label_score_s2": round(float(best_scores.get("S2", 0.0)), 4),
+        "label_score_noise": round(float(best_scores.get("noise", 0.0)), 4),
+    }
+
+
+def _segment_metrics_entry(
+    offset: int,
+    state: str,
+    start_sec: float,
+    end_sec: float,
+    analysis_data: Dict,
+    sample_rate: int,
+) -> Dict:
+    entry: Dict = {
+        "offset": offset,
+        "state": state,
+        "start_sec": round(start_sec, 4),
+        "end_sec": round(end_sec, 4),
+    }
+    entry.update(_compute_segment_metrics(start_sec, end_sec, analysis_data, sample_rate))
+    entry.update(_get_peak_label_scores_in_window(start_sec, end_sec, analysis_data, sample_rate))
+    return entry
+
+
+def _get_neighbors(
+    segments: List[Tuple[float, float, str]],
+    center_sec: float,
+    n: int,
+    analysis_data: Dict,
+    sample_rate: int,
+) -> List[Dict]:
+    """Return n segments before and after the segment containing center_sec, with metrics."""
+    if not segments:
+        return []
+
+    center_idx = None
+    for i, (s, e, _) in enumerate(segments):
+        if s <= center_sec <= e:
+            center_idx = i
+            break
+    if center_idx is None:
+        dists = [min(abs(center_sec - s), abs(center_sec - e)) for s, e, _ in segments]
+        center_idx = int(np.argmin(dists))
+
+    result = []
+    for offset in range(-n, n + 1):
+        if offset == 0:
+            continue
+        idx = center_idx + offset
+        if 0 <= idx < len(segments):
+            seg_s, seg_e, seg_state = segments[idx]
+            result.append(_segment_metrics_entry(offset, seg_state, seg_s, seg_e, analysis_data, sample_rate))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Core comparison
 # ---------------------------------------------------------------------------
 
@@ -120,6 +274,7 @@ def compare_file(
     manual_segments: List[Tuple[float, float, str]],
     pred_boundaries: List[Tuple],
     sample_rate: int,
+    analysis_data: Optional[Dict] = None,
 ) -> Dict:
     """
     Compare predicted state boundaries against manual ground truth.
@@ -129,9 +284,18 @@ def compare_file(
     Returns a dict with error breakdown and per-error details.
     """
     sr = float(sample_rate)
-    manual_s1 = [(s, e) for s, e, st in manual_segments if st == "S1"]
-    pred_s1 = [(b[0] / sr, b[1] / sr) for b in pred_boundaries if str(b[2]).lower() == "s1"]
-    pred_s2 = [(b[0] / sr, b[1] / sr) for b in pred_boundaries if str(b[2]).lower() == "s2"]
+
+    # Full sorted segment lists (all states) for neighbor context
+    manual_all: List[Tuple[float, float, str]] = sorted(manual_segments, key=lambda x: x[0])
+    pred_all: List[Tuple[float, float, str]] = sorted(
+        [(b[0] / sr, b[1] / sr, str(b[2])) for b in pred_boundaries],
+        key=lambda x: x[0],
+    )
+
+    # S1/S2 only for matching
+    manual_s1 = [(s, e) for s, e, st in manual_all if st == "S1"]
+    pred_s1 = [(s, e) for s, e, st in pred_all if st.lower() == "s1"]
+    pred_s2 = [(s, e) for s, e, st in pred_all if st.lower() == "s2"]
 
     manual_centers = [_seg_center(s, e) for s, e in manual_s1]
     pred_s1_centers = [_seg_center(s, e) for s, e in pred_s1]
@@ -158,7 +322,7 @@ def compare_file(
         match_types.append("miss")
         matched_pred_s1_idx.append(None)
 
-    # Scan for flip regions; collect errors
+    # Scan for flip regions; collect errors with segment bounds
     errors: List[Dict] = []
     flip_time_regions: List[Tuple[float, float]] = []
 
@@ -169,6 +333,7 @@ def compare_file(
 
     for i, mtype in enumerate(match_types):
         mc = manual_centers[i]
+        ms, me = manual_s1[i]
 
         if mtype == "match":
             flip_consecutive = 0
@@ -185,8 +350,11 @@ def compare_file(
             if not in_flip and flip_consecutive >= FLIP_N:
                 start_i = i - FLIP_N + 1
                 flip_start_time = manual_centers[start_i]
+                fs, fe = manual_s1[start_i]
                 errors.append({
                     "time_sec": round(flip_start_time, 3),
+                    "start_sec": round(fs, 4),
+                    "end_sec": round(fe, 4),
                     "type": "phase_flip",
                     "detail": "S1/S2 labels inverted starting here (upstream labeling error)",
                 })
@@ -198,6 +366,8 @@ def compare_file(
             if not in_flip:
                 errors.append({
                     "time_sec": round(mc, 3),
+                    "start_sec": round(ms, 4),
+                    "end_sec": round(me, 4),
                     "type": "miss",
                     "detail": "manual S1 has no predicted S1 or S2 within tolerance",
                 })
@@ -214,11 +384,28 @@ def compare_file(
             continue
         errors.append({
             "time_sec": round(pc, 3),
+            "start_sec": round(ps, 4),
+            "end_sec": round(pe, 4),
             "type": "extra",
             "detail": "predicted S1 with no nearby manual S1",
         })
 
     errors.sort(key=lambda e: e["time_sec"])
+
+    # Enrich errors with context metrics
+    if analysis_data is not None:
+        for err in errors:
+            s_sec = err["start_sec"]
+            e_sec = err["end_sec"]
+            center_sec = (s_sec + e_sec) / 2.0
+
+            # Error segment metrics + label scores
+            err.update(_compute_segment_metrics(s_sec, e_sec, analysis_data, sample_rate))
+            err.update(_get_peak_label_scores_in_window(s_sec, e_sec, analysis_data, sample_rate))
+
+            # N=2 neighbors from predicted full sequence and manual full sequence
+            err["predicted_context"] = _get_neighbors(pred_all, center_sec, 2, analysis_data, sample_rate)
+            err["manual_context"] = _get_neighbors(manual_all, center_sec, 2, analysis_data, sample_rate)
 
     return {
         "manual_s1_count": len(manual_s1),
@@ -288,7 +475,7 @@ def run_regression(input_dir: str) -> None:
         "working_wav_in_output": False,
     }
 
-    sample_rate = int(param(params, "preprocess_target_sample_rate"))
+    sample_rate = int(params.get("preprocess_target_sample_rate", 600))
 
     total_errors = total_flip = total_miss = total_extra = total_manual_s1 = 0
     file_results = []
@@ -340,7 +527,7 @@ def run_regression(input_dir: str) -> None:
             continue
 
         pred_boundaries = analysis_data.get("pass3_state_boundaries") or []
-        result = compare_file(manual_segments, pred_boundaries, sample_rate)
+        result = compare_file(manual_segments, pred_boundaries, sample_rate, analysis_data)
 
         n_s1 = result["manual_s1_count"]
         n_err = result["total_errors"]
@@ -366,7 +553,11 @@ def run_regression(input_dir: str) -> None:
             f"flip={result['flip_errors']} miss={result['miss_errors']} extra={result['extra_errors']}"
         )
         for err in result["errors"]:
-            print(f"      t={err['time_sec']:.3f}s  [{err['type']}]  {err['detail']}")
+            snr_str = f"  snr={err['snr']:.2f}" if err.get("snr") is not None else ""
+            peak_str = f"  peak={err['envelope_peak']:.3f}" if err.get("envelope_peak") is not None else ""
+            bpm_str = f"  bpm={err['bpm_at_time']:.0f}" if err.get("bpm_at_time") is not None else ""
+            s1_str = f"  s1_score={err['label_score_s1']:.2f}" if err.get("label_score_s1") is not None else ""
+            print(f"      t={err['time_sec']:.3f}s  [{err['type']}]{snr_str}{peak_str}{bpm_str}{s1_str}")
 
     # Final subtotal for last subdir
     if current_subdir is not None:
