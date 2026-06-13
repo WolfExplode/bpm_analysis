@@ -1,0 +1,4 @@
+# Dev/test-only dependencies. Install with:  pip install -r requirements-dev.txt
+# Runtime deps live in requirements.txt.
+
+pytest>=8.0

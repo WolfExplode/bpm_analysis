@@ -74,9 +74,13 @@ def build_transition_matrix(bpm: float, sample_rate: int, params: Dict) -> np.nd
     dia_dur_samp = max(2, int(round(float(ivs.get("s2_s1_nominal", 0.400)) * sample_rate)))
 
     def _self_loop(dur: int) -> float:
-        """p_self ∝ expected duration, clamped by sl_weight."""
+        """p_self proportional to expected duration, clamped by sl_weight.
+
+        dur >= 2 (enforced above) so raw = 1 - 1/dur >= 0.5; the old
+        `raw / max(raw, 1e-10) * raw` was a no-op that reduced to `* raw`.
+        """
         raw = 1.0 - 1.0 / dur
-        return float(np.clip(sl_weight * raw / max(raw, 1e-10) * raw, 0.50, 0.999))
+        return float(np.clip(sl_weight * raw, 0.50, 0.999))
 
     p_s1_self   = _self_loop(s1_dur_samp)
     p_sys_self  = _self_loop(sys_dur_samp)
