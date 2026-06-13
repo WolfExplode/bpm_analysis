@@ -25,6 +25,7 @@ from audio_preprocessing import (
 )
 from file_io import find_companion_wav, normalize_output_filename_stem
 from console_logging import configure_analysis_console_logging
+from config import param
 
 _EXT_PREFERENCE = {
     ".wav": 2,
@@ -334,7 +335,7 @@ def _ensure_pool_process_logging(params: Dict[str, Any]) -> None:
     if root.handlers:
         return
     configure_analysis_console_logging(
-        general_debug=bool(params.get("general_console_logging", False)),
+        general_debug=bool(param(params, "general_console_logging")),
         quiet=False,
         stream=sys.stdout,
     )

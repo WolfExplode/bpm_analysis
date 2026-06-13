@@ -10,6 +10,11 @@ DEFAULT_PARAMS = {
     # 1. General & Preprocessing Settings
     # Controls the initial loading and filtering of the audio.
     # =================================================================================
+    # Console-logging verbosity. Set by the GUI/CLI into the params dict; declared here so they are
+    # documented, drift-guarded, and accepted by validate_params (rather than warned as unknown keys).
+    "algorithm_console_logging": True,   # Verbose per-pass algorithm-detail INFO logs. False keeps stage-level INFO, suppresses chatty detail.
+    "general_console_logging": False,    # Root logger at DEBUG (very noisy). False keeps non-algorithm logging at INFO.
+
     "downsample_factor": 300,     # Factor to reduce sample rate. Higher = faster processing, less detail.
     "save_filtered_wav": True,    # If True, saves *_filtered_debug.wav and *_filtered_inverse_debug.wav when output_options.filtered_wav is True.
 
@@ -144,6 +149,10 @@ DEFAULT_PARAMS = {
     "contractility_penalty_max": 0.5,             # Max multiplicative penalty when far outside band.
     "recovery_phase_duration_sec": 120,      # Duration (seconds) of the high-contractility state after peak BPM.
     "recovery_phase_min_peak_bpm": 110,      # Only enable recovery-phase adjust if pass 1 peak BPM >= this (avoids activating when BPM stays low).
+    # Absolute S1 prominence guardrail for accepted S1→S2 pairs: a candidate S1 below this fraction of the
+    # recent high-quality S1 baseline (top-20% of last ~20 S1s) is linearly penalised (full veto at 0).
+    # Mirrors lone_s1_min_prominence_ratio; kept separate so paired and lone guardrails can diverge if needed.
+    "paired_s1_min_prominence_ratio": 0.4,
 
     # --- 4.4. V-Shaped Interval: boost near expected, penalty outside ---
     # Linear boost from 0 at expected±zero_crossing to max at expected; linear penalty outside that band.
@@ -182,6 +191,7 @@ DEFAULT_PARAMS = {
     # k consecutive noise raw peaks before current + span ≈ (k+1)×RR → score span/(k+1) vs RR.
     "lone_s1_missed_beat_tolerance_frac": 0.22,  # |span − m×RR| / (m×RR) must be ≤ this (m = k+1).
     "lone_s1_forward_s1_vs_s2_min_ratio": 1.69,  # Forward check: current peak must be at least this × the next peak's amplitude to be treated as S1 rather than S2. Tuned empirically.
+    "lone_s1_min_prominence_ratio": 0.4,  # A Lone S1 below this fraction of the recent high-quality S1 baseline (top-20% of last ~20 S1s) is linearly penalised (full veto at 0). Tuned empirically.
 
     # =================================================================================
     # 6. Pass 3 — Dense state timeline from Pass 2 (spectral S2 / Pass A–C / emissions removed; see pass3 archived logic.md)

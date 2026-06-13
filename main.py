@@ -1,6 +1,7 @@
 import os
 import ttkbootstrap as ttkb
 from gui import BPMApp
+from console_logging import make_stream_unicode_safe
 import logging
 import sys
 
@@ -19,6 +20,7 @@ def main():
     This is the main entry point for the application.
     Optional args: paths to audio files (e.g. from Directory Opus) pre-fill the file list.
     """
+    make_stream_unicode_safe(sys.stdout)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - [%(levelname)s] - %(message)s',

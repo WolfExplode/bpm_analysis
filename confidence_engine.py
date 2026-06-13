@@ -750,11 +750,8 @@ class PairingEngine:
         if len(recent_prominences) >= 5:
             reference_prominence = np.percentile(recent_prominences, 80)  # Top 20% as adaptive reference
             if reference_prominence > 0:
-                # Re-use Lone S1 ratio setting for now to keep behavior consistent
-                min_ratio = self.params.get(
-                    "paired_s1_min_prominence_ratio",
-                    self.params.get("lone_s1_min_prominence_ratio", 0.4),  # Tuned magic number, see docs.
-                )
+                # Mirrors the Lone S1 guardrail; defaults equal but is a separate key so the two can diverge.
+                min_ratio = param(self.params, "paired_s1_min_prominence_ratio")
                 prominence_ratio = s1_prominence / (reference_prominence + 1e-9)
 
                 if prominence_ratio < min_ratio:

@@ -509,7 +509,7 @@ class PeakClassifier:
             )
 
             # Penalty if <40% of reference S1 prominence (adaptive threshold)
-            min_ratio = self.params.get('lone_s1_min_prominence_ratio', 0.4)
+            min_ratio = param(self.params, "lone_s1_min_prominence_ratio")
             prominence_ratio = current_prominence / (reference_prominence + 1e-9)
 
             if prominence_ratio < min_ratio:

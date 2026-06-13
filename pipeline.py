@@ -301,9 +301,7 @@ def analyze_wav_file(
 
     # Honor optional verbose logging flag from params to control how noisy the console is.
     # When disabled, we keep stage-level INFO logs but suppress very chatty algorithm-detail INFO logs.
-    verbose_logging = bool(
-        params.get("algorithm_console_logging", params.get("verbose_console_logging", True))
-    )
+    verbose_logging = bool(param(params, "algorithm_console_logging"))
     root_logger = logging.getLogger()
     active_filters = []
 

@@ -91,7 +91,8 @@ def _detect_sensitive_peaks_in_large_gap_windows(
     min_peak_dist_samples = max(1, int(min_peak_dist_samples))
 
     if prominence_quantile is None:
-        q = float(params.get("pass3_gap_recovery_peak_prominence_quantile", 0.50))
+        # No explicit quantile: fall back to the "sensitive" scan default (single source of truth).
+        q = float(param(params, "pass3_gap_recovery_peak_prominence_quantile_sensitive"))
     else:
         q = float(prominence_quantile)
     q = float(np.clip(q, 0.0, 1.0))
@@ -2575,9 +2576,7 @@ def run_pass3_correction(
         return _ms_t_r, _ms_d_r, _md_t_r, _md_d_r
 
     # ── HF noise: clear then rebuild cardiac labels in unreliable audio ─────────
-    _noise_repair_on = bool(
-        params.get("pass3_enable_noise_repair", params.get("pass3_enable_noise_s2_repair", True)),
-    )
+    _noise_repair_on = bool(param(params, "pass3_enable_noise_repair"))
     _gap_apply = bool(param(params, "pass3_enable_gap_state_insert"))
     _gap_calc = bool(param(params, "pass3_calculate_large_gaps"))
     _did_noise_repair = bool(_noise_repair_on and noise_ivs_final)

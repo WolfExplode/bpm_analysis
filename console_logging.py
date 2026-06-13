@@ -27,6 +27,27 @@ _NOISY_LOGGER_NAMES = (
 )
 
 
+def make_stream_unicode_safe(stream: TextIO) -> None:
+    """Stop StreamHandler from raising UnicodeEncodeError on a legacy console encoding.
+
+    On Windows the console is often cp1252, which cannot encode the Unicode that shows up
+    in log records: emoji in input file names, and arrow / minus / ≤ glyphs baked into log
+    strings. Without this, each such record makes logging.emit throw and spam the console
+    with "--- Logging error ---" tracebacks (the analysis itself is unaffected).
+
+    UTF-8 with backslashreplace never raises; on a UTF-8-capable terminal (VS Code, Windows
+    Terminal) it renders cleanly, and on a legacy one the rare odd glyph degrades to an
+    escape instead of crashing the handler. Best-effort: silently no-op if the stream cannot
+    be reconfigured (e.g. already wrapped, or not a TextIOWrapper).
+    """
+    try:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
+
+
 class SuppressKaleidoChoreographerRootNoiseFilter(logging.Filter):
     """
     choreographer uses logistro.getLogger() (root) in utils/_which.py; Chrome stderr uses logger
@@ -63,6 +84,7 @@ def configure_analysis_console_logging(
     as (handler, filter) pairs so the GUI can remove them when toggling settings off.
     Pass None for one-shot CLI runs (filters stay on the handlers for process lifetime).
     """
+    make_stream_unicode_safe(stream)
     root = logging.getLogger()
     if not root.handlers:
         h = logging.StreamHandler(stream)
