@@ -82,13 +82,3 @@ def label_scores_noise_middle_structural() -> Dict[str, float]:
 def label_scores_lone_s1_last_peak() -> Dict[str, float]:
     """Final peak forced as Lone S1 (last in sequence) without lone-S1 scoring."""
     return {LABEL_SCORE_S1: 0.75, LABEL_SCORE_S2: 0.05, LABEL_SCORE_NOISE: 0.20}
-
-
-def get_label_scores(entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
-    """Return label_scores dict from a peak_classifications entry, or None."""
-    if not entry or not isinstance(entry, dict):
-        return None
-    ls = entry.get("label_scores")
-    if not isinstance(ls, dict):
-        return None
-    return ls

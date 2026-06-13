@@ -379,67 +379,6 @@ def compute_pass1_bpm_curve(
     }
 
 
-def compute_systole_interval_curve(
-    obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
-) -> Optional[Dict[str, np.ndarray]]:
-    """
-    Outlier removal: local median+MAD in time window, then global median+MAD on intervals
-    (skipped if systole_global_outlier_mad_k <= 0), then light Gaussian smoothing on measured systole intervals.
-
-    Notes:
-    - "S1→S2 interval" and "systole duration" are treated as the same quantity in this pipeline.
-    - Parameter keys accept both the preferred `systole_*` names and legacy `s1_s2_*` names.
-
-    Returns dict with curve_times, curve_intervals (Gaussian-smoothed), scatter_times, scatter_intervals (filtered),
-    or None if insufficient data.
-    """
-    if obs_times is None or obs_intervals is None or len(obs_times) != len(obs_intervals) or len(obs_times) < 3:
-        return None
-    obs_times = np.asarray(obs_times, dtype=float)
-    obs_intervals = np.asarray(obs_intervals, dtype=float)
-
-    obs_times, obs_intervals = filter_interval_durations_by_limits(
-        obs_times, obs_intervals, kind="systole", params=params,
-    )
-    if len(obs_times) < 3:
-        return None
-
-    # Outlier removal: keep point if within median ± k*MAD in local time window
-    half_window_sec = float(params.get("systole_outlier_window_sec", param(params, "s1_s2_outlier_window_sec")))
-    mad_k = float(params.get("systole_outlier_mad_k", param(params, "s1_s2_outlier_mad_k")))
-    keep = _median_mad_keep_mask_time_window(obs_times, obs_intervals, half_window_sec, mad_k)
-    scatter_times = obs_times[keep]
-    scatter_intervals = obs_intervals[keep]
-
-    global_mad_k = float(params.get("systole_global_outlier_mad_k", param(params, "s1_s2_global_outlier_mad_k")))
-    if global_mad_k > 0 and len(scatter_intervals) > 0:
-        gkeep = _median_mad_keep_mask_global(scatter_intervals, global_mad_k)
-        scatter_times = scatter_times[gkeep]
-        scatter_intervals = scatter_intervals[gkeep]
-
-    if len(scatter_times) < 3:
-        return None
-
-    gaussian_frac = float(param(params, "systole_gaussian_frac"))
-    curve_times = np.linspace(float(scatter_times.min()), float(scatter_times.max()), 200)
-    sigma_sec = _gaussian_sigma_from_frac_and_spacing(scatter_times, gaussian_frac)
-    curve_intervals = _gaussian_kernel_smooth(curve_times, scatter_times, scatter_intervals, sigma_sec)
-
-    return {
-        "curve_times": curve_times,
-        "curve_intervals": curve_intervals,
-        "scatter_times": scatter_times,
-        "scatter_intervals": scatter_intervals,
-    }
-
-
-def compute_s1_s2_interval_curve(
-    obs_times: np.ndarray, obs_intervals: np.ndarray, params: Dict
-) -> Optional[Dict[str, np.ndarray]]:
-    """Legacy alias for `compute_systole_interval_curve`."""
-    return compute_systole_interval_curve(obs_times, obs_intervals, params)
-
-
 def filter_instant_bpm_mad(
     bpm_times: np.ndarray, instant_bpm: np.ndarray, params: Dict
 ) -> Tuple[np.ndarray, np.ndarray]:

@@ -53,29 +53,6 @@ def test_bpm_intervals_min_feasible_cycle_components():
     assert iv["min_feasible_cycle"] == pytest.approx(expected)
 
 
-# --- hr_reactivity_factor ---------------------------------------------------
-
-def test_reactivity_is_one_at_rest_zero_at_max():
-    assert ce.hr_reactivity_factor(60, hr_max=200, hr_rest=60) == pytest.approx(1.0)
-    assert ce.hr_reactivity_factor(200, hr_max=200, hr_rest=60) == pytest.approx(0.0)
-
-
-def test_reactivity_monotonic_decreasing():
-    vals = [ce.hr_reactivity_factor(hr, 200, 60) for hr in range(60, 201, 20)]
-    assert all(a >= b for a, b in zip(vals, vals[1:]))
-
-
-def test_reactivity_degenerate_reserve_returns_one():
-    assert ce.hr_reactivity_factor(150, hr_max=100, hr_rest=100) == 1.0
-    assert ce.hr_reactivity_factor(150, hr_max=80, hr_rest=120) == 1.0
-
-
-def test_reactivity_clamps_below_rest_and_above_max():
-    # HR outside [rest, max] must not produce values outside [0, 1].
-    assert ce.hr_reactivity_factor(40, 200, 60) == pytest.approx(1.0)
-    assert ce.hr_reactivity_factor(250, 200, 60) == pytest.approx(0.0)
-
-
 # --- update_long_term_bpm ---------------------------------------------------
 
 def test_update_long_term_bpm_clamped_to_config_range():

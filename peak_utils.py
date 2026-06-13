@@ -56,18 +56,6 @@ def _is_s1_paired_debug(entry) -> bool:
     return _get_peak_type_from_debug(entry) == PeakType.S1_PAIRED.value
 
 
-def _is_lone_s1_debug(entry) -> bool:
-    """Returns True if a debug entry represents any Lone S1 classification."""
-    pt = _get_peak_type_from_debug(entry)
-    return pt.startswith("Lone S1")
-
-
-def _is_noise_debug(entry) -> bool:
-    """Returns True if a debug entry represents a Noise/Rejected classification."""
-    pt = _get_peak_type_from_debug(entry)
-    return "Noise" in pt
-
-
 def format_debug_entry(debug_entry: Dict) -> List[str]:
     """
     Converts a structured debug entry into a list of human-readable lines.
@@ -171,25 +159,6 @@ def format_debug_entry(debug_entry: Dict) -> List[str]:
                 )
 
     return lines
-
-
-def _simple_label_from_debug(entry: Any) -> str:
-    """
-    Maps a detailed debug entry to a coarse label used for validation.
-
-    Returns one of: 'S1', 'S2', 'Noise', or 'Unknown'.
-    """
-    pt = _get_peak_type_from_debug(entry) or ""
-    if not pt:
-        return "Unknown"
-
-    if _is_noise_debug(entry):
-        return "Noise"
-    if _is_s1_paired_debug(entry) or _is_lone_s1_debug(entry):
-        return "S1"
-    if PeakType.is_s2(pt):
-        return "S2"
-    return "Unknown"
 
 
 def build_peak_prominence_detail_cache(

@@ -59,10 +59,3 @@ def test_extract_pairing_final_confidence_falls_back_to_last():
 def test_extract_pairing_final_confidence_handles_empty_and_bad():
     assert pls.extract_pairing_final_confidence_from_steps([]) == 0.0
     assert pls.extract_pairing_final_confidence_from_steps([{"step": "x", "result": None}]) == 0.0
-
-
-def test_get_label_scores_guards():
-    assert pls.get_label_scores(None) is None
-    assert pls.get_label_scores({}) is None
-    assert pls.get_label_scores({"label_scores": "notadict"}) is None
-    assert pls.get_label_scores({"label_scores": {"S1": 1.0}}) == {"S1": 1.0}

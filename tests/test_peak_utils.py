@@ -27,15 +27,6 @@ def test_get_peak_type_from_debug_dict_str_and_legacy():
     assert pu._get_peak_type_from_debug(None) == ""
 
 
-def test_simple_label_from_debug():
-    assert pu._simple_label_from_debug({"peak_type": PeakType.S1_PAIRED.value}) == "S1"
-    assert pu._simple_label_from_debug({"peak_type": PeakType.LONE_S1_VALIDATED.value}) == "S1"
-    assert pu._simple_label_from_debug({"peak_type": PeakType.S2_PAIRED.value}) == "S2"
-    assert pu._simple_label_from_debug({"peak_type": PeakType.NOISE.value}) == "Noise"
-    assert pu._simple_label_from_debug({}) == "Unknown"
-    assert pu._simple_label_from_debug(None) == "Unknown"
-
-
 def _example_envelope():
     # troughs at indices 1,3,5,7 ; peaks at 2,4,6
     env = np.array([0.0, 0.2, 1.0, 0.1, 0.8, 0.3, 0.9, 0.0])

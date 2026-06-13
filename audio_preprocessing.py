@@ -43,17 +43,6 @@ def normalize_channel_mode(mode: str) -> str:
     return m
 
 
-def get_audio_channel_count(file_path: str) -> int:
-    """Return channel count (1 for mono). Falls back to 1 if pydub cannot open the file."""
-    if not AudioSegment:
-        return 1
-    try:
-        return int(AudioSegment.from_file(file_path).channels)
-    except Exception as e:
-        logging.warning("Could not read channel count for %s: %s", file_path, e)
-        return 1
-
-
 def _export_mono_channel(
     segment,
     file_path: str,
@@ -244,27 +233,6 @@ def apply_bandpass_only(audio: np.ndarray, sample_rate: int, params: Dict) -> np
     return sosfiltfilt(sos, audio)
 
 
-def apply_signal_preprocessing(
-    audio: np.ndarray, sample_rate: int, params: Dict
-) -> np.ndarray:
-    """
-    Apply hum removal and bandpass to audio. Used for FFT profiles (preprocessed traces).
-    Returns filtered audio at the same sample rate.
-    """
-    if audio.size == 0:
-        return audio
-    filtered, _ = _detect_and_remove_stationary_hum(audio, sample_rate, params)
-    lowcut = float(param(params, "preprocess_bandpass_low_hz"))
-    highcut = float(param(params, "preprocess_bandpass_high_hz"))
-    order = int(param(params, "preprocess_bandpass_order"))
-    nyquist = 0.5 * sample_rate
-    low, high = lowcut / nyquist, highcut / nyquist
-    if high >= 1.0:
-        return filtered
-    sos = butter(order, [low, high], btype="band", output="sos")
-    return sosfiltfilt(sos, filtered)
-
-
 def convert_to_wav(file_path: str, target_path: str) -> bool:
     """Converts a given audio file to WAV format."""
     if not AudioSegment:
@@ -279,17 +247,6 @@ def convert_to_wav(file_path: str, target_path: str) -> bool:
     except Exception as e:
         logging.error("Could not convert file %s. Error: %s", file_path, e)
         return False
-
-
-def split_wav_to_mono_channels(file_path: str, output_directory: str) -> List[str]:
-    """
-    For a stereo WAV file, export one mono WAV per channel.
-
-    Returns a list of file paths to the mono channel WAVs. If the input
-    is already mono or splitting fails, the original file_path is returned
-    as the only element. Raises TooManyAudioChannelsError when channel count > 2.
-    """
-    return resolve_wav_for_channel_mode(file_path, output_directory, CHANNEL_MODE_ALL)
 
 
 def resolve_wav_for_channel_mode(
