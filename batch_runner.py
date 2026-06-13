@@ -383,12 +383,6 @@ def run_batch_parallel(
         max_workers = 1
 
     opts = copy.deepcopy(output_options)
-    if opts.get("regression_log_path") and max_workers > 1:
-        logging.warning(
-            "Regression log path is incompatible with parallel batch; disabling regression log for this run."
-        )
-        opts.pop("regression_log_path", None)
-
     if opts.get("png") and max_workers > 1:
         logging.warning(
             "PNG export uses Kaleido/Chromium per process; high --jobs with PNG enabled can use large RAM. "

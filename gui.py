@@ -15,7 +15,6 @@ from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, List, Optional, Tuple
-from time_utils import timestamp_str
 from ui_settings_loader import migrate_ui_settings_keys
 from audio_preprocessing import (
     CHANNEL_MODE_ALL,
@@ -38,18 +37,17 @@ class UIMessage:
     data: Any = None
 
 # Order and labels for output file checkboxes (keys must match DEFAULT_OUTPUT_OPTIONS in config).
-# First 8 in 2-column grid, 9th full width. Default values come from config only.
+# Laid out in a 2-column grid. Default values come from config only.
 OUTPUT_FILE_OPTIONS = (
     ("html", "Heart Rate Graph (.html)"),
     ("fft_profiles", "S1/S2 FFT Profiles (.html)"),
     ("png", "Plot PNG (.png)"),
     ("csv", "bpm/time Data (.csv)"),
-    ("spectrogram", "Spectrogram (.png)"), 
+    ("spectrogram", "Spectrogram (.png)"),
     ("summary", "Summary Report (.md)"),
     ("filtered_wav", "Bandpass + out-of-band debug WAVs (.wav)"),
     ("working_wav_in_output", "Converted / working WAV in output folder"),
     ("debug", "Debug Report (.md)"),
-    ("regression_log", "Regression testing output log (.md)"),
 )
 
 CHANNEL_MODE_OPTIONS = (
@@ -747,31 +745,11 @@ class BPMApp:
                 max_workers = 1
             max_workers = max(1, min(max_workers, 32))
 
-            regression_log_path = None
-            if self.output_regression_log.get() and max_workers <= 1:
-                regression_log_path = os.path.join(base_output_dir, "regression_testing_output_log.md")
-                try:
-                    with open(regression_log_path, "w", encoding="utf-8") as log_file:
-                        log_file.write("# Regression Testing Output Log\n")
-                        log_file.write(f"*Generated on: {timestamp_str()}*\n\n")
-                except Exception as e:
-                    logging.error("Failed to initialize regression testing output log: %s", e)
-                    regression_log_path = None
-
             self.params["optimize_long_plots"] = bool(optimize_long_plots)
             self.params["algorithm_console_logging"] = bool(algorithm_console_logging)
             self.params["general_console_logging"] = bool(general_console_logging)
 
             output_options = self.get_output_options()
-            if regression_log_path and max_workers <= 1:
-                output_options["regression_log_path"] = regression_log_path
-            elif self.output_regression_log.get() and max_workers > 1:
-                self.log_queue.put(
-                    UIMessage(
-                        UIMessageType.STATUS,
-                        "Regression log disabled for parallel batch (use Parallel jobs = 1 to enable).",
-                    )
-                )
 
             if max_workers > 1:
                 self.log_queue.put(

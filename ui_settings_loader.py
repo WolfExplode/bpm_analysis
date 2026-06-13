@@ -24,7 +24,6 @@ UI_SETTINGS_OUTPUT_OPTION_KEYS = (
     "filtered_wav",
     "working_wav_in_output",
     "debug",
-    "regression_log",
 )
 
 

@@ -238,15 +238,6 @@ def main(argv: List[str] | None = None) -> int:
         default=_SUP,
         help="Disable FFT profiles.",
     )
-    og.add_argument("--regression-log", dest="regression_log_ex", action="store_const", const=True, default=_SUP, help="Append regression log.")
-    og.add_argument(
-        "--no-regression-log",
-        dest="regression_log_ex",
-        action="store_const",
-        const=False,
-        default=_SUP,
-        help="Disable regression log.",
-    )
 
     ag = parser.add_argument_group("HTML extras (defaults from ui_settings.json when not overridden)")
     ag.add_argument(
@@ -372,7 +363,6 @@ def main(argv: List[str] | None = None) -> int:
         ("working_wav_in_output", "working_wav_ex"),
         ("spectrogram", "spectrogram_ex"),
         ("fft_profiles", "fft_profiles_ex"),
-        ("regression_log", "regression_log_ex"),
     ]
     for opt_key, ns_attr in overrides:
         if hasattr(ns, ns_attr):
@@ -387,32 +377,16 @@ def main(argv: List[str] | None = None) -> int:
     if not _meta_required_outputs_ok(opts):
         logging.error(
             "At least one output type must be enabled (html, png, csv, summary, debug, "
-            "filtered_wav, spectrogram, fft_profiles, or regression_log). "
+            "filtered_wav, spectrogram, or fft_profiles). "
             "Enable one in the GUI or pass e.g. --html on the command line.",
         )
         return 2
-
-    if opts.get("regression_log") and jobs > 1:
-        logging.warning("Regression log is disabled when --jobs > 1.")
 
     params = DEFAULT_PARAMS.copy()
     if optimize_long:
         params["optimize_long_plots"] = True
     params["algorithm_console_logging"] = algorithm_verbose
     params["general_console_logging"] = bool(merged["general_console_logging"])
-
-    if opts.get("regression_log") and jobs <= 1:
-        from time_utils import timestamp_str
-
-        reg_path = os.path.join(out_dir, "regression_testing_output_log.md")
-        try:
-            with open(reg_path, "w", encoding="utf-8") as log_file:
-                log_file.write("# Regression Testing Output Log\n")
-                log_file.write(f"*Generated on: {timestamp_str()}*\n\n")
-        except OSError as e:
-            logging.error("Failed to initialize regression log: %s", e)
-        else:
-            opts["regression_log_path"] = reg_path
 
     summary = run_batch_parallel(
         inputs,

@@ -286,7 +286,6 @@ def run_regression(input_dir: str) -> None:
         "fft_profiles": False,
         "output_all_passes": False,
         "working_wav_in_output": False,
-        "regression_log": False,
     }
 
     sample_rate = int(param(params, "preprocess_target_sample_rate"))

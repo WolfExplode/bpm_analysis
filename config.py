@@ -288,7 +288,6 @@ DEFAULT_OUTPUT_OPTIONS = {
     "working_wav_in_output": False,
     "spectrogram": False,
     "fft_profiles": True,
-    "regression_log": False,
 }
 
 def param(params: dict, key: str):
