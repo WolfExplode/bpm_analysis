@@ -56,7 +56,6 @@ DEFAULT_TEST_SAMPLE_RATE = 1.0  # samples per second
 # =============================================================================
 
 import os
-import math
 import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -225,7 +224,7 @@ def find_inflection_point(hr_values, times):
     """
     if len(hr_values) < 5:
         return None
-    
+
     # Calculate second derivative (acceleration)
     if len(times) > 0:
         dt = np.diff(times)
@@ -237,16 +236,16 @@ def find_inflection_point(hr_values, times):
         # Fallback to simple differences if no time data
         first_deriv = np.diff(hr_values)
         second_deriv = np.diff(first_deriv)
-    
+
     if len(second_deriv) < 3:
         return None
-    
+
     # Find where second derivative changes sign (inflection point)
     sign_changes = np.where(np.diff(np.sign(second_deriv)) != 0)[0]
-    
+
     if len(sign_changes) == 0:
         return None
-    
+
     # Return the first significant inflection point
     # Add 2 to account for the double differentiation
     return sign_changes[0] + 2
@@ -312,22 +311,22 @@ def detect_exercise_periods(df,
         # Improved exercise start detection
         # Look for the point where HR starts to rise significantly from baseline
         hr_start_threshold = resting_hr + DEFAULT_HR_START_THRESHOLD_PCT * hr_reserve
-        
+
         # Method 1: Find where HR crosses the threshold
         hr_below_threshold = np.where(hr[:peak_idx+1] <= hr_start_threshold)[0]
         hr_start_candidate = hr_below_threshold[-1] if len(hr_below_threshold) > 0 else sidx
-        
+
         # Method 2: Find where derivative becomes positive and sustained
         derivative_start_candidate = find_sustained_condition(times, slopes, peak_idx, direction='backward',
                                                              threshold=inc_threshold, sustain_seconds=sustain_seconds)
-        
+
         # Method 3: Find the actual inflection point (where second derivative changes)
         inflection_candidate = find_inflection_point(hr[:peak_idx+1], times[:peak_idx+1])
         if inflection_candidate is not None:
             inflection_candidate = sidx + inflection_candidate
-        
+
         # Choose the most conservative (earliest) start point
-        cand_start_idx = max(sidx, min(hr_start_candidate, derivative_start_candidate, 
+        cand_start_idx = max(sidx, min(hr_start_candidate, derivative_start_candidate,
                                       inflection_candidate if inflection_candidate is not None else peak_idx))
         cand_start_idx = min(cand_start_idx, peak_idx)
 
@@ -335,16 +334,16 @@ def detect_exercise_periods(df,
         # Method 1: Find where derivative becomes negative and sustained
         forward_idx = find_sustained_condition(times, -slopes, peak_idx, direction='forward',
                                                threshold=-dec_threshold, sustain_seconds=sustain_seconds)
-        
+
         # Method 2: Find where HR drops significantly from peak
         hr_drop_threshold = peak_hr - DEFAULT_HR_DROP_THRESHOLD_PCT * hr_reserve
         hr_drop_idx_rel = np.where(hr[peak_idx:] <= hr_drop_threshold)[0]
         hr_drop_candidate = peak_idx + hr_drop_idx_rel[0] if len(hr_drop_idx_rel) > 0 else eidx
-        
+
         # Method 3: Find recovery inflection point
         recovery_inflection = find_inflection_point(hr[peak_idx:], times[peak_idx:])
         recovery_inflection_candidate = peak_idx + recovery_inflection if recovery_inflection is not None else eidx
-        
+
         # Choose the most conservative (earliest) end point
         cand_end_idx = min(eidx, forward_idx, hr_drop_candidate, recovery_inflection_candidate)
 
@@ -444,7 +443,7 @@ def compute_hra_hrr_for_period(df, period, hr_reserve, t90_pct=0.9):
     exercise_duration = t_end - t_start
     peak_duration = t_peak - t_start
     recovery_duration = t_end - t_peak
-    
+
     # Calculate HR reserve utilization
     hr_reserve_used = hr_peak - hr_start
     hr_reserve_utilization = hr_reserve_used / hr_reserve if hr_reserve > 0 else 0
@@ -619,7 +618,7 @@ class HRAnalyzerApp:
                 hrr120 = row.get('hrr_120_bpm', None)
                 duration = row.get('exercise_duration_sec', None)
                 hr_util = row.get('hr_reserve_utilization_pct', None)
-                
+
                 out_lines.append(f"Period {i+1}:")
                 out_lines.append(f"  HRA_peak = {hra_p:.3f} bpm/s")
                 if hra90 is not None:
@@ -637,12 +636,12 @@ class HRAnalyzerApp:
                 if hr_util is not None:
                     out_lines.append(f"  HR Reserve Used = {hr_util:.1f}%")
                 out_lines.append("")
-            
+
             # summary stats
             numeric = metrics_df.select_dtypes(include=[np.number])
             out_lines.append("Summary Statistics:")
-            key_metrics = ['hra_peak_bpm_per_s', 'hra_90_bpm_per_s', 'hra_50_bpm_per_s', 
-                          'hrr_30_bpm', 'hrr_60_bpm', 'hrr_120_bpm', 'exercise_duration_sec', 
+            key_metrics = ['hra_peak_bpm_per_s', 'hra_90_bpm_per_s', 'hra_50_bpm_per_s',
+                          'hrr_30_bpm', 'hrr_60_bpm', 'hrr_120_bpm', 'exercise_duration_sec',
                           'hr_reserve_utilization_pct']
             for col in key_metrics:
                 if col in numeric:
@@ -655,69 +654,71 @@ class HRAnalyzerApp:
     def make_plot(self, df, derived_df, periods, metrics_df):
         times = df['time_seconds']
         hr = df['bpm']
-        
+
         # Create figure with subplots for secondary y-axis
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        
+
         # Convert time to datetime for consistent formatting with bpm_analysis.py
         time_axis_dt = pd.to_datetime([seconds_to_datetime(t) for t in times])
-        
+
         # Add main BPM trace with styling matching bpm_analysis.py
         fig.add_trace(go.Scatter(
-            x=time_axis_dt, 
-            y=hr, 
-            mode='lines', 
-            name='BPM', 
+            x=time_axis_dt,
+            y=hr,
+            mode='lines',
+            name='BPM',
             line=dict(color="#4a4a4a", width=3)
         ), secondary_y=True)
-        
+
         # Add slopes as secondary axis with matching styling
         if 'dbpm_dt' in derived_df.columns:
             slope_times_dt = pd.to_datetime([seconds_to_datetime(t) for t in derived_df['time_seconds']])
             fig.add_trace(go.Scatter(
-                x=slope_times_dt, 
+                x=slope_times_dt,
                 y=derived_df['dbpm_dt'],
-                mode='lines', 
-                name='dbpm/dt', 
+                mode='lines',
+                name='dbpm/dt',
                 line=dict(color='cyan', width=2, dash='dot')
             ), secondary_y=False)
 
         # Add shaded windows and markers with improved styling
         for i, p in enumerate(periods):
-            s = p['start_time']; e = p['end_time']; pk = p['peak_time']
-            
+            s = p['start_time']
+            e = p['end_time']
+            pk = p['peak_time']
+
             # Convert times to datetime for consistency
             s_dt = seconds_to_datetime(s)
             e_dt = seconds_to_datetime(e)
             pk_dt = seconds_to_datetime(pk)
-            
+
             # Add shaded rectangle with better styling
             fig.add_vrect(x0=s_dt, x1=e_dt, fillcolor="rgba(255, 182, 193, 0.3)", opacity=0.3, layer="below", line_width=0)
-            
+
             # Add markers with improved styling and hover templates
             fig.add_trace(go.Scatter(
-                x=[s_dt], 
-                y=[p['start_hr']], 
-                mode='markers', 
-                marker=dict(symbol='circle', size=8, color='#2ca02c'), 
+                x=[s_dt],
+                y=[p['start_hr']],
+                mode='markers',
+                marker=dict(symbol='circle', size=8, color='#2ca02c'),
                 name=f'P{i+1} Start',
                 hovertemplate=f"<b>Period {i+1} Start</b><br>Time: {s:.1f}s<br>HR: {p['start_hr']:.1f} BPM<extra></extra>"
             ), secondary_y=True)
-            
+
             fig.add_trace(go.Scatter(
-                x=[pk_dt], 
-                y=[p['peak_hr']], 
-                mode='markers', 
-                marker=dict(symbol='triangle-up', size=10, color='#e36f6f'), 
+                x=[pk_dt],
+                y=[p['peak_hr']],
+                mode='markers',
+                marker=dict(symbol='triangle-up', size=10, color='#e36f6f'),
                 name=f'P{i+1} Peak',
                 hovertemplate=f"<b>Period {i+1} Peak</b><br>Time: {pk:.1f}s<br>HR: {p['peak_hr']:.1f} BPM<extra></extra>"
             ), secondary_y=True)
-            
+
             fig.add_trace(go.Scatter(
-                x=[e_dt], 
-                y=[p['end_hr']], 
-                mode='markers', 
-                marker=dict(symbol='x', size=10, color='#ff7f0e'), 
+                x=[e_dt],
+                y=[p['end_hr']],
+                mode='markers',
+                marker=dict(symbol='x', size=10, color='#ff7f0e'),
                 name=f'P{i+1} End',
                 hovertemplate=f"<b>Period {i+1} End</b><br>Time: {e:.1f}s<br>HR: {p['end_hr']:.1f} BPM<extra></extra>"
             ), secondary_y=True)
@@ -731,11 +732,11 @@ class HRAnalyzerApp:
                 hrr = m['hrr_60_bpm']
                 annotation = f"<b>Period {i+1}</b><br>HRA_peak: {hra_peak:.3f} bpm/s<br>HRR60: {('NA' if pd.isna(hrr) else f'{hrr:.1f} bpm')}"
                 fig.add_annotation(
-                    x=pk_dt, 
-                    y=p['peak_hr'], 
-                    text=annotation, 
-                    showarrow=True, 
-                    arrowhead=1, 
+                    x=pk_dt,
+                    y=p['peak_hr'],
+                    text=annotation,
+                    showarrow=True,
+                    arrowhead=1,
                     yshift=10,
                     font=dict(color="#e36f6f"),
                     yref="y2"
@@ -743,10 +744,10 @@ class HRAnalyzerApp:
 
         # Configure layout to match bpm_analysis.py style
         plot_title = f"HR Reactivity Analysis - {timestamp_str()}"
-        
+
         fig.update_layout(
-            template="plotly_dark", 
-            title_text=plot_title, 
+            template="plotly_dark",
+            title_text=plot_title,
             dragmode='pan',
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(t=140, b=100),
@@ -764,85 +765,85 @@ class HRAnalyzerApp:
             ticktext=ticktext,
             hoverformat='%M:%S.%L'
         )
-        
+
         # Configure Y-axes to match bpm_analysis.py
         fig.update_yaxes(title_text="BPM / HRV", secondary_y=True, range=DEFAULT_PLOT_Y_RANGE_BPM)
         fig.update_yaxes(title_text="dbpm/dt", secondary_y=False, range=DEFAULT_PLOT_Y_RANGE_DERIVATIVE)
-        
+
         # Add min/max BPM annotations similar to bpm_analysis.py
         if len(hr) > 0:
             max_bpm_val = hr.max()
             min_bpm_val = hr.min()
             max_bpm_time = times.iloc[hr.idxmax()]
             min_bpm_time = times.iloc[hr.idxmin()]
-            
+
             # Convert to datetime for consistency
             max_bpm_time_dt = seconds_to_datetime(max_bpm_time)
             min_bpm_time_dt = seconds_to_datetime(min_bpm_time)
-            
+
             # Add annotation for the maximum BPM
             fig.add_annotation(
-                x=max_bpm_time_dt, 
+                x=max_bpm_time_dt,
                 y=max_bpm_val,
                 text=f"Max: {max_bpm_val:.1f} BPM",
-                showarrow=True, 
-                arrowhead=1, 
-                ax=20, 
+                showarrow=True,
+                arrowhead=1,
+                ax=20,
                 ay=-40,
-                font=dict(color="#e36f6f"), 
+                font=dict(color="#e36f6f"),
                 yref="y2"
             )
 
             # Add annotation for the minimum BPM
             fig.add_annotation(
-                x=min_bpm_time_dt, 
+                x=min_bpm_time_dt,
                 y=min_bpm_val,
                 text=f"Min: {min_bpm_val:.1f} BPM",
-                showarrow=True, 
-                arrowhead=1, 
-                ax=20, 
+                showarrow=True,
+                arrowhead=1,
+                ax=20,
                 ay=40,
-                font=dict(color="#a3d194"), 
+                font=dict(color="#a3d194"),
                 yref="y2"
             )
-        
+
         # Add summary annotation box similar to bpm_analysis.py
         if metrics_df is not None and not metrics_df.empty:
             annotation_text = "<b>HR Reactivity Analysis Summary</b><br>"
             annotation_text += f"Detected {len(periods)} exercise period(s)<br>"
-            
+
             # Add summary statistics
             if 'hra_peak_bpm_per_s' in metrics_df.columns:
                 hra_vals = metrics_df['hra_peak_bpm_per_s'].dropna()
                 if len(hra_vals) > 0:
                     annotation_text += f"Avg HRA: {hra_vals.mean():.3f} bpm/s<br>"
                     annotation_text += f"Max HRA: {hra_vals.max():.3f} bpm/s<br>"
-            
+
             if 'hrr_60_bpm' in metrics_df.columns:
                 hrr_vals = metrics_df['hrr_60_bpm'].dropna()
                 if len(hrr_vals) > 0:
                     annotation_text += f"Avg HRR: {hrr_vals.mean():.1f} BPM<br>"
                     annotation_text += f"Max HRR: {hrr_vals.max():.1f} BPM<br>"
-            
+
             if 'hr_reserve_utilization_pct' in metrics_df.columns:
                 util_vals = metrics_df['hr_reserve_utilization_pct'].dropna()
                 if len(util_vals) > 0:
                     annotation_text += f"Avg HR Reserve Used: {util_vals.mean():.1f}%<br>"
                     annotation_text += f"Max HR Reserve Used: {util_vals.max():.1f}%"
-            
+
             fig.add_annotation(
-                text=annotation_text, 
-                align='left', 
+                text=annotation_text,
+                align='left',
                 showarrow=False,
-                xref='paper', 
-                yref='paper', 
-                x=0.02, 
+                xref='paper',
+                yref='paper',
+                x=0.02,
                 y=0.98,
-                bordercolor='black', 
+                bordercolor='black',
                 borderwidth=1,
                 bgcolor='rgba(255, 253, 231, 0.4)'
             )
-        
+
         return fig
 
     def export_results(self):
@@ -896,12 +897,12 @@ class HRAnalyzerApp:
             age = int(self.age_var.get())
             resting_hr = float(self.rest_hr_var.get())
             max_hr = 220 - age
-            
+
             # Generate test data
             df = create_sample_hr_data(resting_hr=resting_hr, max_hr=max_hr)
-            
+
             # Save to file
-            fp = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('CSV','*.csv')], 
+            fp = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('CSV','*.csv')],
                                             initialvalue="sample_hr_data.csv")
             if fp:
                 df.to_csv(fp, index=False)
@@ -919,15 +920,15 @@ def create_sample_hr_data(duration_minutes=DEFAULT_TEST_DURATION_MINUTES, restin
     """
     duration_seconds = duration_minutes * 60
     times = np.arange(0, duration_seconds, 1/sample_rate)
-    
+
     # Create a realistic HR profile
     hr_data = np.zeros_like(times)
-    
+
     # Resting phase (first 2 minutes)
     rest_duration = 120
     rest_mask = times <= rest_duration
     hr_data[rest_mask] = resting_hr + np.random.normal(0, 2, np.sum(rest_mask))
-    
+
     # Warm-up phase (2-4 minutes)
     warmup_start = 120
     warmup_end = 240
@@ -935,7 +936,7 @@ def create_sample_hr_data(duration_minutes=DEFAULT_TEST_DURATION_MINUTES, restin
     warmup_progress = (times[warmup_mask] - warmup_start) / (warmup_end - warmup_start)
     target_hr_warmup = resting_hr + 0.3 * (max_hr - resting_hr)
     hr_data[warmup_mask] = resting_hr + warmup_progress * (target_hr_warmup - resting_hr) + np.random.normal(0, 3, np.sum(warmup_mask))
-    
+
     # Exercise phase (4-8 minutes) - steep climb
     exercise_start = 240
     exercise_peak = 480
@@ -943,13 +944,13 @@ def create_sample_hr_data(duration_minutes=DEFAULT_TEST_DURATION_MINUTES, restin
     exercise_progress = (times[exercise_mask] - exercise_start) / (exercise_peak - exercise_start)
     # Create a steep climb with some variation
     hr_data[exercise_mask] = target_hr_warmup + exercise_progress * (max_hr - target_hr_warmup) + np.random.normal(0, 5, np.sum(exercise_mask))
-    
+
     # Peak exercise (8-9 minutes) - sustained high HR
     peak_start = 480
     peak_end = 540
     peak_mask = (times > peak_start) & (times <= peak_end)
     hr_data[peak_mask] = max_hr + np.random.normal(0, 3, np.sum(peak_mask))
-    
+
     # Recovery phase (9-10 minutes) - steep decline
     recovery_start = 540
     recovery_end = 600
@@ -957,17 +958,17 @@ def create_sample_hr_data(duration_minutes=DEFAULT_TEST_DURATION_MINUTES, restin
     recovery_progress = (times[recovery_mask] - recovery_start) / (recovery_end - recovery_start)
     recovery_target = resting_hr + 0.2 * (max_hr - resting_hr)
     hr_data[recovery_mask] = max_hr - recovery_progress * (max_hr - recovery_target) + np.random.normal(0, 4, np.sum(recovery_mask))
-    
+
     # Smooth the data slightly
     from scipy.ndimage import gaussian_filter1d
     hr_data = gaussian_filter1d(hr_data, sigma=2)
-    
+
     # Create DataFrame
     df = pd.DataFrame({
         'time_seconds': times,
         'bpm': hr_data
     })
-    
+
     return df
 
 def create_test_csv(filename="sample_hr_data.csv"):
@@ -981,7 +982,8 @@ def create_test_csv(filename="sample_hr_data.csv"):
 
 def main():
     root = tb.Window(themename="superhero")
-    app = HRAnalyzerApp(root)
+    # The app wires itself into `root`'s widget tree, so `root` keeps it alive.
+    HRAnalyzerApp(root)
     root.mainloop()
 
 if __name__ == '__main__':

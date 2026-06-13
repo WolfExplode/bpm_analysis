@@ -2,3 +2,4 @@
 # Runtime deps live in requirements.txt.
 
 pytest>=8.0
+ruff>=0.6        # lint gate; config in pyproject.toml ([tool.ruff]). Run: ruff check .

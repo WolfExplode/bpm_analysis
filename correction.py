@@ -1257,7 +1257,8 @@ def _pass3_measured_systole_series_from_boundaries(
     for s0, s1, st, _meta in (state_boundaries or []):
         if st != "systole":
             continue
-        a0 = float(s0); a1 = float(s1)
+        a0 = float(s0)
+        a1 = float(s1)
         if not np.isfinite(a0) or not np.isfinite(a1) or a1 <= a0:
             continue
         t_mid = (a0 + a1) / 2.0 / sr
@@ -1292,7 +1293,8 @@ def _pass3_measured_diastole_series_from_boundaries(
     for s0, s1, st, _meta in (state_boundaries or []):
         if st != "diastole":
             continue
-        a0 = float(s0); a1 = float(s1)
+        a0 = float(s0)
+        a1 = float(s1)
         if not np.isfinite(a0) or not np.isfinite(a1) or a1 <= a0:
             continue
         t_mid = (a0 + a1) / 2.0 / sr
@@ -2414,12 +2416,14 @@ def run_pass3_correction(
     _before_s1next_by_s1: Dict[int, int] = {}
     for _bs, _be, _bst, _bm in state_boundaries_before:
         if _bst == "systole":
-            _s1k = _bm.get("s1"); _s2k = _bm.get("s2")
+            _s1k = _bm.get("s1")
+            _s2k = _bm.get("s2")
             if _s1k is not None and _s2k is not None:
                 _before_s2_by_s1[int(_s1k)] = int(_s2k)
                 _s2_to_s1_before[int(_s2k)] = int(_s1k)
         elif _bst == "diastole":
-            _s2k = _bm.get("s2"); _s1nk = _bm.get("s1_next")
+            _s2k = _bm.get("s2")
+            _s1nk = _bm.get("s1_next")
             if _s2k is not None and _s1nk is not None:
                 _par = _s2_to_s1_before.get(int(_s2k))
                 if _par is not None:

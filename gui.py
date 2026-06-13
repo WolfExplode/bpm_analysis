@@ -397,7 +397,7 @@ class BPMApp:
         # Skip auto-detection if files were already loaded from saved settings
         if self.current_files:
             return
-            
+
         supported = ('.wav', '.mp3', '.m4a', '.flac', '.ogg', '.mp4', '.mkv', '.mov')
         found_files = []
         try:
@@ -414,7 +414,7 @@ class BPMApp:
                 label_text = f"{len(self.current_files)} files loaded"
                 self.file_label.config(text=label_text)
                 self.analyze_btn.config(state=tk.NORMAL)
-                
+
                 # Save the auto-detected files to settings
                 self.save_ui_settings()
 
@@ -609,11 +609,11 @@ class BPMApp:
                 "No HTML reports found (BPM plot or FFT profiles) in processed_files or next to your selected inputs. Run an analysis first.",
             )
             return
-        
+
         # Sort by modification time (most recent first)
         html_files.sort(reverse=True)
         most_recent_file = html_files[0][1]
-        
+
         # Open the file with the system's default application and close the application
         try:
             if platform.system() == 'Windows':

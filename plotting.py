@@ -1078,7 +1078,7 @@ class Plotter:
 
             formatted_lines = format_debug_entry(debug_value)
             if formatted_lines:
-                sub_text = "<br>".join(l.replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;") for l in formatted_lines)
+                sub_text = "<br>".join(ln.replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;") for ln in formatted_lines)
                 hover_text_parts.append(sub_text)
 
             full_hover_text = "<br>".join(hover_text_parts)
@@ -1518,7 +1518,8 @@ class Plotter:
         exp_dia_t, exp_dia_iv = _compute_expected_diastole_from_bpm(pass_metrics, self.params)
         if not exp_t and not obs_t:
             return
-        to_dt = lambda seq: _elapsed_seconds_to_plot_datetimes(np.asarray(seq, dtype=np.float64))
+        def to_dt(seq):
+            return _elapsed_seconds_to_plot_datetimes(np.asarray(seq, dtype=np.float64))
         if exp_t:
             # Pass 3: shift expected to align with measured (exertion-only if peak exists, else all-time)
             plot_exp_iv = list(exp_iv)

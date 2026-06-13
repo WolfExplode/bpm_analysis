@@ -1,0 +1,22 @@
+[tool.ruff]
+# Single source of lint config so `ruff check` is a meaningful, stable gate
+# rather than whatever defaults happen to be installed. See requirements-dev.txt.
+target-version = "py311"
+line-length = 120
+# Blender addon: runs inside Blender's bundled Python against the `bpy` API,
+# not this project's interpreter. Lint it in Blender, not here.
+extend-exclude = ["Blender BPM tool"]
+
+[tool.ruff.lint]
+# Ruff's default rule set (pyflakes F + a slice of pycodestyle E/W). Kept small
+# on purpose: this is a research codebase, not a style museum.
+select = ["E4", "E7", "E9", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# ttkbootstrap's documented usage is `from ttkbootstrap.constants import *`
+# (INFO, PRIMARY, LEFT, ...). The star import is the library idiom, not debt,
+# so the resulting "may be undefined" noise is silenced for the UI files.
+"gui.py" = ["F403", "F405"]
+# scripts/ are standalone GUI tools: module-level config constants sit above
+# the imports by design (E402), and they share the ttkbootstrap idiom.
+"scripts/*.py" = ["F403", "F405", "E402"]

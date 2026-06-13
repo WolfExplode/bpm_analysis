@@ -95,7 +95,7 @@ def _detect_and_remove_stationary_hum(
     clear hum) are left untouched.
 
     The reason I implemented this is to remove low frequency vibration noise, IFYKYK...
-    
+
     Returns
     -------
     filtered_audio : np.ndarray

@@ -32,7 +32,8 @@ def main():
     initial_files = _cli_initial_files(sys.argv[1:])
 
     root = ttkb.Window(themename="minty")
-    app = BPMApp(root, initial_files=initial_files)
+    # The app wires itself into `root`'s widget tree, so `root` keeps it alive.
+    BPMApp(root, initial_files=initial_files)
     root.mainloop()
 
 if __name__ == "__main__":
