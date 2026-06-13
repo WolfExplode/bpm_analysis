@@ -14,11 +14,6 @@ from file_io import output_stem_from_path
 from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
 from plotting import Plotter, prewarm_kaleido_png_export
 from reporting import ReportGenerator
-from validation import (
-    _load_manual_labels_csv,
-    _build_predicted_labels_for_validation,
-    _append_validation_results_row,
-)
 from classifier import PeakClassifier
 from hrv import (
     calculate_bpm_series,
@@ -290,9 +285,11 @@ def analyze_wav_file(
 ):
     """Main analysis pipeline that orchestrates the refactored classes.
 
-    Returns (plotly_figure, fft_aggregate_data, bpm_rename_summary). On early exit or failure,
-    returns (None, None, None). bpm_rename_summary is a dict with start_bpm, min_bpm, max_bpm
-    all from the final pass smoothed BPM series (first point in time, then min/max), or None if unavailable.
+    Returns (plotly_figure, fft_aggregate_data, bpm_rename_summary, analysis_data). On early exit
+    or failure, returns (None, None, None, None). bpm_rename_summary is a dict with start_bpm,
+    min_bpm, max_bpm all from the final pass smoothed BPM series (first point in time, then
+    min/max), or None if unavailable. analysis_data is the full AnalysisData dict from the last
+    completed pass (pass3 unless pass4 is enabled).
     """
     def _ui(label: str) -> None:
         if progress_callback is not None:
@@ -492,7 +489,7 @@ def analyze_wav_file(
     if len(peaks_after_pass4) < 2:
         logging.warning("Not enough S1 peaks detected to generate full report.")
         _ui("Stopped: not enough detected heartbeat peaks.")
-        return None, None, None
+        return None, None, None, None
 
     logging.info("--- STAGE 6: Calculating Metrics and Generating Outputs ---")
     _ui("Pass 3: computing heart rate metrics...")
@@ -508,32 +505,6 @@ def analyze_wav_file(
         metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass4, sample_rate, params)
 
     _apply_pass3_state_timeline_bpm(metrics_after_pass3, analysis_data, sample_rate, params)
-
-    # OPTIONAL: Validation against manually labeled peaks (if a CSV exists next to the WAV).
-    # This lets you batch-run a dataset and get an objective error count per file
-    # without changing the main analysis workflow or outputs.
-    try:
-        manual_labels = _load_manual_labels_csv(original_file_path)
-        if manual_labels:
-            _ui("Validating against manual peak labels...")
-            predicted_labels = _build_predicted_labels_for_validation(
-                analysis_data, sample_rate
-            )
-            regression_log_path = output_options.get("regression_log_path")
-            _append_validation_results_row(
-                regression_log_path, original_file_path, manual_labels, predicted_labels
-            )
-        else:
-            logging.info(
-                "No manual labels CSV found for '%s'; skipping validation for this file.",
-                os.path.basename(original_file_path),
-            )
-    except Exception as e:
-        logging.error(
-            "Manual label validation step failed for '%s': %s",
-            os.path.basename(original_file_path),
-            e,
-        )
 
     plotly_figure = None
 
@@ -675,4 +646,4 @@ def analyze_wav_file(
                 "max_bpm": float(np.nanmax(arr)),
             }
 
-    return plotly_figure, fft_aggregate_data, bpm_rename_summary
+    return plotly_figure, fft_aggregate_data, bpm_rename_summary, analysis_data

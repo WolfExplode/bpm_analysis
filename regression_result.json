@@ -1,0 +1,3208 @@
+{
+  "input_dir": "C:\\Users\\WXP\\Documents\\GitHub\\bpm_analysis\\inputs",
+  "tolerance_sec": 0.1,
+  "files": 30,
+  "total_manual_s1": 15967,
+  "total_errors": 539,
+  "error_rate_pct": 3.38,
+  "flip_errors": 25,
+  "miss_errors": 56,
+  "extra_errors": 458,
+  "per_file": [
+    {
+      "subdir": "Difficulty 2",
+      "file": "#1 \u30b9\u30af\u30ef\u30c3\u30c8\u4e2d\u306e\u5fc3\u97f3 Heartbeat during squats [06-15-2024][fast] [116,105-155bpm].wav",
+      "manual_s1_count": 568,
+      "predicted_s1_count": 568,
+      "matched": 566,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 2,
+      "total_errors": 3
+    },
+    {
+      "subdir": "Difficulty 2",
+      "file": "#2 \u30a8\u30a2\u30ed\u30d0\u30a4\u30af\u3067\u9811\u5f35\u308b\u5fc3\u97f3 Heartbeat working hard on an exercise bike [06-15-2024][fast] [145,123-190bpm].wav",
+      "manual_s1_count": 1017,
+      "predicted_s1_count": 1016,
+      "matched": 1016,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 0,
+      "total_errors": 1
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "#114 \u3068\u3066\u3082\u65e9\u3044\u5fc3\u97f3 Femake fast Heartbeat [05-18-2025][fast] [191,149-191bpm].wav",
+      "manual_s1_count": 369,
+      "predicted_s1_count": 369,
+      "matched": 369,
+      "flip_errors": 0,
+      "miss_errors": 0,
+      "extra_errors": 0,
+      "total_errors": 0
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "#49 \u6df1\u547c\u5438\u3067\u547c\u5438\u6027\u4e0d\u6574\u8108\u306e\u5fc3\u97f3 Female Respiratory arrhythmias [08-02-2024][irregular][RSA] [107,73-112bpm].wav",
+      "manual_s1_count": 189,
+      "predicted_s1_count": 208,
+      "matched": 173,
+      "flip_errors": 2,
+      "miss_errors": 1,
+      "extra_errors": 21,
+      "total_errors": 24
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "#69 \u30d0\u30af\u30d0\u30af\u5fc3\u97f3 BPM198 Female Exercise Heartbeat 198bpm [09-13-2024][fast] [199,171-204bpm].wav",
+      "manual_s1_count": 246,
+      "predicted_s1_count": 249,
+      "matched": 242,
+      "flip_errors": 1,
+      "miss_errors": 1,
+      "extra_errors": 4,
+      "total_errors": 6
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "168_test [164,75-167bpm].wav",
+      "manual_s1_count": 261,
+      "predicted_s1_count": 266,
+      "matched": 260,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 6,
+      "total_errors": 7
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Bench Exercise Heartbeat and Recovery (Y1rGxdpPAq4) [02-14-2020] [110,101-174bpm].wav",
+      "manual_s1_count": 1811,
+      "predicted_s1_count": 1814,
+      "matched": 1717,
+      "flip_errors": 1,
+      "miss_errors": 2,
+      "extra_errors": 5,
+      "total_errors": 8
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Fast Pleasure Orgasm Heartbeat [124,102-181bpm].wav",
+      "manual_s1_count": 578,
+      "predicted_s1_count": 583,
+      "matched": 578,
+      "flip_errors": 0,
+      "miss_errors": 0,
+      "extra_errors": 5,
+      "total_errors": 5
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Female Edging Heartbeat [08-06-2023] [137,66-158bpm].wav",
+      "manual_s1_count": 1139,
+      "predicted_s1_count": 1156,
+      "matched": 1138,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 18,
+      "total_errors": 19
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Female Heart Beating during sex laying on stomach (climax) [90,84-171bpm].wav",
+      "manual_s1_count": 262,
+      "predicted_s1_count": 270,
+      "matched": 95,
+      "flip_errors": 1,
+      "miss_errors": 10,
+      "extra_errors": 19,
+      "total_errors": 30
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Female Pleasure Heartbeat [07-19-2023] Climaxed 2 times in 6 minutes, bless me [96,61-135bpm].wav",
+      "manual_s1_count": 630,
+      "predicted_s1_count": 651,
+      "matched": 628,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 23,
+      "total_errors": 24
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Orion_beats_RSA [55,55-91bpm].wav",
+      "manual_s1_count": 222,
+      "predicted_s1_count": 224,
+      "matched": 221,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 3,
+      "total_errors": 4
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "R18\u5fc3\u97f33 [122,101-154bpm].wav",
+      "manual_s1_count": 863,
+      "predicted_s1_count": 872,
+      "matched": 332,
+      "flip_errors": 3,
+      "miss_errors": 1,
+      "extra_errors": 7,
+      "total_errors": 11
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Sinus Arrhythmia with Breathing [12-06-2023] RSA [93,61-105bpm].wav",
+      "manual_s1_count": 271,
+      "predicted_s1_count": 284,
+      "matched": 229,
+      "flip_errors": 2,
+      "miss_errors": 2,
+      "extra_errors": 15,
+      "total_errors": 19
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Test2 [92,66-112bpm].wav",
+      "manual_s1_count": 91,
+      "predicted_s1_count": 101,
+      "matched": 88,
+      "flip_errors": 0,
+      "miss_errors": 0,
+      "extra_errors": 13,
+      "total_errors": 13
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Test4 [96,79-127bpm].wav",
+      "manual_s1_count": 525,
+      "predicted_s1_count": 535,
+      "matched": 348,
+      "flip_errors": 1,
+      "miss_errors": 0,
+      "extra_errors": 13,
+      "total_errors": 14
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[01-15-2024] @ayamehtbt Part 8 Recorded on March 16, 2019 it's the ... heartbeat from around this time, The waves are there, it\u2019s pretty fun how it gets intense at the end and then drops\ud83e\udd23170bpm.wav",
+      "manual_s1_count": 314,
+      "predicted_s1_count": 315,
+      "matched": 313,
+      "flip_errors": 0,
+      "miss_errors": 0,
+      "extra_errors": 2,
+      "total_errors": 2
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[03-19-2021] @min_0313_yunn The first part is my usual speed, but it became very slow these days. I feel quite sick when it's slow... \ud83d\ude14 [122,60-122bpm].wav",
+      "manual_s1_count": 147,
+      "predicted_s1_count": 155,
+      "matched": 147,
+      "flip_errors": 0,
+      "miss_errors": 0,
+      "extra_errors": 8,
+      "total_errors": 8
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[03-20-2021] @min_0313_yunn auscultation, Which do you like, the part where you can hear a lot of backflow, or the part where you hear dub [81,72-85bpm].wav",
+      "manual_s1_count": 73,
+      "predicted_s1_count": 75,
+      "matched": 72,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 3,
+      "total_errors": 4
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[05-05-2024] @ayamehtbt breathold while I was lying on stomach with pressure, A little disturbed after exhaling Split S2 [110,105-118bpm].wav",
+      "manual_s1_count": 101,
+      "predicted_s1_count": 105,
+      "matched": 100,
+      "flip_errors": 0,
+      "miss_errors": 0,
+      "extra_errors": 5,
+      "total_errors": 5
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[05-12-2024] @ayamehtbt going crazy while doing squats The maximum instantaneous heart rate is 310! [139,131-165bpm].wav",
+      "manual_s1_count": 111,
+      "predicted_s1_count": 111,
+      "matched": 111,
+      "flip_errors": 0,
+      "miss_errors": 0,
+      "extra_errors": 0,
+      "total_errors": 0
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[10-13-2024] @ayamehtbt After holding my breath to the limit, I let out a 'Phew' My heart \ud83e\udec0 is out of whack [115,79-125bpm].wav",
+      "manual_s1_count": 120,
+      "predicted_s1_count": 122,
+      "matched": 119,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 3,
+      "total_errors": 4
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "exercise to recovery female heartbeat [12-05-2024] [107,84-165bpm].wav",
+      "manual_s1_count": 346,
+      "predicted_s1_count": 360,
+      "matched": 342,
+      "flip_errors": 1,
+      "miss_errors": 1,
+      "extra_errors": 16,
+      "total_errors": 18
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "male heartbeat while playing fnaf 3 (I got jumpscared) [05-07-2024] I jumped and I felt my heart speeding up while she was beatin hard [75,65-126bpm].wav",
+      "manual_s1_count": 197,
+      "predicted_s1_count": 204,
+      "matched": 194,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 10,
+      "total_errors": 11
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "speedy thanksgiving heartbeat [11-29-2024] [149,86-150bpm].wav",
+      "manual_s1_count": 226,
+      "predicted_s1_count": 244,
+      "matched": 223,
+      "flip_errors": 0,
+      "miss_errors": 1,
+      "extra_errors": 21,
+      "total_errors": 22
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "\u73a9\u5177\u718a2+\u5fc3\u8df3\u58f0 [BV1bV411K7M4] [106,83-131bpm].wav",
+      "manual_s1_count": 1533,
+      "predicted_s1_count": 1535,
+      "matched": 1100,
+      "flip_errors": 1,
+      "miss_errors": 1,
+      "extra_errors": 2,
+      "total_errors": 4
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "0336-Vian-Bike-Exercise [105,96-155bpm].wav",
+      "manual_s1_count": 1739,
+      "predicted_s1_count": 1746,
+      "matched": 1723,
+      "flip_errors": 2,
+      "miss_errors": 3,
+      "extra_errors": 12,
+      "total_errors": 17
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "Pleasure Heartbeat [07-15-2023] [109,76-136bpm].wav",
+      "manual_s1_count": 1032,
+      "predicted_s1_count": 1057,
+      "matched": 735,
+      "flip_errors": 6,
+      "miss_errors": 4,
+      "extra_errors": 27,
+      "total_errors": 37
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "[12-13-2020] @min_0313_yunn Dokku-Sho seems to be sound of blood flowing backwards. . . was sleeping, my heart stopped for a moment and a really loud sound comes out. [83,66-97bpm].wav",
+      "manual_s1_count": 61,
+      "predicted_s1_count": 64,
+      "matched": 54,
+      "flip_errors": 0,
+      "miss_errors": 4,
+      "extra_errors": 10,
+      "total_errors": 14
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "[rest] Sleep with me ( Heartbeat ) (liK9D_9FKGk) [01-11-2020] [113,46-115bpm].wav",
+      "manual_s1_count": 925,
+      "predicted_s1_count": 1041,
+      "matched": 844,
+      "flip_errors": 4,
+      "miss_errors": 16,
+      "extra_errors": 185,
+      "total_errors": 205
+    }
+  ],
+  "errors_by_file": [
+    {
+      "subdir": "Difficulty 2",
+      "file": "#1 \u30b9\u30af\u30ef\u30c3\u30c8\u4e2d\u306e\u5fc3\u97f3 Heartbeat during squats [06-15-2024][fast] [116,105-155bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.064,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 0.566,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 257.413,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 2",
+      "file": "#2 \u30a8\u30a2\u30ed\u30d0\u30a4\u30af\u3067\u9811\u5f35\u308b\u5fc3\u97f3 Heartbeat working hard on an exercise bike [06-15-2024][fast] [145,123-190bpm].wav",
+      "errors": [
+        {
+          "time_sec": 346.466,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "#49 \u6df1\u547c\u5438\u3067\u547c\u5438\u6027\u4e0d\u6574\u8108\u306e\u5fc3\u97f3 Female Respiratory arrhythmias [08-02-2024][irregular][RSA] [107,73-112bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.08,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 5.646,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 5.685,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 5.964,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 12.033,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 15.984,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 16.023,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 16.319,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 32.384,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 43.578,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 44.646,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 56.035,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 56.549,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 57.94,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 58.723,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 59.641,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 69.632,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 71.582,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 85.762,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 87.309,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 87.787,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 97.009,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 99.423,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 121.74,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "#69 \u30d0\u30af\u30d0\u30af\u5fc3\u97f3 BPM198 Female Exercise Heartbeat 198bpm [09-13-2024][fast] [199,171-204bpm].wav",
+      "errors": [
+        {
+          "time_sec": 26.55,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 26.663,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 31.337,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 34.754,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 35.445,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 35.6,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "168_test [164,75-167bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.084,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 82.899,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 85.388,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 86.047,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 118.682,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 119.458,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 132.426,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Bench Exercise Heartbeat and Recovery (Y1rGxdpPAq4) [02-14-2020] [110,101-174bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.981,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 60.489,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 350.135,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 350.322,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 402.773,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 402.883,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 477.577,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 721.106,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Fast Pleasure Orgasm Heartbeat [124,102-181bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.222,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 220.097,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 223.806,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 229.707,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 230.316,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Female Edging Heartbeat [08-06-2023] [137,66-158bpm].wav",
+      "errors": [
+        {
+          "time_sec": 16.185,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 64.989,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 151.267,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 152.947,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 153.595,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 155.262,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 394.146,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 416.273,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 416.644,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 457.067,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 477.203,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 478.181,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 485.141,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 495.523,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 496.726,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 508.426,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 510.378,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 510.908,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 515.343,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Female Heart Beating during sex laying on stomach (climax) [90,84-171bpm].wav",
+      "errors": [
+        {
+          "time_sec": 1.309,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 1.733,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 1.958,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 2.433,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 2.662,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 3.925,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 5.059,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 5.093,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 5.573,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 5.805,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 6.25,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 6.5,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 7.809,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 7.842,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 8.26,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 8.488,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 8.9,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 9.125,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 9.573,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 9.795,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 10.439,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 10.873,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 11.098,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 11.506,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 11.751,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 12.175,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 77.645,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 110.306,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 111.73,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 116.246,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Female Pleasure Heartbeat [07-19-2023] Climaxed 2 times in 6 minutes, bless me [96,61-135bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.349,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 57.01,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 57.863,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 58.861,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 59.984,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 60.505,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 67.357,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 67.522,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 71.257,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 72.292,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 107.349,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 311.558,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 312.414,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 313.256,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 318.238,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 319.09,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 328.241,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 329.347,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 337.621,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 363.258,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 364.348,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 372.061,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 377.971,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 389.906,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Orion_beats_RSA [55,55-91bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.151,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 189.194,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 199.528,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 208.44,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "R18\u5fc3\u97f33 [122,101-154bpm].wav",
+      "errors": [
+        {
+          "time_sec": 24.322,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 24.46,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 24.703,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 25.005,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 137.757,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 192.005,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 192.22,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 238.99,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 239.306,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 239.722,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 239.94,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Sinus Arrhythmia with Breathing [12-06-2023] RSA [93,61-105bpm].wav",
+      "errors": [
+        {
+          "time_sec": 4.576,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 8.24,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 8.51,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 33.874,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 33.913,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 34.253,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 64.621,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 64.657,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 65.066,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 69.042,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 93.872,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 117.778,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 153.567,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 160.104,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 167.031,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 168.011,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 195.512,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 196.755,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 200.593,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Test2 [92,66-112bpm].wav",
+      "errors": [
+        {
+          "time_sec": 4.668,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 5.165,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 35.885,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 36.072,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 36.113,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 36.706,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 37.337,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 44.391,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 44.943,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 64.158,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 64.717,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 67.606,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 68.119,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "Test4 [96,79-127bpm].wav",
+      "errors": [
+        {
+          "time_sec": 5.464,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 6.014,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 13.415,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 13.955,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 17.008,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 17.246,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 224.787,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 225.258,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 229.052,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 229.722,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 240.848,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 241.233,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 311.6,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 312.003,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[01-15-2024] @ayamehtbt Part 8 Recorded on March 16, 2019 it's the ... heartbeat from around this time, The waves are there, it\u2019s pretty fun how it gets intense at the end and then drops\ud83e\udd23170bpm.wav",
+      "errors": [
+        {
+          "time_sec": 107.428,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 107.748,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[03-19-2021] @min_0313_yunn The first part is my usual speed, but it became very slow these days. I feel quite sick when it's slow... \ud83d\ude14 [122,60-122bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.584,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 1.596,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 38.523,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 46.174,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 85.239,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 86.869,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 93.386,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 100.527,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[03-20-2021] @min_0313_yunn auscultation, Which do you like, the part where you can hear a lot of backflow, or the part where you hear dub [81,72-85bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.322,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 8.835,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 37.873,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 56.486,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[05-05-2024] @ayamehtbt breathold while I was lying on stomach with pressure, A little disturbed after exhaling Split S2 [110,105-118bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.366,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 0.773,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 14.811,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 39.047,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 39.585,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "[10-13-2024] @ayamehtbt After holding my breath to the limit, I let out a 'Phew' My heart \ud83e\udec0 is out of whack [115,79-125bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.06,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 53.836,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 62.013,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 74.313,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "exercise to recovery female heartbeat [12-05-2024] [107,84-165bpm].wav",
+      "errors": [
+        {
+          "time_sec": 58.583,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 58.921,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 59.674,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 63.502,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 64.064,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 64.485,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 82.717,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 83.101,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 83.751,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 84.312,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 84.634,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 84.844,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 142.442,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 142.736,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 143.014,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 143.253,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 143.606,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 190.413,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "male heartbeat while playing fnaf 3 (I got jumpscared) [05-07-2024] I jumped and I felt my heart speeding up while she was beatin hard [75,65-126bpm].wav",
+      "errors": [
+        {
+          "time_sec": 70.279,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 70.76,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 85.421,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 86.046,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 101.799,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 114.552,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 125.969,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 127.797,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 138.28,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 139.307,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 143.966,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "speedy thanksgiving heartbeat [11-29-2024] [149,86-150bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.208,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 0.695,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 1.427,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 1.888,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 7.24,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 12.805,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 16.38,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 33.883,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 40.304,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 41.069,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 41.808,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 47.42,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 90.796,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 99.219,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 100.118,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 102.561,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 103.218,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 105.99,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 112.909,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 120.037,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 121.228,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 122.75,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 3",
+      "file": "\u73a9\u5177\u718a2+\u5fc3\u8df3\u58f0 [BV1bV411K7M4] [106,83-131bpm].wav",
+      "errors": [
+        {
+          "time_sec": 180.224,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 180.333,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 180.622,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 180.935,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "0336-Vian-Bike-Exercise [105,96-155bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.043,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 6.532,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 20.858,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 21.3,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 25.021,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 25.384,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 34.948,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 35.053,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 35.362,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 35.54,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 42.66,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 42.773,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 42.996,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 43.227,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 50.259,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 57.66,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 57.793,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "Pleasure Heartbeat [07-15-2023] [109,76-136bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.279,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 2.012,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 9.266,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 11.303,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 15.567,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 16.138,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 16.433,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 47.254,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 47.855,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 48.322,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 48.811,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 61.004,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 61.505,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 63.112,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 63.629,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 68.576,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 68.786,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 94.252,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 94.486,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 115.308,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 115.493,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 115.782,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 116.087,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 283.092,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 283.607,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 283.773,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 286.179,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 286.539,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 359.481,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 359.666,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 368.702,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 369.229,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 558.803,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 558.985,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 566.826,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 567.227,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 570.213,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "[12-13-2020] @min_0313_yunn Dokku-Sho seems to be sound of blood flowing backwards. . . was sleeping, my heart stopped for a moment and a really loud sound comes out. [83,66-97bpm].wav",
+      "errors": [
+        {
+          "time_sec": 5.547,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 8.084,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 8.727,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 9.246,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 14.853,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 16.851,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 20.033,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 25.873,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 26.516,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 27.66,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 28.359,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 35.093,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 35.442,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 40.282,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        }
+      ]
+    },
+    {
+      "subdir": "Difficulty 4",
+      "file": "[rest] Sleep with me ( Heartbeat ) (liK9D_9FKGk) [01-11-2020] [113,46-115bpm].wav",
+      "errors": [
+        {
+          "time_sec": 0.519,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 2.211,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 3.949,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 4.12,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 4.45,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 27.172,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 27.795,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 28.28,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 28.685,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 53.163,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 53.729,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 73.93,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 124.662,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 138.257,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 138.627,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 146.045,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 147.202,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 147.915,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 150.457,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 151.309,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 153.854,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 154.519,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 155.103,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 155.273,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 155.668,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 159.998,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 163.019,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 163.661,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 165.055,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 165.494,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 166.778,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 167.422,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 168.501,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 185.584,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 190.199,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 234.914,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 235.14,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 235.498,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 242.672,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 244.041,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 244.673,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 248.294,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 248.972,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 285.006,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 285.643,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 289.009,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 289.193,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 293.191,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 293.293,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 297.025,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 297.828,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 306.188,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 306.903,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 311.91,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 312.561,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 316.263,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 316.971,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 320.402,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 327.894,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 328.46,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 331.748,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 332.595,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 350.66,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 351.372,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 355.249,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 355.42,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 355.774,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 359.185,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 360.309,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 361.039,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 363.293,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 364.464,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 368.977,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 369.565,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 373.143,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 373.837,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 401.436,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 401.55,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 401.892,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 405.389,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 406.2,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 409.845,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 421.158,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 422.005,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 433.754,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 434.548,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 436.738,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 441.137,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 441.313,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 441.684,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 445.311,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 445.946,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 449.275,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 449.897,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 451.002,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 453.397,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 455.673,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 456.359,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 476.998,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 477.717,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 478.766,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 479.52,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 483.322,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 483.987,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 486.646,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 490.544,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 491.107,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 501.564,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 502.362,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 510.065,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 511.124,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 515.757,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 516.366,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 516.839,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 517.033,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 517.511,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 518.621,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 527.701,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 532.137,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 532.978,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 541.226,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 541.919,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 548.653,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 549.239,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 572.257,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 572.965,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 574.962,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 581.462,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 582.207,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 608.017,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 641.788,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 642.506,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 659.396,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 659.626,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 659.997,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 660.39,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 661.137,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 666.598,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 667.328,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 673.427,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 674.118,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 682.269,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 682.947,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 690.691,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 690.886,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 691.252,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 691.401,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 692.692,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 693.296,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 694.832,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 717.402,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 718.105,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 727.924,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 728.68,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 734.964,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 735.642,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 750.853,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 775.517,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 784.484,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 785.118,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 842.35,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 842.673,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 865.994,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 868.189,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 868.52,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 873.375,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 874.112,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 875.37,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 876.86,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 877.178,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 880.646,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 881.36,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 881.733,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 881.98,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 882.364,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 890.231,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 891.326,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 892.844,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 893.553,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 893.86,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 895.11,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 896.212,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 897.536,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 898.823,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 899.452,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 899.878,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 904.135,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 906.212,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 907.074,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 912.634,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 914.08,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 914.797,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 918.728,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 918.88,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        },
+        {
+          "time_sec": 923.358,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 923.76,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 938.88,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 960.933,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 966.483,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 967.241,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 968.597,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 968.973,
+          "type": "phase_flip",
+          "detail": "S1/S2 labels inverted starting here (upstream labeling error)"
+        },
+        {
+          "time_sec": 973.109,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 973.663,
+          "type": "extra",
+          "detail": "predicted S1 with no nearby manual S1"
+        },
+        {
+          "time_sec": 975.726,
+          "type": "miss",
+          "detail": "manual S1 has no predicted S1 or S2 within tolerance"
+        }
+      ]
+    }
+  ]
+}

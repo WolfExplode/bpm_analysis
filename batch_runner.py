@@ -278,7 +278,7 @@ def run_single_input_file(
             else:
                 channel_progress = progress_callback
 
-            _figure, fft_data, bpm_rename_info = analyze_wav_file(
+            _figure, fft_data, bpm_rename_info, _ = analyze_wav_file(
                 wav_for_analysis,
                 params,
                 file_start_bpm_hint,
