@@ -55,7 +55,6 @@ DEFAULT_TEST_SAMPLE_RATE = 1.0  # samples per second
 
 # =============================================================================
 
-import sys
 import os
 import math
 import datetime

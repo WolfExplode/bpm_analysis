@@ -477,17 +477,6 @@ class BPMApp:
             warn=lambda reason, base: self._schedule_rename_warning(reason, base),
         )
 
-    def _extract_bpm_from_filename(self, file_path: str):
-        """
-        Try to detect a starting BPM from the file name if the user did not enter one.
-
-        Uses the last (rightmost) match in the base name for each pattern type, in order:
-        '120,60-150bpm' → 120; '90to132bpm' → 90; '150bpm' → 150 (case-insensitive).
-        """
-        from batch_runner import extract_start_bpm_from_filename
-
-        return extract_start_bpm_from_filename(file_path)
-
     _SETTINGS_VAR_KEYS = (
         ('algorithm_console_logging', 'general_console_logging', 'bpm_from_filename', 'rename_input_with_bpm')
         + tuple('output_' + k for k, _ in OUTPUT_FILE_OPTIONS)
