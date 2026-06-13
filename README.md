@@ -122,11 +122,11 @@ python -m pytest tests/ -q
 ```
 See [tests/README.md](tests/README.md) for the per-module coverage table.
 
-**Regression runner** — validates the full end-to-end pipeline against manually labelled recordings. For each WAV with a `_manual_state_sequence.csv`, it runs analysis and compares predicted S1 segments against ground truth, reporting per-file error counts (`phase_flip`, `miss`, `extra`):
+**Benchmark runner** — validates the full end-to-end pipeline against manually labelled recordings. For each WAV with a `_manual_state_sequence.csv`, it runs analysis and compares predicted S1 segments against ground truth, reporting per-file error counts (`phase_flip`, `miss`, `extra`):
 ```bash
-python run_regression.py [input_dir]   # default input_dir: inputs/Difficulty 3
+python run_benchmark.py [input_dir]   # default input_dir: inputs/Difficulty 3
 ```
-A JSON summary is written to `regression_result.json`.
+A JSON summary is written to `benchmark_result.json`.
 
 ## Extra Features:
 Import the generated heart rate graph into Blender to easily calculate the change in bpm over time.

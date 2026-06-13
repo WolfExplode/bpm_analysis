@@ -38,4 +38,5 @@ build/
 
 # Other Files
 ui_settings.json
-regression_result.json
+benchmark_result.json
+benchmark_summary.json

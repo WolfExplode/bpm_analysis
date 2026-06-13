@@ -25,9 +25,9 @@ The algorithm's design is shaped by the specific corpus it must handle. Recordin
 
 
 ## Organization
-- **Difficulty tiers (1–5, plus "Impossible")** stratify files by *segmentation hardness* — how hard the recording is to label correctly (noise, faint/absent S2, extreme BPM, irregular rhythm). 1 = clean and easy; 5 = very hard; Impossible = no reliably recoverable signal. The regression runner defaults to a representative tier.
+- **Difficulty tiers (1–5, plus "Impossible")** stratify files by *segmentation hardness* — how hard the recording is to label correctly (noise, faint/absent S2, extreme BPM, irregular rhythm). 1 = clean and easy; 5 = very hard; Impossible = no reliably recoverable signal. The benchmark runner defaults to a representative tier.
 - **Filename convention** encodes metadata: `title [MM-DD-YYYY][tags] [primary_bpm, min-max bpm].wav`, where tags flag conditions (`[fast]`, `[irregular]`, `[RSA]`, …) and the bracketed numbers give the labelled primary BPM and observed range.
-- **Manual ground truth** lives beside select files as `<name>.wav_manual_state_sequence.csv`. These hand-labelled state sequences are the only ground truth in the project and drive the end-to-end regression test.
+- **Manual ground truth** lives beside select files as `<name>.wav_manual_state_sequence.csv`. These hand-labelled state sequences are the only ground truth in the project and drive the end-to-end benchmark.
 
 ## Why this matters
 This corpus is also the asset that makes the long-term plan viable: as the heuristic labels more of it (verified by the manual ground truth), the labelled set grows into a training corpus for a future ML-based segmenter — the eventual exit from the heuristic approach.

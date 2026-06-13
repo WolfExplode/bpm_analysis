@@ -27,4 +27,4 @@ python -m pytest tests/ -q
 
 Only deterministic, fixture-free functions are covered. The end-to-end
 pipeline (preprocessing -> classification -> correction) is validated separately
-by `run_regression.py` against manually labelled recordings.
+by `run_benchmark.py` against manually labelled recordings.

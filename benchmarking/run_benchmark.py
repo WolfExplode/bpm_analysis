@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Regression test runner for BPM analysis.
+Benchmark runner for BPM analysis.
 
 Usage:
-    python run_regression.py [input_dir]
+    python run_benchmark.py [input_dir]
 
 Default input_dir: inputs/Difficulty 3
 
@@ -16,7 +16,7 @@ Error types:
     miss        Manual S1 with no predicted S1 or S2 within tolerance.
     extra       Predicted S1 with no corresponding manual S1.
 
-JSON summary written to regression_result.json alongside this script.
+JSON summary written to benchmark_result.json alongside this script.
 """
 
 import sys
@@ -452,7 +452,7 @@ def _print_subtotal(label: str, n_files: int, n_s1: int, n_err: int, n_flip: int
     )
 
 
-def run_regression(input_dir: str) -> None:
+def run_benchmark(input_dir: str) -> None:
     labeled = _collect_labeled_wav_files(input_dir)
     if not labeled:
         print("No labeled WAV files found.")
@@ -604,7 +604,7 @@ def run_regression(input_dir: str) -> None:
     import datetime
     _script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    json_path = os.path.join(_script_dir, "regression_result.json")
+    json_path = os.path.join(_script_dir, "benchmark_result.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(f"\nJSON → {json_path}")
@@ -639,7 +639,7 @@ def run_regression(input_dir: str) -> None:
             for r in file_results
         ],
     }
-    summary_path = os.path.join(_script_dir, "regression_summary.json")
+    summary_path = os.path.join(_script_dir, "benchmark_summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(small, f, indent=2)
     print(f"Summary → {summary_path}")
@@ -663,5 +663,5 @@ if __name__ == "__main__":
         print(f"Error: not a directory: {input_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Regression: {input_dir}\n")
-    run_regression(input_dir)
+    print(f"Benchmark: {input_dir}\n")
+    run_benchmark(input_dir)

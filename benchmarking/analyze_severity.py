@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Severity-weighted error analysis for BPM regression suite.
+Severity-weighted error analysis for BPM benchmark suite.
 
 Severity tiers:
   EXTRA:
@@ -24,7 +24,7 @@ Weights: tier0=0.1, tier1=0.3, tier2=0.6, tier3=1.0
 """
 import json, sys, os
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-with open('regression_result.json') as f:
+with open('benchmark_result.json') as f:
     data = json.load(f)
 
 WEIGHTS = {0: 0.1, 1: 0.3, 2: 0.6, 3: 1.0}

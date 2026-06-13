@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Compare two regression summary snapshots.
+Compare two benchmark summary snapshots.
 
 Usage:
     python compare_fixes.py <before.json> <after.json>
-    python compare_fixes.py regression_summary_before.json regression_summary.json
+    python compare_fixes.py benchmark_summary_before.json benchmark_summary.json
 
 When a file exists in only one snapshot it is reported separately — new or
 removed labeled files do NOT pollute the per-file delta table or the totals.
@@ -21,8 +21,8 @@ def load(path: str) -> dict:
 
 def file_index(data: dict) -> dict:
     """Map basename → per-file stats dict."""
-    # Works for both regression_summary.json (per_file[].file is basename)
-    # and regression_result.json (per_file[].file is full path).
+    # Works for both benchmark_summary.json (per_file[].file is basename)
+    # and benchmark_result.json (per_file[].file is full path).
     idx = {}
     for r in data.get('per_file', []):
         key = os.path.basename(r.get('file', ''))
@@ -42,12 +42,12 @@ def main():
     if len(sys.argv) == 3:
         before_path, after_path = sys.argv[1], sys.argv[2]
     elif len(sys.argv) == 2:
-        # One arg: treat current regression_summary.json as "after", arg as "before"
+        # One arg: treat current benchmark_summary.json as "after", arg as "before"
         before_path = sys.argv[1]
-        after_path  = 'regression_summary.json'
+        after_path  = 'benchmark_summary.json'
     else:
-        before_path = 'regression_summary_before.json'
-        after_path  = 'regression_summary.json'
+        before_path = 'benchmark_summary_before.json'
+        after_path  = 'benchmark_summary.json'
 
     before = load(before_path)
     after  = load(after_path)
