@@ -2448,15 +2448,24 @@ def run_pass3_correction(
     # NOTE: we intentionally do not persist per-beat S2 indices; the state sequence
     # (labels + boundaries) is the canonical Pass 3 output.
 
-    for i in range(len(peaks_out) - 1):
+    # Iterate every S1 peak. For all but the last, the next S1 peak terminates the
+    # cycle. The last S1 peak has no successor, so end-of-file (n_samples) is the
+    # terminus — this paints the final beat's S1/systole/S2/diastole, which a
+    # range(len - 1) loop would drop, leaving the recording tail unlabeled in the
+    # HTML cardiac strip.
+    n_peaks = len(peaks_out)
+    for i in range(n_peaks):
         s1     = int(peaks_out[i])
-        s1_next = int(peaks_out[i + 1])
+        is_last = (i + 1 >= n_peaks)
+        s1_next = int(peaks_out[i + 1]) if not is_last else n_samples
         if s1_next <= s1:
             continue
 
         if i < len(s2_events):
             s2 = int(s2_events[i])
         else:
+            # No Pass 2 seed for this beat (the final beat: s2_events has len - 1
+            # entries) — place S2 from the BPM-nominal s1_s2 interval.
             t_s1 = s1 / _sr_f
             bpm  = _bpm_at_time(t_s1, lt_pass3, fallback_bpm)
             ivs  = calculate_bpm_intervals(bpm, params)
@@ -2512,11 +2521,22 @@ def run_pass3_correction(
             state_boundaries.append(
                 (s2_start, s2_end, "S2", {"s1": s1, "s2": s2, "reasoning": _reasoning["S2"]}),
             )
-        if s1_next > s2_end:
-            state_labels[s2_end:s1_next] = STATE_DIASTOLE
+
+        # Diastole runs to the next S1. For the final beat there is no next S1, so
+        # cap it at ~1.5× the BPM-expected diastole: this still reaches end-of-file
+        # when the recording stops shortly after the last beat, but prevents long
+        # trailing silence from injecting a huge bogus diastole into the
+        # measured-phase / HRV series.
+        if is_last:
+            _dia_nominal = float(_ivs_r.get("s2_s1_nominal", 0.40))
+            dia_end = min(n_samples, s2_end + int(round(1.5 * _dia_nominal * _sr_f)))
+        else:
+            dia_end = s1_next
+        if dia_end > s2_end:
+            state_labels[s2_end:dia_end] = STATE_DIASTOLE
             state_boundaries.append(
-                (s2_end, s1_next, "diastole", {
-                    "s1": s1, "s2": s2, "s1_next": s1_next, "reasoning": _reasoning["diastole"],
+                (s2_end, dia_end, "diastole", {
+                    "s1": s1, "s2": s2, "s1_next": dia_end, "reasoning": _reasoning["diastole"],
                 }),
             )
 
