@@ -1,0 +1,22 @@
+{
+  "aggregate": {
+    "totals": {
+      "overlaps_gap_rebuild": 555,
+      "overlaps_edge_paint": 144,
+      "coverage_desync_runs": 1763,
+      "seq_missing_s1": 48,
+      "seq_bad_transition": 99,
+      "swap_mismatches": 9843
+    },
+    "files_affected": {
+      "overlaps_gap_rebuild": 21,
+      "overlaps_edge_paint": 55,
+      "coverage_desync_runs": 892,
+      "seq_missing_s1": 26,
+      "seq_bad_transition": 57,
+      "swap_mismatches": 392
+    },
+    "n_files": 895
+  },
+  "errors": 0
+}

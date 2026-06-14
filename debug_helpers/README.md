@@ -25,6 +25,28 @@ python debug_helpers/inspect_region.py "inputs/.../file.wav" --at 5.65  # a wind
 python debug_helpers/inspect_region.py "inputs/.../file.wav" --from 5.0 --to 6.2
 ```
 
+## Invariant gate (the point of all this)
+
+These detectors exist because the Pass 3 algorithm never enforces the invariants
+they check — so a change can trade accuracy for structural breakage invisibly
+(exactly how the reverted overlap fix newly broke 16 files into S1/S2 swaps).
+
+[`benchmarking/state_invariants.py`](../benchmarking/state_invariants.py) runs the
+pipeline once per file and applies **all four** detectors, aggregates the totals,
+and compares them to a committed baseline — failing if any metric regresses. It
+needs no manual ground truth (unlike `run_benchmark.py`). Run it before/after any
+change to Pass 3:
+
+```
+python benchmarking/state_invariants.py                 # compare to baseline -> exit 1 on regression
+python benchmarking/state_invariants.py --write-baseline  # re-bless after an intended change
+python benchmarking/state_invariants.py "inputs/Difficulty 3" -j 8
+```
+
+Metrics: `overlaps_gap_rebuild`, `overlaps_edge_paint`, `coverage_desync_runs`,
+`seq_missing_s1`, `seq_bad_transition`, `swap_mismatches`. Baseline lives at
+`benchmarking/state_invariants_baseline.json`.
+
 ## Missing S1 state (state-sequence violation)
 
 A correct timeline walks one fixed cycle:
