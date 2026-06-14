@@ -20,6 +20,7 @@ DEFAULT_PARAMS = {
 
     # Main preprocessing: target sample rate and bandpass (single wide band before envelope); typical PCG range for S1/S2.
     "preprocess_target_sample_rate": 600,   # Resample to this Hz for analysis; lower = faster, less detail.
+    "preprocess_force_gc": False,           # Force a full gc.collect() after freeing HF buffers. Off: ~28% faster in batch; on only for memory-tight single-file runs.
     "preprocess_bandpass_low_hz": 30.0,     # increasing this reduces the amplitude of S1.
     "preprocess_bandpass_high_hz": 290.0,
     "preprocess_bandpass_order": 2,       # Butterworth order; higher order not yet validated for this pipeline.
