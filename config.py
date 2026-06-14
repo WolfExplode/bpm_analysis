@@ -202,6 +202,26 @@ DEFAULT_PARAMS = {
     # If enabled and HF-noise windows exist: clear state labels inside those spans and rebuild the full S1→systole→S2→diastole sequence.
     "pass3_enable_noise_repair": True,
 
+    # --- 6.1.1 Global phase correction (whole-recording S1/S2 inversion guard) ---
+    # If the whole recording was labelled with S1/S2 swapped, every systole span is
+    # really a diastole and vice-versa. At low/normal heart rate systole is strictly
+    # shorter than diastole, so an observed median systole LONGER than median diastole
+    # is a reliable inversion signature. When detected (and only below the BPM ceiling,
+    # where the inequality is physiologically guaranteed), swap S1↔S2 and
+    # systole↔diastole across the final timeline. Above the ceiling diastole can
+    # legitimately fall below systole, so the check is suppressed to protect
+    # changing-/high-BPM recordings.
+    "pass3_global_phase_correct": True,
+    "pass3_global_phase_bpm_ceiling": 125.0,  # Only invert when median BPM is below this.
+    "pass3_global_phase_margin": 1.0,         # Require median_systole > margin * median_diastole.
+    # Subset-DP phase decoder: pick the best alternating S1/S2 chain through the
+    # detected sounds (S1→S2≈systole, S2→S1≈diastole, same-state≈a skipped beat);
+    # sounds left off the chain are spurious and dropped from S1/S2. Fixes partial
+    # (within-recording) S1/S2 flips the global swap can't, and prunes
+    # over-detection. Shares the BPM ceiling.
+    "pass3_interval_phase_relabel": True,
+    "pass3_phase_skip_penalty": 0.4,  # Cost to leave a detected sound off the chain (noise).
+
     # --- 6.2 Insert missing states in large gaps (state-level) ---
     "pass3_calculate_large_gaps": True, # Just for display, you need to also enable pass3_enable_gap_state_insert or pass3_enable_noise_repair
     "pass3_enable_gap_state_insert": True,  # If True, long single-state spans can be cleared and rebuilt like noise repair (full-segment candidate + quiet trim).

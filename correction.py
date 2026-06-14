@@ -1351,6 +1351,229 @@ def _pass3_trim_diastole_ends_on_next_s1(state_boundaries: List[Tuple]) -> List[
     return _trimmed
 
 
+def _pass3_global_phase_correction(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    sample_rate: int,
+    median_bpm: float,
+    params: Dict,
+) -> Tuple[np.ndarray, List[Tuple], bool]:
+    """Detect and fix a whole-recording S1/S2 inversion.
+
+    If labelling swapped S1 and S2 across the whole recording, every 'systole'
+    span is really a diastole and vice-versa. Below the BPM ceiling systole is
+    strictly shorter than diastole, so median(systole) > margin*median(diastole)
+    is a robust inversion signature. When matched, relabel S1↔S2 and
+    systole↔diastole across the timeline — a pure name swap: the alternating
+    S1·systole·S2·diastole structure makes relabelling in place correct.
+
+    Returns (state_labels, state_boundaries, swapped).
+    """
+    if not bool(param(params, "pass3_global_phase_correct")):
+        return state_labels, state_boundaries, False
+    ceiling = float(param(params, "pass3_global_phase_bpm_ceiling"))
+    margin = float(param(params, "pass3_global_phase_margin"))
+    if not (np.isfinite(median_bpm) and 0.0 < median_bpm < ceiling):
+        return state_labels, state_boundaries, False
+
+    # Systole/diastole from S1/S2 peak-to-peak centers (cleaner than span widths):
+    # S1→S2 = systole, S2→next S1 = diastole.
+    seq = sorted(
+        [(0.5 * (s + e), st) for s, e, st, _ in state_boundaries if st in ("S1", "S2")]
+    )
+    syst, dias = [], []
+    for (t0, l0), (t1, l1) in zip(seq, seq[1:]):
+        if l0 == "S1" and l1 == "S2":
+            syst.append(t1 - t0)
+        elif l0 == "S2" and l1 == "S1":
+            dias.append(t1 - t0)
+    if len(syst) < 3 or len(dias) < 3:
+        return state_labels, state_boundaries, False
+    med_s = float(np.median(syst))
+    med_d = float(np.median(dias))
+    if med_d <= 0.0 or med_s <= margin * med_d:
+        return state_labels, state_boundaries, False
+
+    name_swap = {"S1": "S2", "S2": "S1", "systole": "diastole", "diastole": "systole"}
+    new_boundaries = [
+        (s, e, name_swap.get(st, st), meta) for (s, e, st, meta) in state_boundaries
+    ]
+    new_labels = state_labels.copy()
+    new_labels[state_labels == STATE_S1] = STATE_S2
+    new_labels[state_labels == STATE_S2] = STATE_S1
+    new_labels[state_labels == STATE_SYSTOLE] = STATE_DIASTOLE
+    new_labels[state_labels == STATE_DIASTOLE] = STATE_SYSTOLE
+    logging.info(
+        "Pass 3: global phase inversion corrected (median systole %.0fms > "
+        "diastole %.0fms at %.0f bpm).",
+        med_s / sample_rate * 1000.0, med_d / sample_rate * 1000.0, median_bpm,
+    )
+    return new_labels, new_boundaries, True
+
+
+def _phase_subset_dp(
+    centers: List[float],
+    sys0: float,
+    dia0: float,
+    cycle: float,
+    skip_pen: float,
+    win: int = 6,
+) -> List[Tuple[int, str]]:
+    """Pick the lowest-cost alternating S1/S2 chain through sound `centers`.
+
+    Each chosen consecutive pair pays |Δt − expected|/expected for its interval
+    (S1→S2 expects systole, S2→S1 diastole, same-state a full cycle = a skipped
+    beat). Sounds left off the chain are charged `skip_pen` each (spurious/noise).
+    O(n·win) dynamic program. Returns [(sound_index, "S1"/"S2"), …] in order.
+    """
+    n = len(centers)
+    if n < 4:
+        return []
+    INF = 1e18
+
+    def tcost(a: int, b: int, dt: float) -> float:
+        if a == 0 and b == 1:
+            return abs(dt - sys0) / sys0 if sys0 > 0 else INF
+        if a == 1 and b == 0:
+            return abs(dt - dia0) / dia0 if dia0 > 0 else INF
+        return 1.0 + (abs(dt - cycle) / cycle if cycle > 0 else 0.0)
+
+    dp = [[0.0, 0.0] for _ in range(n)]
+    back: List[List[Tuple[int, int]]] = [[(-1, -1), (-1, -1)] for _ in range(n)]
+    for i in range(n):
+        for s in (0, 1):
+            best = skip_pen * i  # start the chain here: skip all earlier sounds
+            bj = (-1, -1)
+            for j in range(max(0, i - win), i):
+                dt = centers[i] - centers[j]
+                skipped = i - j - 1
+                for sj in (0, 1):
+                    c = dp[j][sj] + tcost(sj, s, dt) + skip_pen * skipped
+                    if c < best:
+                        best = c; bj = (j, sj)
+            dp[i][s] = best; back[i][s] = bj
+    # Pick the cheapest endpoint, charging skips for sounds after it too.
+    ei, es, bc = 0, 0, INF
+    for i in range(n):
+        for s in (0, 1):
+            c = dp[i][s] + skip_pen * (n - 1 - i)
+            if c < bc:
+                bc = c; ei, es = i, s
+    out: List[Tuple[int, str]] = []
+    i, s = ei, es
+    while i >= 0:
+        out.append((i, "S1" if s == 0 else "S2"))
+        i, s = back[i][s]
+    out.reverse()
+    return out
+
+
+def _pass3_interval_phase_relabel(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    sample_rate: int,
+    median_bpm: float,
+    params: Dict,
+) -> Tuple[np.ndarray, List[Tuple], int]:
+    """Subset-DP S1/S2 phase decoder (fixes partial flips, prunes spurious sounds).
+
+    Each heart sound sits between two gaps: a short one (systole, S1→S2) and a
+    long one (diastole, S2→S1). So a sound whose *following* gap is shorter than
+    its *preceding* gap is an S1; otherwise an S2. This is heart-rate independent
+    (holds wherever systole < diastole) and corrects within-recording phase
+    confusion that the global swap cannot. Gated below the BPM ceiling, where the
+    systole<diastole inequality is physiologically reliable, to protect the
+    high-/changing-BPM corpus.
+
+    Rebuilds the dense S1·systole·S2·diastole timeline from the relabelled sounds.
+    Returns (state_labels, state_boundaries, n_changed).
+    """
+    if not bool(param(params, "pass3_interval_phase_relabel")):
+        return state_labels, state_boundaries, 0
+    ceiling = float(param(params, "pass3_global_phase_bpm_ceiling"))
+
+    sounds = sorted(
+        ((0.5 * (s + e), s, e, st, m) for s, e, st, m in state_boundaries
+         if st in ("S1", "S2")),
+        key=lambda x: x[0],
+    )
+    n = len(sounds)
+    if n < 4:
+        return state_labels, state_boundaries, 0
+
+    centers = [c for c, *_ in sounds]
+    gaps = [centers[i + 1] - centers[i] for i in range(n - 1)]
+    med_gap = float(np.median(gaps)) if gaps else 0.0
+
+    # Heart rate from sound-to-sound gaps (label-independent: a full cycle is
+    # ~2 gaps). Robust even when current S1/S2 labels are flipped, unlike an
+    # RR estimate built from the possibly-mislabelled S1 peaks.
+    if med_gap <= 0.0:
+        return state_labels, state_boundaries, 0
+    bpm_est = 60.0 / (2.0 * med_gap / float(sample_rate))
+    if not (np.isfinite(bpm_est) and 0.0 < bpm_est < ceiling):
+        return state_labels, state_boundaries, 0
+
+    # Duration priors from the gap distribution: short gaps ≈ systole, long ≈ diastole.
+    g = np.asarray(gaps, dtype=np.float64)
+    short = g[g <= med_gap]; long_ = g[g > med_gap]
+    sys0 = float(np.median(short)) if len(short) else 0.4 * 2 * med_gap
+    dia0 = float(np.median(long_)) if len(long_) else 0.6 * 2 * med_gap
+    cycle = sys0 + dia0
+    skip_pen = float(param(params, "pass3_phase_skip_penalty"))
+
+    chain = _phase_subset_dp([c for c, *_ in sounds], sys0, dia0, cycle, skip_pen)
+    if not chain:
+        return state_labels, state_boundaries, 0
+
+    # chain: ordered list of (sound_index, label) for the chosen alternating beats.
+    # Off-chain sounds are spurious and dropped from S1/S2 (absorbed into the
+    # surrounding systole/diastole span).
+    new_state = {i: lbl for i, lbl in chain}
+    n_changed = sum(
+        1 for i in range(n)
+        if (i not in new_state and sounds[i][3] in ("S1", "S2"))
+        or (i in new_state and new_state[i] != sounds[i][3])
+    )
+    if n_changed == 0:
+        return state_labels, state_boundaries, 0
+
+    nb: List[Tuple] = []
+    chain_idx = [i for i, _ in chain]
+    for k, i in enumerate(chain_idx):
+        _c, s, e, _old, m = sounds[i]
+        nb.append((s, e, new_state[i], m))
+        if k < len(chain_idx) - 1:
+            j = chain_idx[k + 1]
+            gap_s, gap_e = e, sounds[j][1]
+            if gap_e <= gap_s:
+                continue
+            a, b = new_state[i], new_state[j]
+            if a == "S1" and b == "S2":
+                btw = "systole"
+            elif a == "S2" and b == "S1":
+                btw = "diastole"
+            else:
+                btw = "systole" if (gap_e - gap_s) < med_gap else "diastole"
+            nb.append((gap_s, gap_e, btw, {}))
+
+    # Repaint the per-sample label array from the rebuilt spans.
+    new_labels = np.full(len(state_labels), STATE_DIASTOLE, dtype=state_labels.dtype)
+    name_to_code = {"S1": STATE_S1, "systole": STATE_SYSTOLE,
+                    "S2": STATE_S2, "diastole": STATE_DIASTOLE}
+    for s, e, st, _m in nb:
+        code = name_to_code.get(st)
+        if code is None:
+            continue
+        a = max(0, int(s)); b = min(len(new_labels), int(e))
+        if b > a:
+            new_labels[a:b] = code
+
+    logging.info("Pass 3: phase decoder changed %d/%d sounds (kept %d).",
+                 n_changed, n, len(chain))
+    return new_labels, nb, n_changed
+
+
 def _pass3_remove_boundaries_overlapping_span(
     state_boundaries: List[Tuple], lo: int, hi: int,
 ) -> List[Tuple]:
@@ -2838,6 +3061,36 @@ def run_pass3_correction(
         analysis_data["pass3_measured_diastole_dur"] = analysis_data.get("pass3_measured_phase_final_diastole_dur")
     except Exception:
         logging.debug("Pass 3: failed to compute final phase curves", exc_info=True)
+
+    # Global phase-correction: fix whole-recording S1/S2 inversions before
+    # publishing the timeline. Runs last so it sees the fully-repaired spans.
+    try:
+        state_labels, state_boundaries, _phase_swapped = _pass3_global_phase_correction(
+            state_labels, state_boundaries, sample_rate, fallback_bpm, params,
+        )
+        if _phase_swapped:
+            corrections.append({"type": "global_phase_swap", "bpm": round(float(fallback_bpm), 1)})
+            # Keep the measured systole/diastole curves consistent with the swap.
+            for _a, _b in (
+                ("pass3_measured_systole_times", "pass3_measured_diastole_times"),
+                ("pass3_measured_systole", "pass3_measured_diastole"),
+                ("pass3_measured_systole_t", "pass3_measured_diastole_t"),
+                ("pass3_measured_systole_dur", "pass3_measured_diastole_dur"),
+            ):
+                if _a in analysis_data and _b in analysis_data:
+                    analysis_data[_a], analysis_data[_b] = analysis_data[_b], analysis_data[_a]
+    except Exception:
+        logging.debug("Pass 3: global phase correction failed", exc_info=True)
+
+    # Per-beat phase relabel: repair partial (within-recording) S1/S2 flips.
+    try:
+        state_labels, state_boundaries, _n_relabel = _pass3_interval_phase_relabel(
+            state_labels, state_boundaries, sample_rate, fallback_bpm, params,
+        )
+        if _n_relabel:
+            corrections.append({"type": "interval_phase_relabel", "changed": int(_n_relabel)})
+    except Exception:
+        logging.debug("Pass 3: interval phase relabel failed", exc_info=True)
 
     analysis_data["pass3_state_labels"]          = state_labels
     analysis_data["pass3_state_labels_encoding"] = dict(STATE_LABELS_ENCODING)

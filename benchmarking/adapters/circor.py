@@ -137,7 +137,23 @@ _OUTPUT_OPTIONS = {
 
 
 def _params() -> Dict:
-    return {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    p = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    # Optional param overrides via env (so sweeps reach spawned workers).
+    # Format: BENCH_PARAM_OVERRIDES="key=val,key=val" (numeric/bool values).
+    raw = os.environ.get("BENCH_PARAM_OVERRIDES", "")
+    for item in (s for s in raw.split(",") if s.strip()):
+        k, _, v = item.partition("=")
+        k, v = k.strip(), v.strip()
+        if not k:
+            continue
+        if v.lower() in ("true", "false"):
+            p[k] = v.lower() == "true"
+        else:
+            try:
+                p[k] = float(v)
+            except ValueError:
+                p[k] = v
+    return p
 
 
 def predict_centers(
