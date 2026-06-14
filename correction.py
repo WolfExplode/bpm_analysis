@@ -1411,40 +1411,8 @@ def _pass3_global_phase_correction(
     return new_labels, new_boundaries, True
 
 
-def _global_cycle_autocorr(
-    envelope: np.ndarray, sample_rate: int,
-    min_bpm: float = 40.0, max_bpm: float = 220.0,
-) -> Optional[float]:
-    """Whole-recording cardiac cycle (samples) from envelope autocorrelation.
-
-    Springer estimates heart rate from the autocorrelation of the homomorphic
-    envelope; the dominant peak within the plausible RR range is the cycle. This
-    reads the *signal* directly, so unlike a median of detected-peak gaps it is
-    immune to over-/under-detection corrupting the interval stream. Returns the
-    lag (in samples) of the strongest autocorrelation peak, or None.
-    """
-    env = np.asarray(envelope, dtype=np.float64)
-    if env.size < sample_rate:  # need at least ~1 s
-        return None
-    env = env - env.mean()
-    if not np.any(env):
-        return None
-    # FFT-based autocorrelation (positive lags only).
-    n = int(2 ** np.ceil(np.log2(2 * env.size)))
-    f = np.fft.rfft(env, n)
-    ac = np.fft.irfft(f * np.conj(f), n)[: env.size]
-    lo = int(round(60.0 / max_bpm * sample_rate))
-    hi = int(round(60.0 / min_bpm * sample_rate))
-    hi = min(hi, env.size - 1)
-    if hi <= lo + 1:
-        return None
-    lag = lo + int(np.argmax(ac[lo:hi]))
-    return float(lag) if lag > 0 else None
-
-
 def _phase_subset_dp(
     centers: List[float],
-    sig: float,
     sys0: float,
     dia0: float,
     cycle: float,
@@ -1459,14 +1427,9 @@ def _phase_subset_dp(
     O(n·win) dynamic program. Returns [(sound_index, "S1"/"S2"), …] in order.
     """
     n = len(centers)
-    INF = 1e18
     if n < 4:
-        return [], INF
-
-    # Linear duration cost (|Δt − expected| / expected). An HSMM-style Gaussian
-    # (quadratic) penalty was evaluated and did not improve benchmark F1 over this
-    # — see benchmarking/HOLISTIC_FEATURE.md. `sig` retained for experimentation.
-    _ = sig
+        return []
+    INF = 1e18
 
     def tcost(a: int, b: int, dt: float) -> float:
         if a == 0 and b == 1:
@@ -1502,15 +1465,7 @@ def _phase_subset_dp(
         out.append((i, "S1" if s == 0 else "S2"))
         i, s = back[i][s]
     out.reverse()
-    # Mean duration-fit cost over the chosen chain (skip penalties excluded): a
-    # measure of rhythm regularity — low for a clean periodic recording, high for
-    # an irregular/changing-HR one. Used to gate above-ceiling decodes.
-    fit = 0.0
-    for (ia, la), (ib, lb) in zip(out, out[1:]):
-        fit += tcost(0 if la == "S1" else 1, 0 if lb == "S1" else 1,
-                     centers[ib] - centers[ia])
-    mean_fit = fit / max(1, len(out) - 1)
-    return out, mean_fit
+    return out
 
 
 def _pass3_interval_phase_relabel(
@@ -1519,7 +1474,6 @@ def _pass3_interval_phase_relabel(
     sample_rate: int,
     median_bpm: float,
     params: Dict,
-    audio_envelope: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, List[Tuple], int]:
     """Subset-DP S1/S2 phase decoder (fixes partial flips, prunes spurious sounds).
 
@@ -1550,7 +1504,14 @@ def _pass3_interval_phase_relabel(
     centers = [c for c, *_ in sounds]
     gaps = [centers[i + 1] - centers[i] for i in range(n - 1)]
     med_gap = float(np.median(gaps)) if gaps else 0.0
+
+    # Heart rate from sound-to-sound gaps (label-independent: a full cycle is
+    # ~2 gaps). Robust even when current S1/S2 labels are flipped, unlike an
+    # RR estimate built from the possibly-mislabelled S1 peaks.
     if med_gap <= 0.0:
+        return state_labels, state_boundaries, 0
+    bpm_est = 60.0 / (2.0 * med_gap / float(sample_rate))
+    if not (np.isfinite(bpm_est) and 0.0 < bpm_est < ceiling):
         return state_labels, state_boundaries, 0
 
     # Duration priors from the gap distribution: short gaps ≈ systole, long ≈ diastole.
@@ -1559,42 +1520,11 @@ def _pass3_interval_phase_relabel(
     sys0 = float(np.median(short)) if len(short) else 0.4 * 2 * med_gap
     dia0 = float(np.median(long_)) if len(long_) else 0.6 * 2 * med_gap
     cycle = sys0 + dia0
-
-    # Heart rate for the gate. A full cycle ≈ 2 median gaps, but over-detection
-    # can split one interval into two and halve that median → doubling the BPM and
-    # wrongly gating out a genuinely in-range recording. The cardiac cycle from
-    # envelope autocorrelation reads the signal directly and is immune to that, so
-    # prefer it (within 2× of the gap estimate, guarding a half/double autocorr
-    # peak). This is the holistic anchor: HR from the whole signal, not the noisy
-    # peak stream.
-    cycle_for_bpm = 2.0 * med_gap
-    if bool(param(params, "pass3_phase_autocorr_cycle")) and audio_envelope is not None:
-        cyc_ac = _global_cycle_autocorr(audio_envelope, sample_rate)
-        if cyc_ac and 0.5 <= cyc_ac / cycle_for_bpm <= 2.0:
-            cycle_for_bpm = cyc_ac
-    bpm_est = 60.0 / (cycle_for_bpm / float(sample_rate)) if cycle_for_bpm > 0 else 0.0
-    if not (np.isfinite(bpm_est) and bpm_est > 0.0):
-        return state_labels, state_boundaries, 0
-
     skip_pen = float(param(params, "pass3_phase_skip_penalty"))
-    sig = float(param(params, "pass3_phase_duration_sigma"))
-    chain, mean_fit = _phase_subset_dp(
-        [c for c, *_ in sounds], sig, sys0, dia0, cycle, skip_pen
-    )
+
+    chain = _phase_subset_dp([c for c, *_ in sounds], sys0, dia0, cycle, skip_pen)
     if not chain:
         return state_labels, state_boundaries, 0
-
-    # Above the BPM ceiling, systole≈diastole so timing-based orientation is
-    # normally unsafe — UNLESS the rhythm is regular enough that the decoder fits
-    # it tightly. The mean duration-fit cost is that confidence signal: low for a
-    # clean periodic recording (e.g. resting pediatric CirCor), high for an
-    # irregular/changing-HR one (e.g. native exercise). Accept the high-BPM decode
-    # only when the fit is tight; otherwise leave the existing labels untouched.
-    if bpm_est >= ceiling:
-        if not bool(param(params, "pass3_phase_confidence_gate")):
-            return state_labels, state_boundaries, 0
-        if mean_fit > float(param(params, "pass3_phase_confidence_max_cost")):
-            return state_labels, state_boundaries, 0
 
     # chain: ordered list of (sound_index, label) for the chosen alternating beats.
     # Off-chain sounds are spurious and dropped from S1/S2 (absorbed into the
@@ -1627,20 +1557,11 @@ def _pass3_interval_phase_relabel(
                 btw = "systole" if (gap_e - gap_s) < med_gap else "diastole"
             nb.append((gap_s, gap_e, btw, {}))
 
-    # Holistic missed-beat recovery: where the S1 rhythm skips a beat, predict the
-    # position from the global cadence and recover it only if the envelope confirms
-    # a real (if faint) sound there.
-    if audio_envelope is not None:
-        nb, n_recovered = _pass3_recover_missed_s1(
-            nb, audio_envelope, sample_rate, params,
-        )
-        n_changed += n_recovered
-
     # Repaint the per-sample label array from the rebuilt spans.
     new_labels = np.full(len(state_labels), STATE_DIASTOLE, dtype=state_labels.dtype)
     name_to_code = {"S1": STATE_S1, "systole": STATE_SYSTOLE,
                     "S2": STATE_S2, "diastole": STATE_DIASTOLE}
-    for s, e, st, _m in sorted(nb, key=lambda x: x[0]):
+    for s, e, st, _m in nb:
         code = name_to_code.get(st)
         if code is None:
             continue
@@ -1653,66 +1574,6 @@ def _pass3_interval_phase_relabel(
     return new_labels, nb, n_changed
 
 
-def _pass3_recover_missed_s1(
-    state_boundaries: List[Tuple],
-    audio_envelope: np.ndarray,
-    sample_rate: int,
-    params: Dict,
-) -> Tuple[List[Tuple], int]:
-    """Recover faint S1s the detector missed, using the global rhythm as a prior.
-
-    Where two consecutive S1s are ~2 cardiac cycles apart, a beat was dropped. We
-    predict its time from the local cadence and confirm it against the envelope:
-    only if a local maximum there reaches `recover_amp_frac` of the neighbouring
-    S1 amplitudes do we insert an S1 (and split the long diastole around it). The
-    envelope gate keeps this from inventing beats in genuine dropouts/silence.
-    Returns (boundaries, n_recovered).
-    """
-    if not bool(param(params, "pass3_recover_missed_s1")):
-        return state_boundaries, 0
-    env = np.asarray(audio_envelope, dtype=np.float64)
-    if env.size == 0:
-        return state_boundaries, 0
-
-    s1 = sorted((0.5 * (s + e), s, e) for s, e, st, _m in state_boundaries if st == "S1")
-    if len(s1) < 4:
-        return state_boundaries, 0
-    centers = np.array([c for c, _, _ in s1])
-    rr = np.diff(centers)
-    med_rr = float(np.median(rr))
-    if med_rr <= 0:
-        return state_boundaries, 0
-
-    amp_frac = float(param(params, "pass3_recover_amp_frac"))
-    search = 0.12 * med_rr  # ±window (samples) around the predicted position
-    half_w = max(1, int(round(0.5 * 0.05 * sample_rate)))  # ~25 ms half S1 span
-
-    def _amp_at(t):
-        i = int(round(t)); lo = max(0, i - 3); hi = min(env.size, i + 4)
-        return float(np.max(env[lo:hi])) if hi > lo else 0.0
-
-    inserts: List[Tuple] = []
-    for k in range(len(centers) - 1):
-        gap = rr[k]
-        # exactly one beat missing: gap ~ 2 cycles
-        if not (1.6 * med_rr <= gap <= 2.5 * med_rr):
-            continue
-        pred = centers[k] + gap / 2.0
-        lo = int(max(0, pred - search)); hi = int(min(env.size, pred + search))
-        if hi <= lo:
-            continue
-        rel = int(np.argmax(env[lo:hi])); peak_t = lo + rel
-        peak_amp = _amp_at(peak_t)
-        ref = min(_amp_at(centers[k]), _amp_at(centers[k + 1]))
-        if ref > 0 and peak_amp >= amp_frac * ref:
-            inserts.append((float(peak_t - half_w), float(peak_t + half_w), "S1",
-                            {"recovered": True}))
-
-    if not inserts:
-        return state_boundaries, 0
-    return state_boundaries + inserts, len(inserts)
-
-
 def _pass3_remove_boundaries_overlapping_span(
     state_boundaries: List[Tuple], lo: int, hi: int,
 ) -> List[Tuple]:
@@ -1722,69 +1583,6 @@ def _pass3_remove_boundaries_overlapping_span(
         if a0 < hi and a1 > lo:
             continue
         out.append(seg)
-    return out
-
-
-def _merge_spans(spans: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    """Merge a list of [lo, hi) spans into sorted, non-overlapping spans."""
-    cleaned = sorted((int(a), int(b)) for a, b in spans if int(b) > int(a))
-    merged: List[Tuple[int, int]] = []
-    for lo, hi in cleaned:
-        if merged and lo <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
-        else:
-            merged.append((lo, hi))
-    return merged
-
-
-def _clamp_segments_sequential(segs: List[Tuple]) -> List[Tuple]:
-    """Force a set of same-origin segments to be strictly sequential.
-
-    Sorted by start, truncate each segment's end to the next segment's start so
-    painted edges from adjacent rebuilt beats cannot overlap each other. Drops any
-    segment that collapses to empty. Names/meta preserved.
-    """
-    ordered = sorted(segs, key=lambda s: (int(s[0]), int(s[1])))
-    out: List[Tuple] = []
-    for i, seg in enumerate(ordered):
-        a0, a1 = int(seg[0]), int(seg[1])
-        if i + 1 < len(ordered):
-            a1 = min(a1, int(ordered[i + 1][0]))
-        if a1 > a0:
-            out.append((a0, a1) + tuple(seg[2:]))
-    return out
-
-
-def _pass3_clip_boundaries_outside_spans(
-    state_boundaries: List[Tuple], spans: List[Tuple[int, int]],
-) -> List[Tuple]:
-    """Subtract *spans* from every boundary, returning the surviving pieces.
-
-    Keeps each boundary's name/meta but trims (or splits, or drops) the sample
-    range so nothing remains inside any span. Used before merging gap-fill
-    segments so a kept real segment whose painted edge bled into a gap window
-    cannot overlap the freshly painted states (the gap-region overlap bug).
-    """
-    cuts = _merge_spans(spans)
-    if not cuts:
-        return list(state_boundaries)
-    out: List[Tuple] = []
-    for seg in state_boundaries:
-        a0, a1 = int(seg[0]), int(seg[1])
-        name = seg[2]
-        meta = seg[3] if len(seg) > 3 else {}
-        # Walk left-to-right, emitting the parts of [a0, a1) not covered by a cut.
-        cur = a0
-        for c0, c1 in cuts:
-            if c1 <= cur or c0 >= a1:
-                continue  # cut is entirely outside the remaining range
-            if c0 > cur:
-                out.append((cur, c0, name, meta))  # piece before the cut
-            cur = max(cur, c1)
-            if cur >= a1:
-                break
-        if cur < a1:
-            out.append((cur, a1, name, meta))
     return out
 
 
@@ -2227,14 +2025,6 @@ def _pass3_apply_peaks_labeling_in_large_gaps(
                     c0 = _st_code.get(nm)
                     if c0 is not None:
                         state_labels[a:min(b, n_samples)] = c0
-        # Painted S1/S2 edges can expand past the gap window into a kept real
-        # neighbour, and adjacent rebuilt beats can overlap each other; resolve
-        # both before merging (gap-region overlap bug).
-        if new_segs:
-            new_segs = _clamp_segments_sequential(new_segs)
-            bd = _pass3_clip_boundaries_outside_spans(
-                bd, [(int(s[0]), int(s[1])) for s in new_segs]
-            )
         bd.extend(new_segs)
         bd = sorted(bd, key=lambda s: s[0])
         bd = _pass3_trim_diastole_ends_on_next_s1(bd)
@@ -2478,11 +2268,7 @@ def _pass3_rebuild_unknown_runs(
     if not new_segs:
         return state_labels, state_boundaries
 
-    # Clip any kept boundary whose painted edge bled into a region we just filled,
-    # so old and new segments cannot claim the same samples (gap-region overlap bug).
-    painted_spans = [(int(s[0]), int(s[1])) for s in new_segs]
-    trimmed_old = _pass3_clip_boundaries_outside_spans(state_boundaries, painted_spans)
-    combined = trimmed_old + new_segs
+    combined = state_boundaries + new_segs
     combined.sort(key=lambda t: t[0])
     return state_labels, combined
 
@@ -3300,7 +3086,6 @@ def run_pass3_correction(
     try:
         state_labels, state_boundaries, _n_relabel = _pass3_interval_phase_relabel(
             state_labels, state_boundaries, sample_rate, fallback_bpm, params,
-            audio_envelope=audio_envelope,
         )
         if _n_relabel:
             corrections.append({"type": "interval_phase_relabel", "changed": int(_n_relabel)})
