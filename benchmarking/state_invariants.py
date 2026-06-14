@@ -213,7 +213,14 @@ def main(argv=None):
         print(f"\nNo baseline at {ns.baseline}; run with --write-baseline to create one.")
         return 0
 
-    base = json.load(open(ns.baseline, encoding="utf-8"))["aggregate"]["totals"]
+    base_agg = json.load(open(ns.baseline, encoding="utf-8"))["aggregate"]
+    base = base_agg["totals"]
+    base_n = int(base_agg.get("n_files", 0))
+    if base_n and base_n != agg["n_files"]:
+        print(f"\nWARNING: scanned {agg['n_files']} files but baseline covers {base_n}; "
+              f"totals are not comparable. Run over the same path the baseline was built from "
+              f"(default: inputs) for a valid gate.", flush=True)
+        return 2
     print("\n=== vs baseline ===")
     regressed = False
     for m in _METRICS:
