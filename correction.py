@@ -1725,6 +1725,69 @@ def _pass3_remove_boundaries_overlapping_span(
     return out
 
 
+def _merge_spans(spans: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Merge a list of [lo, hi) spans into sorted, non-overlapping spans."""
+    cleaned = sorted((int(a), int(b)) for a, b in spans if int(b) > int(a))
+    merged: List[Tuple[int, int]] = []
+    for lo, hi in cleaned:
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def _clamp_segments_sequential(segs: List[Tuple]) -> List[Tuple]:
+    """Force a set of same-origin segments to be strictly sequential.
+
+    Sorted by start, truncate each segment's end to the next segment's start so
+    painted edges from adjacent rebuilt beats cannot overlap each other. Drops any
+    segment that collapses to empty. Names/meta preserved.
+    """
+    ordered = sorted(segs, key=lambda s: (int(s[0]), int(s[1])))
+    out: List[Tuple] = []
+    for i, seg in enumerate(ordered):
+        a0, a1 = int(seg[0]), int(seg[1])
+        if i + 1 < len(ordered):
+            a1 = min(a1, int(ordered[i + 1][0]))
+        if a1 > a0:
+            out.append((a0, a1) + tuple(seg[2:]))
+    return out
+
+
+def _pass3_clip_boundaries_outside_spans(
+    state_boundaries: List[Tuple], spans: List[Tuple[int, int]],
+) -> List[Tuple]:
+    """Subtract *spans* from every boundary, returning the surviving pieces.
+
+    Keeps each boundary's name/meta but trims (or splits, or drops) the sample
+    range so nothing remains inside any span. Used before merging gap-fill
+    segments so a kept real segment whose painted edge bled into a gap window
+    cannot overlap the freshly painted states (the gap-region overlap bug).
+    """
+    cuts = _merge_spans(spans)
+    if not cuts:
+        return list(state_boundaries)
+    out: List[Tuple] = []
+    for seg in state_boundaries:
+        a0, a1 = int(seg[0]), int(seg[1])
+        name = seg[2]
+        meta = seg[3] if len(seg) > 3 else {}
+        # Walk left-to-right, emitting the parts of [a0, a1) not covered by a cut.
+        cur = a0
+        for c0, c1 in cuts:
+            if c1 <= cur or c0 >= a1:
+                continue  # cut is entirely outside the remaining range
+            if c0 > cur:
+                out.append((cur, c0, name, meta))  # piece before the cut
+            cur = max(cur, c1)
+            if cur >= a1:
+                break
+        if cur < a1:
+            out.append((cur, a1, name, meta))
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Gap detection and filling — find, label, and rebuild long unknown spans
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2164,6 +2227,14 @@ def _pass3_apply_peaks_labeling_in_large_gaps(
                     c0 = _st_code.get(nm)
                     if c0 is not None:
                         state_labels[a:min(b, n_samples)] = c0
+        # Painted S1/S2 edges can expand past the gap window into a kept real
+        # neighbour, and adjacent rebuilt beats can overlap each other; resolve
+        # both before merging (gap-region overlap bug).
+        if new_segs:
+            new_segs = _clamp_segments_sequential(new_segs)
+            bd = _pass3_clip_boundaries_outside_spans(
+                bd, [(int(s[0]), int(s[1])) for s in new_segs]
+            )
         bd.extend(new_segs)
         bd = sorted(bd, key=lambda s: s[0])
         bd = _pass3_trim_diastole_ends_on_next_s1(bd)
@@ -2407,7 +2478,11 @@ def _pass3_rebuild_unknown_runs(
     if not new_segs:
         return state_labels, state_boundaries
 
-    combined = state_boundaries + new_segs
+    # Clip any kept boundary whose painted edge bled into a region we just filled,
+    # so old and new segments cannot claim the same samples (gap-region overlap bug).
+    painted_spans = [(int(s[0]), int(s[1])) for s in new_segs]
+    trimmed_old = _pass3_clip_boundaries_outside_spans(state_boundaries, painted_spans)
+    combined = trimmed_old + new_segs
     combined.sort(key=lambda t: t[0])
     return state_labels, combined
 
