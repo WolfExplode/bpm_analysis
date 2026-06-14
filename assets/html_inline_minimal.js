@@ -28,22 +28,18 @@
     );
   }
 
-  const LEGEND_DEBUG_NAMES = new Set([
-    "Bandpass Envelope",
-    "Noise Envelope",
-    "Noise Removed Envelope",
-    "Dynamic Noise Floor",
-    "Troughs",
-    "S1 Beats",
-    "S2 Beats",
-    "Noise/Rejected",
-    "BPM Trend (Belief)",
-  ]);
-  const LEGEND_IN_BOTH_NAMES = new Set([
-    "Average BPM",
-    "BPM (Pass 2)",
-    "BPM (Pass 3)",
-  ]);
+  // Trace audience comes from the Python TRACE_AUDIENCE registry (injected via config).
+  // Unknown/unlisted names default to "debug" so new traces never leak into Analysis Data.
+  const TRACE_AUDIENCE = cfg.traceAudience || {};
+  function audienceOf(name) {
+    return TRACE_AUDIENCE[name] || "debug";
+  }
+  function isDebugName(name) {
+    return audienceOf(name) === "debug";
+  }
+  function isBothName(name) {
+    return audienceOf(name) === "both";
+  }
   const ANALYSIS_VIEW_Y_RANGE_MULTIPLIER = 5;
   let legendCategoryInitialState = null;
   let signalAxisRangeDefault = null;
@@ -54,8 +50,8 @@
     for (let ti = 0; ti < plotlyGraphDiv.data.length; ti++) {
       const tr = plotlyGraphDiv.data[ti];
       const name = (tr.name || "").trim();
-      const isDebug = LEGEND_DEBUG_NAMES.has(name);
-      const inBoth = LEGEND_IN_BOTH_NAMES.has(name);
+      const isDebug = isDebugName(name);
+      const inBoth = isBothName(name);
       if (isDebug && !inBoth) continue;
       if (tr.yaxis && tr.yaxis !== "y") continue;
       const ySrc = tr.y || tr._inputArray || tr.bdata || tr.data || tr.values;
@@ -102,13 +98,13 @@
     const showlegend = [];
     for (let i = 0; i < data.length; i++) {
       const name = (data[i].name || "").trim();
-      const isDebug = LEGEND_DEBUG_NAMES.has(name);
+      const isDebug = isDebugName(name);
       const defaultState = getDefaultForTrace(i);
       if (value === "all") {
         visibility.push(defaultState.visible);
         showlegend.push(defaultState.showlegend);
       } else if (value === "debug") {
-        const show = isDebug || LEGEND_IN_BOTH_NAMES.has(name);
+        const show = isDebug || isBothName(name);
         if (show) {
           visibility.push(defaultState.visible);
           showlegend.push(defaultState.showlegend);
@@ -117,7 +113,7 @@
           showlegend.push(false);
         }
       } else {
-        const show = !isDebug || LEGEND_IN_BOTH_NAMES.has(name);
+        const show = !isDebug || isBothName(name);
         if (show) {
           visibility.push(defaultState.visible);
           showlegend.push(defaultState.showlegend);
@@ -141,6 +137,18 @@
         Plotly.relayout(plotlyGraphDiv, { "yaxis.range": range });
       }
     }
+  }
+
+  // Apply the configured default view ("debug" on final pass) once, after defaults are snapshotted.
+  let defaultLegendViewApplied = false;
+  function applyDefaultLegendViewOnce() {
+    if (defaultLegendViewApplied || !legendCategoryInitialState) return;
+    const sel = document.getElementById("legend-category-filter");
+    if (!sel) return; // no selector (non-final pass) -> leave every trace as-is
+    const view = cfg.defaultLegendView || "all";
+    defaultLegendViewApplied = true;
+    sel.value = view;
+    applyLegendCategoryFilter(view);
   }
 
   function findTraceIndexByName(targetName) {
@@ -211,6 +219,7 @@
       applyBeatHoverToPlot();
       plotlyGraphDiv.on("plotly_afterplot", function () {
         snapshotLegendCategoryDefaults();
+        applyDefaultLegendViewOnce();
       });
       window.addEventListener("resize", function () {
         Plotly.Plots.resize(plotlyGraphDiv);

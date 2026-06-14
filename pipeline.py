@@ -458,6 +458,7 @@ def analyze_wav_file(
                 output_suffix="_pass2",
                 pass1_bpm_series=np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64) if pass1_bpm is not None else None,
                 pass1_bpm_times=np.asarray(pass1_bpm["curve_times"], dtype=np.float64) if pass1_bpm is not None else None,
+                is_final_pass=False,
             )
 
     # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
@@ -538,6 +539,7 @@ def analyze_wav_file(
             filename_suffix="_pass3" if output_all_passes else "_bpm_plot",
             pass1_bpm_series=prior_bpm_series,
             pass1_bpm_times=prior_bpm_times,
+            is_final_pass=True,
         )
     elif not needs_plot_outputs:
         logging.info("Skipping all plot outputs (HTML/PNG/CSV) as requested.")

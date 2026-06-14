@@ -26,6 +26,100 @@ import matplotlib.pyplot as plt
 from config import param
 
 
+# --- Trace audience registry (single source of truth for the HTML "Show:" filter) ---
+# Maps every plot trace name to the audience it serves:
+#   "analysis" = end-user derived results (BPM/HRV/contractility/final systole+diastole)
+#   "debug"    = raw signal + per-peak reasoning (envelopes, markers, scores, intermediates)
+#   "both"     = always visible regardless of view (the BPM result curves)
+# This dict is injected into the HTML as JSON; interactive_plot.js / html_inline_minimal.js
+# read it instead of hardcoding name lists. Any trace name NOT listed here is treated as
+# "debug" by the JS (fail-safe: unknown/new traces never leak into the Analysis Data view).
+# tests/test_trace_audience.py guards that every static trace name in this file is registered.
+TRACE_AUDIENCE: Dict[str, str] = {
+    # both (always visible) — the BPM result curve, named per pass
+    "Average BPM": "both",
+    "BPM (Pass 2)": "both",
+    "BPM (Pass 3)": "both",
+    # analysis (end-user derived results)
+    "Average S1 contractility": "analysis",
+    "Average S2 contractility": "analysis",
+    "Average contractility": "analysis",
+    "RMSSDc": "analysis",
+    "SDNN": "analysis",
+    "LF/HF (windowed)": "analysis",
+    "Measured systole curve (final)": "analysis",
+    "Measured diastole curve (final)": "analysis",
+    "Exertion": "analysis",
+    "Recovery": "analysis",
+    "Peak Recovery Slope": "analysis",
+    "Peak Exertion Slope": "analysis",
+    # debug — raw signal / envelopes
+    "Bandpass Envelope": "debug",
+    "Noise Removed Envelope": "debug",
+    "Noise Envelope": "debug",
+    "Dynamic Noise Floor": "debug",
+    # debug — peak/beat markers
+    "Troughs": "debug",
+    "S1 Beats": "debug",
+    "S2 Beats": "debug",
+    "Noise/Rejected": "debug",
+    "Recovered peaks at large gaps (insensitive)": "debug",
+    "Recovered peaks at large gaps (sensitive)": "debug",
+    # debug — per-peak classifier reasoning
+    "S1 score": "debug",
+    "S2 score": "debug",
+    "Noise score": "debug",
+    # debug — reference / intermediate phase-interval curves
+    "Expected systole from BPM": "debug",
+    "Expected diastole from BPM": "debug",
+    "Measured systole": "debug",
+    "Measured diastole": "debug",
+    "Measured systole curve (before repair)": "debug",
+    "Measured diastole curve (before repair)": "debug",
+    # debug — BPM belief / raw instantaneous BPM (dynamic per-pass names enumerated)
+    "BPM Trend (Belief)": "debug",
+    "Instant BPM (Pass 2)": "debug",
+    "Instant BPM (Pass 2) outliers removed": "debug",
+    "Instantaneous BPM (Pass 2)": "debug",
+    "Instant BPM (Pass 3)": "debug",
+    "Instant BPM (Pass 3) outliers removed": "debug",
+    "Instantaneous BPM (Pass 3)": "debug",
+    # debug — pass 1 plot (whole plot is diagnostic; no selector is shown there)
+    "Anchor beats": "debug",
+    "Instant BPM (Pass 1)": "debug",
+    "Instant BPM (Pass 1) outliers removed": "debug",
+    "BPM (pass 1)": "debug",
+    # internal invisible axis anchor (kept visible in every view so the BPM axis renders)
+    "_axis_anchor": "both",
+}
+
+# Trace names produced dynamically (f-strings) rather than as static literals; listed so the
+# guard test can verify them too. Static-literal names are scraped from the source directly.
+_DYNAMIC_TRACE_NAMES = (
+    "Instant BPM (Pass 2)",
+    "Instant BPM (Pass 2) outliers removed",
+    "Instantaneous BPM (Pass 2)",
+    "Instant BPM (Pass 3)",
+    "Instant BPM (Pass 3) outliers removed",
+    "Instantaneous BPM (Pass 3)",
+)
+
+
+def _category_filter_html(default_view: str) -> str:
+    """Build the toolbar 'Show:' category <select>, pre-selecting default_view.
+    Returns '' so callers can omit the control entirely on non-final-pass plots."""
+    options = (("all", "All"), ("debug", "Debug"), ("analysis", "Analysis Data"))
+    options_html = "".join(
+        f'<option value="{value}"{" selected" if value == default_view else ""}>{label}</option>'
+        for value, label in options
+    )
+    return (
+        '<label for="legend-category-filter" class="chart-toolbar-label">Show:</label>'
+        '<select id="legend-category-filter" title="Filter legend and visible traces by category">'
+        f"{options_html}</select>"
+    )
+
+
 def _elapsed_seconds_to_plot_datetimes(seconds: np.ndarray) -> np.ndarray:
     """
     Vectorized equivalent of
@@ -397,8 +491,12 @@ class Plotter:
         filename_suffix: Optional[str] = None,
         pass1_bpm_series: Optional[pd.Series] = None,
         pass1_bpm_times: Optional[np.ndarray] = None,
+        is_final_pass: bool = True,
     ):
         """Generates and saves the main analysis plot by calling helper methods.
+        is_final_pass: True only for the last pass plotted (currently Pass 3). The Debug/Analysis Data
+        category selector is shown only on the final pass; per-pass output is itself a debug feature,
+        so non-final passes render every trace with no selector.
         pass_metrics: BPM/HRV/slope metrics for the pass being plotted (pass 2, pass 3, etc.).
         output_suffix: pass id for trace labels and systolic logic ('_pass2', '_pass3').
         filename_suffix: if set, used for HTML/PNG/CSV file names; if None, uses output_suffix or '_bpm_plot'.
@@ -514,7 +612,8 @@ class Plotter:
 
             # Generate custom HTML with audio player and playhead
             custom_html = self._generate_custom_html(
-                plotly_html, plot_title, base_name, output_options=output_options
+                plotly_html, plot_title, base_name, output_options=output_options,
+                is_final_pass=is_final_pass,
             )
 
             with open(output_html_path, 'w', encoding='utf-8') as f:
@@ -786,7 +885,8 @@ class Plotter:
         self._pass3_state_boundaries = []
         self._pass3_state_boundaries_before = []
         custom_html = self._generate_custom_html(
-            plotly_html, plot_title, base_name, output_options=output_options
+            plotly_html, plot_title, base_name, output_options=output_options,
+            is_final_pass=False,
         )
         with open(output_html_path, "w", encoding="utf-8") as f:
             f.write(custom_html)
@@ -901,7 +1001,7 @@ class Plotter:
                 line=dict(color="rgba(0,0,0,0)", width=1),
                 showlegend=False,
                 hoverinfo="skip",
-                name="",
+                name="_axis_anchor",
             ),
             secondary_y=False,
         )
@@ -1774,6 +1874,7 @@ class Plotter:
         *,
         pipeline_steps_html: str = "",
         output_options: Optional[Dict] = None,
+        is_final_pass: bool = True,
     ) -> str:
         """
         Generates custom HTML with audio player, timeline scrubber, and synchronized playhead.
@@ -1917,6 +2018,10 @@ class Plotter:
             },
             "analysisSummary": getattr(self, "analysis_summary_text", "") or "",
             "htmlS1S2HoverOnByDefault": hover_on_by_default,
+            # Trace audience map + default view for the "Show:" category filter (final pass only).
+            "traceAudience": TRACE_AUDIENCE,
+            "showCategoryFilter": bool(is_final_pass),
+            "defaultLegendView": "debug" if is_final_pass else "all",
             "bpmIntervalParams": {
                 "s1_nominal_sec":             float(param(self.params, "s1_nominal_sec")),
                 "s2_nominal_sec":             float(param(self.params, "s2_nominal_sec")),
@@ -2094,12 +2199,18 @@ class Plotter:
 
         total_time_str = f"{int(duration_sec // 60):02d}:{int(duration_sec % 60):02d}"
 
+        # Category 'Show:' selector only on the final pass (per-pass output is a debug feature).
+        category_filter_html = (
+            _category_filter_html("debug") if is_final_pass else ""
+        )
+
         return (
             template
             .replace("%%PLOT_TITLE%%", plot_title)
             .replace("%%AUDIO_FILE_NAME%%", audio_file_name)
             .replace("%%TOTAL_TIME%%", total_time_str)
             .replace("%%AUDIO_SOURCE_SELECT%%", audio_source_select_html)
+            .replace("%%CATEGORY_FILTER%%", category_filter_html)
             .replace("%%SPECTROGRAM_SRC%%", spectrogram_original_src)
             .replace("%%HTML_INTERACTIVE_SCRIPTS%%", scripts_tail)
             .replace("%%PLOTLY_HTML%%", plotly_html)

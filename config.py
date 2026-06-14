@@ -222,6 +222,12 @@ DEFAULT_PARAMS = {
     # over-detection. Shares the BPM ceiling.
     "pass3_interval_phase_relabel": True,
     "pass3_phase_skip_penalty": 0.4,  # Cost to leave a detected sound off the chain (noise).
+    "pass3_phase_autocorr_cycle": False,  # (Evaluated, off: envelope-autocorrelation cycle anchor did not help the benchmark.)
+    "pass3_phase_confidence_gate": True,      # Above the BPM ceiling, accept the decoder only when its mean duration-fit cost is below the threshold (regular rhythm → orientation trustworthy).
+    "pass3_phase_confidence_max_cost": 0.08,  # Max mean per-beat duration-fit cost to trust an above-ceiling decode (tuned: CirCor +1.0pt F1, native unchanged).
+    "pass3_recover_missed_s1": False,  # (Evaluated, off: envelope-confirmed recovery caught too few faint S1 to matter; absent beats have no envelope peak.)
+    "pass3_recover_amp_frac": 0.5,     # Recovered peak must reach this fraction of the neighbouring S1 amplitudes.
+    "pass3_phase_duration_sigma": 0.35,  # HSMM Gaussian duration-cost width (fraction of expected segment length) in the phase decoder.
 
     # --- 6.2 Insert missing states in large gaps (state-level) ---
     "pass3_calculate_large_gaps": True, # Just for display, you need to also enable pass3_enable_gap_state_insert or pass3_enable_noise_repair
