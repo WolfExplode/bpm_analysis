@@ -3,6 +3,66 @@
 Throwaway-but-keepable tooling for investigating pipeline bugs. Not part of the
 shipped pipeline; safe to run ad hoc.
 
+Three independent state-timeline checks live here, each a pure detector + a
+pipeline scanner:
+
+| concern | detector | scanner |
+|---|---|---|
+| spans overlap each other | `overlap_detector.py` | `scan_overlaps.py` |
+| labels vs boundary list disagree | `coverage_detector.py` | (use `coverage_detector` ad hoc) |
+| boundary sequence breaks the cycle | `state_sequence_detector.py` | `scan_sequence.py` |
+
+## Missing S1 state (state-sequence violation)
+
+A correct timeline walks one fixed cycle:
+
+```
+S1 -> systole -> S2 -> diastole -> S1 -> ...
+```
+
+Each state has exactly one legal successor. When the boundary list breaks the
+cycle the most visible case is **`diastole -> S2`**: an S2 band sits where an S1
+cycle belongs, so the strip appears to be **missing the S1 state** at a beat — even
+though the dense `pass3_state_labels` and the boundary list agree with each other
+(so neither the overlap nor the coverage check sees it). The S2 itself is correctly
+placed; what is absent is the S1 (and systole) span that should precede it.
+
+Confirmed on `#49 …RSA…` at 5.65s and 15.98s (`diastole -> S2`), matching the
+reported playhead. A clean recording (`Control`) shows the perfect 4-cycle with
+zero violations.
+
+### Files
+
+- `state_sequence_detector.py` — pure. `find_sequence_violations(boundaries, sample_rate=...)`
+  collapses the boundary list to real-state runs and flags every illegal transition
+  between **abutting** runs (a gap / `unknown` between runs legitimately breaks the
+  cycle and is not flagged). `summarize()` rolls up by kind / transition.
+- `scan_sequence.py` — runs the pipeline (parsing the starting BPM from each file
+  name, matching the GUI's `bpm_from_filename` default) and reports violations.
+  Exit code `1` if any.
+
+### Usage (from repo root)
+
+```
+python debug_helpers/scan_sequence.py                       # scan inputs/**/*.wav
+python debug_helpers/scan_sequence.py "inputs/Difficulty 3" # one subtree
+python debug_helpers/scan_sequence.py inputs --json debug_helpers/sequence_report.json
+```
+
+Both `scan_sequence.py` and `scan_overlaps.py` run the pipeline across files in a
+**process pool** (`analyze_wav_file` is CPU-bound, so processes — not threads —
+give real speedup). Defaults to `CPU count - 1` workers; override with
+`--jobs N` (`-j N`), or `--jobs 1` for serial debugging.
+
+### Root-cause notes (hypothesis — not yet fixed)
+
+The peaks around the hole are labelled *Noise*, then the next peak is an *S1 beat*,
+yet that S1 gets **no S1 state span** — the build paints the cycle straight from
+the previous `diastole` into the next `S2`. So the initial Pass 3 state build is
+dropping the S1 (and systole) span for an S1 beat that sits next to a noise peak,
+leaving `diastole -> S2`. The detector pinpoints where; the fix (ensuring every
+S1 beat yields an S1 state span) is a separate change in the state-build step.
+
 ## Overlapping cardiac states
 
 The Pass 3 state timeline (`analysis_data["pass3_state_boundaries"]`) is supposed

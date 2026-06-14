@@ -1,16 +1,17 @@
 """
-Run the real pipeline on input WAVs and report overlapping cardiac states.
+Run the real pipeline on input WAVs and report cardiac state-sequence violations.
+
+A correct timeline cycles S1 -> systole -> S2 -> diastole. This scanner flags any
+boundary list that breaks the cycle, in particular ``diastole -> S2`` (an S2 with
+no S1 before it — the "missing S1 state" bug).
 
 Usage (from repo root):
-    python debug_helpers/scan_overlaps.py                 # scan inputs/**/*.wav
-    python debug_helpers/scan_overlaps.py "inputs/Difficulty 5"   # a subtree
-    python debug_helpers/scan_overlaps.py path/to/one.wav         # single file
-    python debug_helpers/scan_overlaps.py --json out.json inputs
+    python debug_helpers/scan_sequence.py                 # scan inputs/**/*.wav
+    python debug_helpers/scan_sequence.py "inputs/Difficulty 3"
+    python debug_helpers/scan_sequence.py path/to/one.wav
+    python debug_helpers/scan_sequence.py inputs --json out.json
 
-For every file it runs ``analyze_wav_file`` (no output artifacts written), pulls
-``analysis_data["pass3_state_boundaries"]``, and runs the overlap detector. Files
-with overlaps are printed with the worst offending segment pairs; a JSON dump of
-all overlap records is written when --json is given.
+Exit code is 1 when any file has violations, else 0.
 """
 from __future__ import annotations
 
@@ -23,14 +24,15 @@ import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
 
-# Allow running as `python debug_helpers/scan_overlaps.py` from repo root.
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
+import soundfile as sf  # noqa: E402
+
 from config import DEFAULT_PARAMS  # noqa: E402
 from pipeline import analyze_wav_file  # noqa: E402
-from debug_helpers.overlap_detector import find_overlapping_states, summarize  # noqa: E402
+from debug_helpers.state_sequence_detector import find_sequence_violations, summarize  # noqa: E402
 
 _OUTPUT_OPTIONS = {
     "html": False, "png": False, "csv": False, "summary": False, "debug": False,
@@ -53,12 +55,30 @@ def _params():
     return {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
 
 
+def _bpm_hint_from_name(path):
+    """Parse a leading starting BPM from a "[107,71-108bpm]" style name, else None.
+    Mirrors the GUI/batch default (bpm_from_filename) so results match real runs."""
+    import re
+    m = re.search(r"\[(\d+(?:\.\d+)?)\s*,", os.path.basename(path))
+    return float(m.group(1)) if m else None
+
+
+def _env_sample_rate(wav_path, n_samples):
+    """Envelope sample rate = analysed samples / wall-clock duration of the WAV."""
+    try:
+        info = sf.info(wav_path)
+        dur = info.frames / float(info.samplerate)
+        return (n_samples / dur) if dur > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def scan_file(wav_path, params):
     """Return (sample_rate, records) or (None, None) on pipeline failure."""
     with tempfile.TemporaryDirectory() as tmp:
         try:
             _, _, _, data = analyze_wav_file(
-                wav_path, params, None,
+                wav_path, params, _bpm_hint_from_name(wav_path),
                 original_file_path=wav_path,
                 output_directory=tmp,
                 output_options=_OUTPUT_OPTIONS,
@@ -69,9 +89,11 @@ def scan_file(wav_path, params):
             return None, None
     if not data:
         return None, None
-    sr = int(data.get("sample_rate") or 0) or None
     bounds = data.get("pass3_state_boundaries") or []
-    records = find_overlapping_states(bounds, sample_rate=sr)
+    _labels = data.get("pass3_state_labels")
+    n = 0 if _labels is None else len(_labels)
+    sr = _env_sample_rate(wav_path, n)
+    records = find_sequence_violations(bounds, sample_rate=sr)
     return sr, records
 
 
@@ -98,20 +120,17 @@ def _worker(wav):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("paths", nargs="*", default=["inputs"], help="WAV files or directories (default: inputs)")
-    ap.add_argument("--json", metavar="FILE", help="Write all overlap records to this JSON file.")
-    ap.add_argument("--max-pairs", type=int, default=3, help="Offending pairs printed per file.")
+    ap.add_argument("--json", metavar="FILE", help="Write all violation records to this JSON file.")
+    ap.add_argument("--max-show", type=int, default=4, help="Violations printed per file.")
     ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2) - 1),
                     help="Parallel worker processes (default: CPU count - 1).")
     ns = ap.parse_args(argv)
 
-    # Input filenames contain CJK/emoji; force UTF-8 so prints survive a redirect
-    # to a cp1252 file on Windows (otherwise main() dies on the first such name).
     for _stream in (sys.stdout, sys.stderr):
         try:
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
-
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(message)s")
 
     wavs = _collect_wavs(ns.paths or ["inputs"])
@@ -121,44 +140,36 @@ def main(argv=None):
 
     params = _params()
     all_results = {}
-    n_with_overlap = 0
+    n_flagged = 0
     grand_total = 0
-    grand_gap_rebuild = 0
-    grand_edge_paint = 0
+    grand_missing_s1 = 0
 
     jobs = max(1, int(ns.jobs))
-    print(f"Scanning {len(wavs)} file(s) for overlapping cardiac states "
+    print(f"Scanning {len(wavs)} file(s) for state-sequence violations "
           f"({jobs} worker process(es))...\n", flush=True)
 
     def _handle(idx, wav, sr, records):
-        nonlocal n_with_overlap, grand_total, grand_gap_rebuild, grand_edge_paint
+        nonlocal n_flagged, grand_total, grand_missing_s1
         rel = os.path.relpath(wav, _REPO)
         if idx % 25 == 0 or idx == len(wavs):
-            print(f"  ...progress {idx}/{len(wavs)} ({n_with_overlap} flagged so far)", flush=True)
+            print(f"  ...progress {idx}/{len(wavs)} ({n_flagged} flagged so far)", flush=True)
         if records is None:
             print(f"  ERROR   {rel}", flush=True)
             return
         if not records:
             return
-        n_with_overlap += 1
+        n_flagged += 1
         grand_total += len(records)
         s = summarize(records)
-        grand_gap_rebuild += s["gap_rebuild_overlaps"]
-        grand_edge_paint += s["edge_paint_overlaps"]
+        grand_missing_s1 += s["missing_s1"]
         all_results[rel] = {"summary": s, "records": records}
-        print(f"  OVERLAP {rel}")
-        print(f"          {s['total_overlaps']} overlap(s): "
-              f"{s['gap_rebuild_overlaps']} gap-rebuild, "
-              f"{s['edge_paint_overlaps']} edge-paint; "
-              f"worst {s['worst_overlap_samples']} samples; pairs={s['overlap_state_pairs']}")
-        worst = sorted(records, key=lambda r: r["overlap_samples"], reverse=True)[: ns.max_pairs]
-        for r in worst:
-            ta = r.get("overlap_t_lo_sec")
-            tloc = f"@{ta:.2f}s " if ta is not None else ""
-            print(f"            {tloc}{r['seg_a'][2]}[{r['seg_a'][0]}:{r['seg_a'][1]} "
-                  f"src={r['seg_a'][3] or '-'}]  x  "
-                  f"{r['seg_b'][2]}[{r['seg_b'][0]}:{r['seg_b'][1]} src={r['seg_b'][3] or '-'}]  "
-                  f"overlap={r['overlap_samples']}")
+        print(f"  VIOLATION {rel}")
+        print(f"          {s['total_violations']} violation(s): "
+              f"{s['missing_s1']} missing-S1; transitions={s['by_transition']}", flush=True)
+        for r in records[: ns.max_show]:
+            ts = f"@{r['at_sec']:.2f}s " if "at_sec" in r else ""
+            print(f"            {ts}{r['prev_state']}->{r['cur_state']} "
+                  f"(expected {r['expected']}) [{r['kind']}]", flush=True)
         print(flush=True)
 
     if jobs == 1:
@@ -173,16 +184,16 @@ def main(argv=None):
                 _handle(idx, wav, sr, records)
 
     print("=" * 60)
-    print(f"Files scanned : {len(wavs)}")
-    print(f"With overlaps : {n_with_overlap}")
-    print(f"Total overlaps: {grand_total}  (gap-rebuild={grand_gap_rebuild}, edge-paint={grand_edge_paint})")
+    print(f"Files scanned   : {len(wavs)}")
+    print(f"With violations : {n_flagged}")
+    print(f"Total violations: {grand_total}  (missing-S1={grand_missing_s1})")
 
     if ns.json:
         with open(ns.json, "w", encoding="utf-8") as fh:
             json.dump(all_results, fh, indent=2)
         print(f"Wrote {ns.json}")
 
-    return 1 if n_with_overlap else 0
+    return 1 if n_flagged else 0
 
 
 if __name__ == "__main__":
