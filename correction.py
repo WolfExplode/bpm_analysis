@@ -1575,6 +1575,93 @@ def _pass3_interval_phase_relabel(
     return new_labels, nb, n_changed
 
 
+def _pass3_decide_phase(
+    state_labels: np.ndarray,
+    state_boundaries: List[Tuple],
+    sample_rate: int,
+    params: Dict,
+) -> Tuple[np.ndarray, List[Tuple], int]:
+    """Evidence-anchored S1/S2 phase decision (ADR-0004).
+
+    Decides each detected sound's S1/S2 label on the *stable* Beat centres, via
+    the lens-combiner decoder in ``phase_decision``, then rebuilds the dense
+    timeline from the chosen alternating chain. Called once, early (right after
+    the initial build), so it observes fixed data — not geometry that later
+    stages have mutated. Replaces the two post-hoc swap stages.
+
+    Returns (state_labels, state_boundaries, n_changed).
+    """
+    if not bool(param(params, "pass3_interval_phase_relabel")):
+        return state_labels, state_boundaries, 0
+    ceiling = float(param(params, "pass3_global_phase_bpm_ceiling"))
+    skip_pen = float(param(params, "pass3_phase_skip_penalty"))
+
+    sounds = sorted(
+        ((0.5 * (s + e), s, e, st, m) for s, e, st, m in state_boundaries
+         if st in ("S1", "S2")),
+        key=lambda x: x[0],
+    )
+    n = len(sounds)
+    if n < 4:
+        return state_labels, state_boundaries, 0
+    centers = [c for c, *_ in sounds]
+    incumbent = [st for _c, _s, _e, st, _m in sounds]  # Pass 2's S1/S2 per sound
+    stick = float(param(params, "pass3_phase_stick_margin"))
+
+    chain = phase_decision.decide_phase(
+        centers, float(sample_rate), ceiling, skip_pen,
+        incumbent=incumbent, stick_margin=stick,
+    )
+    if not chain:
+        return state_labels, state_boundaries, 0
+
+    gaps = [centers[i + 1] - centers[i] for i in range(n - 1)]
+    med_gap = float(np.median(gaps)) if gaps else 0.0
+
+    new_state = {i: lbl for i, lbl in chain}
+    n_changed = sum(
+        1 for i in range(n)
+        if (i not in new_state and sounds[i][3] in ("S1", "S2"))
+        or (i in new_state and new_state[i] != sounds[i][3])
+    )
+    if n_changed == 0:
+        return state_labels, state_boundaries, 0
+
+    nb: List[Tuple] = []
+    chain_idx = [i for i, _ in chain]
+    for k, i in enumerate(chain_idx):
+        _c, s, e, _old, m = sounds[i]
+        nb.append((s, e, new_state[i], m))
+        if k < len(chain_idx) - 1:
+            j = chain_idx[k + 1]
+            gap_s, gap_e = e, sounds[j][1]
+            if gap_e <= gap_s:
+                continue
+            a, b = new_state[i], new_state[j]
+            if a == "S1" and b == "S2":
+                btw = "systole"
+            elif a == "S2" and b == "S1":
+                btw = "diastole"
+            else:
+                btw = "systole" if (gap_e - gap_s) < med_gap else "diastole"
+            nb.append((gap_s, gap_e, btw, {}))
+
+    new_labels = np.full(len(state_labels), STATE_DIASTOLE, dtype=state_labels.dtype)
+    name_to_code = {"S1": STATE_S1, "systole": STATE_SYSTOLE,
+                    "S2": STATE_S2, "diastole": STATE_DIASTOLE}
+    for s, e, st, _m in nb:
+        code = name_to_code.get(st)
+        if code is None:
+            continue
+        a = max(0, int(s)); b = min(len(new_labels), int(e))
+        if b > a:
+            new_labels[a:b] = code
+
+    logging.info("Pass 3: phase decision changed %d/%d sounds (kept %d).",
+                 n_changed, n, len(chain))
+    return new_labels, nb, n_changed
+
+
 def _pass3_remove_boundaries_overlapping_span(
     state_boundaries: List[Tuple], lo: int, hi: int,
 ) -> List[Tuple]:
