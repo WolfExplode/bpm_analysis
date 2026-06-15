@@ -23,7 +23,7 @@ Severity tiers:
 Weights: tier0=0.1, tier1=0.3, tier2=0.6, tier3=1.0
 """
 import json, sys, os
-sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
 with open('benchmark_result.json') as f:
     data = json.load(f)
 

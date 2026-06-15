@@ -27,43 +27,30 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 import numpy as np  # noqa: E402
-import soundfile as sf  # noqa: E402
 
-from config import DEFAULT_PARAMS, param  # noqa: E402
+from config import param  # noqa: E402
 from peak_utils import PeakType  # noqa: E402
-from pipeline import analyze_wav_file  # noqa: E402
 from correction import _detect_sensitive_peaks_in_large_gap_windows  # noqa: E402
-
-_OO = {k: False for k in (
-    "html", "png", "csv", "summary", "debug", "filtered_wav",
-    "spectrogram", "fft_profiles", "output_all_passes", "working_wav_in_output",
-)}
+from debug_helpers._common import (  # noqa: E402
+    env_sample_rate, params, reconfigure_stdio, run_pipeline,
+)
 
 _REBUILD = ("gap_insert", "gap_label_pass3", "noise_repair")
 
 
-def _params():
-    return {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
-
-
-def _run(wav, params):
-    with tempfile.TemporaryDirectory() as tmp:
-        _, _, _, data = analyze_wav_file(
-            wav, params, None,
-            original_file_path=wav, output_directory=tmp,
-            output_options=_OO, collect_fft_for_aggregate=False,
-        )
-    info = sf.info(wav)
+def _run(wav, run_params):
+    data = run_pipeline(wav, run_params)
+    if data is None:
+        return None, 0.0
     labels = data.get("pass3_state_labels")
     n = 0 if labels is None else len(labels)
-    sr = n / (info.frames / float(info.samplerate)) if info.frames else 0.0
+    sr = env_sample_rate(wav, n) or 0.0
     return data, sr
 
 
@@ -133,15 +120,11 @@ def main(argv=None):
                          "energy counts as 'no acoustic beat' (default 0.40).")
     ns = ap.parse_args(argv)
 
-    for s in (sys.stdout, sys.stderr):
-        try:
-            s.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    reconfigure_stdio()
 
-    params = _params()
-    data, sr = _run(ns.wav, params)
-    if not sr:
+    run_params = params()
+    data, sr = _run(ns.wav, run_params)
+    if data is None or not sr:
         print("Could not determine sample rate.", file=sys.stderr)
         return 2
 
@@ -163,7 +146,7 @@ def main(argv=None):
 
     sample_rate_hz = int(round(sr))
     nfloor = data.get("pass3_dynamic_noise_floor_series")
-    q_sens = float(param(params, "pass3_gap_recovery_peak_prominence_quantile_sensitive"))
+    q_sens = float(param(run_params, "pass3_gap_recovery_peak_prominence_quantile_sensitive"))
 
     n_phantom = 0
     for r in runs:
@@ -174,7 +157,7 @@ def main(argv=None):
         try:
             sens = _detect_sensitive_peaks_in_large_gap_windows(
                 env if env is not None else np.zeros(1), sample_rate_hz,
-                [{"start_sample": lo, "end_sample": hi}], params,
+                [{"start_sample": lo, "end_sample": hi}], run_params,
                 prominence_quantile=q_sens,
                 dynamic_noise_floor_series=nfloor,
             )

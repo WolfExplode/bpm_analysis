@@ -11,7 +11,7 @@ removed labeled files do NOT pollute the per-file delta table or the totals.
 Only files present in BOTH snapshots are compared.
 """
 import json, sys, os
-sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
 
 
 def load(path: str) -> dict:

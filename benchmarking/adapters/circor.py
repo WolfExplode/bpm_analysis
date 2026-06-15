@@ -43,7 +43,7 @@ for _p in (_BENCH_DIR, _ROOT):
         sys.path.insert(0, _p)
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-sig"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 from bench_scoring import (  # noqa: E402
     DEFAULT_TOLERANCES_SEC,

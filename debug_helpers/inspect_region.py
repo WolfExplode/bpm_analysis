@@ -24,28 +24,16 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-import soundfile as sf  # noqa: E402
-
-from config import DEFAULT_PARAMS  # noqa: E402
 from peak_utils import PeakType  # noqa: E402
-from pipeline import analyze_wav_file  # noqa: E402
-from debug_helpers.scan_sequence import _bpm_hint_from_name  # noqa: E402
+from debug_helpers._common import (  # noqa: E402
+    bpm_hint_from_name, env_sample_rate, params, reconfigure_stdio, run_pipeline,
+)
 from debug_helpers.state_sequence_detector import find_sequence_violations  # noqa: E402
-
-_OO = {k: False for k in (
-    "html", "png", "csv", "summary", "debug", "filtered_wav",
-    "spectrogram", "fft_profiles", "output_all_passes", "working_wav_in_output",
-)}
-
-
-def _params():
-    return {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
 
 
 def _peak_kind(peak_type: str) -> str:
@@ -79,17 +67,13 @@ def _noise_windows(data):
     return out
 
 
-def _run(wav, params):
-    with tempfile.TemporaryDirectory() as tmp:
-        _, _, _, data = analyze_wav_file(
-            wav, params, _bpm_hint_from_name(wav),
-            original_file_path=wav, output_directory=tmp,
-            output_options=_OO, collect_fft_for_aggregate=False,
-        )
-    info = sf.info(wav)
-    _labels = data.get("pass3_state_labels")
-    n = 0 if _labels is None else len(_labels)
-    sr = n / (info.frames / float(info.samplerate)) if info.frames else 0.0
+def _run(wav, run_params):
+    data = run_pipeline(wav, run_params, bpm_hint=bpm_hint_from_name(wav))
+    if data is None:
+        return None, 0.0
+    labels = data.get("pass3_state_labels")
+    n = 0 if labels is None else len(labels)
+    sr = env_sample_rate(wav, n) or 0.0
     return data, sr
 
 
@@ -134,14 +118,10 @@ def main(argv=None):
     ap.add_argument("--pad", type=float, default=0.6, help="Half-width for --at (sec).")
     ns = ap.parse_args(argv)
 
-    for s in (sys.stdout, sys.stderr):
-        try:
-            s.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    reconfigure_stdio()
 
-    data, sr = _run(ns.wav, _params())
-    if not sr:
+    data, sr = _run(ns.wav, params())
+    if data is None or not sr:
         print("Could not determine sample rate.", file=sys.stderr)
         return 2
     print(f"# {os.path.basename(ns.wav)}  (envelope sr ~{sr:.1f} Hz)\n")

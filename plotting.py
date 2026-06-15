@@ -515,6 +515,7 @@ class Plotter:
         self._pass3_gap_quiet_windows_samples = analysis_data.get("pass3_gap_quiet_windows_samples") or []
         self._pass3_large_gap_recovered_peaks_insensitive = analysis_data.get("pass3_large_gap_recovered_peaks_insensitive") or []
         self._pass3_large_gap_recovered_peaks_sensitive = analysis_data.get("pass3_large_gap_recovered_peaks_sensitive") or []
+        self._pass3_gap_decision_peaks_sensitive = analysis_data.get("pass3_gap_decision_peaks_sensitive") or []
 
         # Long-plot optimization: optionally skip heavy debug traces for very long recordings.
         optimize_long_plots = bool(param(self.params, "optimize_long_plots"))
@@ -1272,6 +1273,14 @@ class Plotter:
             getattr(self, "_pass3_large_gap_recovered_peaks_sensitive", None) or [],
             "Recovered peaks at large gaps (sensitive)",
             "#67d1ff",
+        )
+        # The peaks find_gap_windows actually used to decide each gap/insert. These
+        # drive the decision; the "recovered" sets above are re-detected over the
+        # trimmed window and can differ. Plotting both makes that disagreement visible.
+        _add(
+            getattr(self, "_pass3_gap_decision_peaks_sensitive", None) or [],
+            "Gap decision peaks (sensitive)",
+            "#ff5b5b",
         )
 
     def _average_prominence_by_time_segment(

@@ -31,7 +31,7 @@ from analysis_data_schema import AnalysisData
 
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, peak_prominences
 from classifier import PeakClassifier
 from confidence_engine import calculate_bpm_intervals
 from hrv import median_mad_keep_mask_time_window, filter_interval_durations_by_limits
@@ -130,6 +130,12 @@ def _detect_sensitive_peaks_in_large_gap_windows(
         if seg.size < 4:
             continue
 
+        # Prominence bar is the segment's own quantile (local adaptivity). This is
+        # deliberately permissive: faint-but-real beats in a diminished stretch only
+        # stand out *locally*, so a whole-recording bar would miss them. The job of
+        # rejecting isolated silent-pause ripple is NOT done here — it's done at the
+        # gap-decision level (see _gap_peaks_form_rhythmic_train), which requires the
+        # detected peaks to form a regular train at the local heart rate.
         try:
             prom_thresh = float(np.quantile(seg, q))
         except Exception:
@@ -1728,6 +1734,39 @@ def _pass3_find_gap_windows(
     MAX_SCALE = 0.30  # must match _pass3_rebuild_unknown_runs
     _q_sens = float(param(params, "pass3_gap_recovery_peak_prominence_quantile_sensitive"))
 
+    # Noise-floor gate: a candidate gap is only real if its detected peaks tower over
+    # the LOCAL noise. Real beats (even faint ones) sit ~16-110x the dynamic noise
+    # floor; isolated silent-pause ripple sits ~2-3x. A whole-recording or
+    # genuine-beat-relative threshold can't separate these (faint beats and ripple
+    # overlap in absolute prominence across files of different loudness), but the
+    # ratio to the local noise floor does — it self-normalizes per region.
+    _env_arr = np.asarray(audio_envelope, dtype=np.float64)
+    _min_prom_floor = float(param(params, "pass3_gap_min_prom_to_noise_floor"))
+    _nf_arr: Optional[np.ndarray] = None
+    if dynamic_noise_floor_series is not None and isinstance(dynamic_noise_floor_series, pd.Series):
+        try:
+            _nf_tmp = dynamic_noise_floor_series.to_numpy(dtype=np.float64, copy=False)
+            if len(_nf_tmp) == len(_env_arr):
+                _nf_arr = _nf_tmp
+        except Exception:
+            _nf_arr = None
+
+    def _peaks_clear_noise_floor(peaks: np.ndarray) -> bool:
+        """True if the peaks' median prominence is >= _min_prom_floor x local noise floor.
+        Conservatively returns True when the gate can't be evaluated (no floor / disabled)."""
+        if _min_prom_floor <= 0 or _nf_arr is None or peaks is None or len(peaks) == 0:
+            return True
+        try:
+            proms = peak_prominences(_env_arr, peaks)[0]
+            floors = _nf_arr[peaks]
+            ok = floors > 0
+            if not np.any(ok):
+                return True
+            ratio = proms[ok] / floors[ok]
+            return bool(np.nanmedian(ratio) >= _min_prom_floor)
+        except Exception:
+            return True
+
     def _bpm_at_sample(ix: int) -> float:
         t = float(ix) / SR
         v = _interp_piecewise_linear(t, t_r, bpm_r)
@@ -1836,11 +1875,35 @@ def _pass3_find_gap_windows(
 
         try:
             _pk_sens_arr = np.asarray(_pk_sens, dtype=np.int64)
-            n_sens = int(np.sum(
+            _in_region = _pk_sens_arr[
                 (_pk_sens_arr >= int(gap_region_lo)) & (_pk_sens_arr < int(gap_region_hi))
-            ))
+            ]
+            n_sens = int(_in_region.size)
+            # The exact decision-time peaks that made this a gap (and capped its
+            # cycle count). Stored so debug/plot can show the evidence that drove
+            # the insert — the for-plot re-detection in the driver can disagree.
+            sensitive_peaks_samples = [int(x) for x in _in_region.tolist()]
         except Exception:
+            _in_region = np.asarray([], dtype=np.int64)
             n_sens = 0
+            sensitive_peaks_samples = []
+
+        # Noise-floor gate: if the in-region peaks don't tower over the local noise,
+        # this is silent-pause ripple, not a faint beat train — do not make it a gap
+        # (prevents phantom cardiac-cycle inserts). Record it as a quiet window.
+        if not _peaks_clear_noise_floor(_in_region):
+            if quiet_windows_out is not None:
+                try:
+                    quiet_windows_out.append({
+                        "start_sample": int(gap_region_lo),
+                        "end_sample": int(gap_region_hi),
+                        "gap_region_candidate_state": str(name),
+                        "trigger": "noise_below_floor",
+                        "n_sensitive_peaks": int(n_sens),
+                    })
+                except Exception:
+                    pass
+            continue
 
         s1_right: Optional[int] = None
         if isinstance(meta, dict) and meta.get("s1_next") is not None:
@@ -1859,6 +1922,7 @@ def _pass3_find_gap_windows(
             "bpm_at_mid": float(bpm),
             "cyc0_samples": int(cyc0),
             "n_sensitive_peaks": int(n_sens),
+            "sensitive_peaks_samples": sensitive_peaks_samples,
             "first_sensitive_peak_sample": int(first_pk_i),
             "meta": dict(meta) if isinstance(meta, dict) else {},
             "s1_right": s1_right,
@@ -3023,6 +3087,14 @@ def run_pass3_correction(
             analysis_data.setdefault("pass3_large_gap_windows_samples", [])
         if _gap_quiet_debug:
             analysis_data["pass3_gap_quiet_windows_samples"] = list(_gap_quiet_debug)
+
+        # Decision-time sensitive peaks: the exact peaks find_gap_windows used to
+        # turn each segment into a gap. Distinct from the for-plot recovered peaks
+        # below (re-detected over the trimmed window, which can disagree). Plotted
+        # so the evidence that drove every insert is always visible.
+        analysis_data["pass3_gap_decision_peaks_sensitive"] = sorted(
+            {int(p) for gw in _gap_windows for p in (gw.get("sensitive_peaks_samples") or [])}
+        )
 
         # ── Large-gap peaks labeling (> threshold) ────────────────────────────
         if _lg_label_on:

@@ -15,84 +15,30 @@ all overlap records is written when --json is given.
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import logging
 import os
 import sys
-import tempfile
-from concurrent.futures import ProcessPoolExecutor
 
 # Allow running as `python debug_helpers/scan_overlaps.py` from repo root.
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from config import DEFAULT_PARAMS  # noqa: E402
-from pipeline import analyze_wav_file  # noqa: E402
+from debug_helpers._common import (  # noqa: E402
+    collect_wavs, default_jobs, parallel_scan, params, reconfigure_stdio, run_pipeline,
+)
 from debug_helpers.overlap_detector import find_overlapping_states, summarize  # noqa: E402
 
-_OUTPUT_OPTIONS = {
-    "html": False, "png": False, "csv": False, "summary": False, "debug": False,
-    "filtered_wav": False, "spectrogram": False, "fft_profiles": False,
-    "output_all_passes": False, "working_wav_in_output": False,
-}
 
-
-def _collect_wavs(paths):
-    wavs = []
-    for p in paths:
-        if os.path.isfile(p) and p.lower().endswith(".wav"):
-            wavs.append(p)
-        elif os.path.isdir(p):
-            wavs.extend(sorted(glob.glob(os.path.join(p, "**", "*.wav"), recursive=True)))
-    return wavs
-
-
-def _params():
-    return {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
-
-
-def scan_file(wav_path, params):
+def scan_file(wav_path, run_params):
     """Return (sample_rate, records) or (None, None) on pipeline failure."""
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            _, _, _, data = analyze_wav_file(
-                wav_path, params, None,
-                original_file_path=wav_path,
-                output_directory=tmp,
-                output_options=_OUTPUT_OPTIONS,
-                collect_fft_for_aggregate=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logging.error("pipeline error on %s: %s", os.path.basename(wav_path), exc)
-            return None, None
-    if not data:
+    data = run_pipeline(wav_path, run_params)
+    if data is None:
         return None, None
     sr = int(data.get("sample_rate") or 0) or None
     bounds = data.get("pass3_state_boundaries") or []
-    records = find_overlapping_states(bounds, sample_rate=sr)
-    return sr, records
-
-
-# Module-level worker so it is picklable for the process pool (Windows spawn).
-_WORKER_PARAMS = None
-
-
-def _worker_init(params):
-    global _WORKER_PARAMS
-    _WORKER_PARAMS = params
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
-    logging.getLogger().setLevel(logging.ERROR)
-
-
-def _worker(wav):
-    sr, records = scan_file(wav, _WORKER_PARAMS)
-    return wav, sr, records
+    return sr, find_overlapping_states(bounds, sample_rate=sr)
 
 
 def main(argv=None):
@@ -100,26 +46,19 @@ def main(argv=None):
     ap.add_argument("paths", nargs="*", default=["inputs"], help="WAV files or directories (default: inputs)")
     ap.add_argument("--json", metavar="FILE", help="Write all overlap records to this JSON file.")
     ap.add_argument("--max-pairs", type=int, default=3, help="Offending pairs printed per file.")
-    ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+    ap.add_argument("--jobs", "-j", type=int, default=default_jobs(),
                     help="Parallel worker processes (default: CPU count - 1).")
     ns = ap.parse_args(argv)
 
-    # Input filenames contain CJK/emoji; force UTF-8 so prints survive a redirect
-    # to a cp1252 file on Windows (otherwise main() dies on the first such name).
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
-
+    reconfigure_stdio()
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(message)s")
 
-    wavs = _collect_wavs(ns.paths or ["inputs"])
+    wavs = collect_wavs(ns.paths or ["inputs"])
     if not wavs:
         print("No WAV files found.", file=sys.stderr)
         return 2
 
-    params = _params()
+    run_params = params()
     all_results = {}
     n_with_overlap = 0
     grand_total = 0
@@ -161,16 +100,8 @@ def main(argv=None):
                   f"overlap={r['overlap_samples']}")
         print(flush=True)
 
-    if jobs == 1:
-        for idx, wav in enumerate(wavs, 1):
-            sr, records = scan_file(wav, params)
-            _handle(idx, wav, sr, records)
-    else:
-        # ProcessPoolExecutor: analyze_wav_file is CPU-bound, so processes (not
-        # threads) give real speedup. Results stream back in submission order.
-        with ProcessPoolExecutor(max_workers=jobs, initializer=_worker_init, initargs=(params,)) as ex:
-            for idx, (wav, sr, records) in enumerate(ex.map(_worker, wavs), 1):
-                _handle(idx, wav, sr, records)
+    for idx, (wav, (sr, records)) in enumerate(parallel_scan(wavs, scan_file, run_params, jobs), 1):
+        _handle(idx, wav, sr, records)
 
     print("=" * 60)
     print(f"Files scanned : {len(wavs)}")

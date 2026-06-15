@@ -148,6 +148,11 @@ class AnalysisData(TypedDict, total=False):
     pass3_large_gap_recovered_peaks_sensitive: list
     """Sample indices of peaks recovered by the sensitive (low-threshold) detector."""
 
+    pass3_gap_decision_peaks_sensitive: list
+    """Sample indices of the sensitive peaks find_gap_windows used to decide each
+    gap/insert. Detected over the source segment; can differ from the recovered
+    sets above (re-detected over the trimmed window). Plotted as debug evidence."""
+
     # =========================================================================
     # Pass 3 measured phase curves — "before_repair" snapshot
     # Set by _compute_and_store_measured_phase_curves(key_prefix="pass3_measured_phase_before_repair")

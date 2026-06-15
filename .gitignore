@@ -40,5 +40,12 @@ build/
 ui_settings.json
 benchmark_result.json
 benchmark_summary.json
+benchmarking/circor_benchmark_result.json
+benchmarking/circor_full_timing.txt
+benchmarking/*.log
+# debug_helpers generated artifacts (scan --json dumps, run logs)
+debug_helpers/*.log
+debug_helpers/*_report.json
+debug_helpers/inv_off.json
 
 Archived

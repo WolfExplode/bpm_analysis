@@ -3,15 +3,34 @@
 Throwaway-but-keepable tooling for investigating pipeline bugs. Not part of the
 shipped pipeline; safe to run ad hoc.
 
-Three independent state-timeline checks live here, each a pure detector + a
-pipeline scanner:
+Independent state-timeline checks live here, each a **pure detector** + a
+**pipeline scanner**:
 
 | concern | detector | scanner |
 |---|---|---|
 | spans overlap each other | `overlap_detector.py` | `scan_overlaps.py` |
 | labels vs boundary list disagree | `coverage_detector.py` | (use `coverage_detector` ad hoc) |
 | boundary sequence breaks the cycle | `state_sequence_detector.py` | `scan_sequence.py` |
-| state band disagrees with peak label | `peak_state_mismatch_detector.py` | (use ad hoc / `inspect_region.py`) |
+| state band disagrees with peak label | `peak_state_mismatch_detector.py` | `scan_peak_state.py` |
+
+Single-file **audit** tools (one WAV in, explanatory dump out — no detector):
+
+| tool | answers |
+|---|---|
+| `inspect_region.py` | what peaks/states/noise-windows sit in a time window (or each violation) |
+| `compare_to_manual.py` | how well Pass-3 output matches a hand-marked `_manual_state_sequence.csv` |
+| `gap_decision_audit.py` | why each wide diastole became QUIET vs a phantom-insert GAP |
+| `phantom_insert_detector.py` | which rebuilt cycles sit over a flat envelope with no real beat |
+
+## Shared plumbing — `_common.py`
+
+Every scanner/audit tool runs the same pipeline the GUI runs, artifacts off, then
+feeds the result to a detector. That boilerplate — `params()`, `OUTPUT_OPTIONS`,
+the tempdir + `run_pipeline()` wrapper, `env_sample_rate()`, `bpm_hint_from_name()`,
+`collect_wavs()`, `reconfigure_stdio()`, and the CPU-bound `parallel_scan()` process
+pool — lives in [`_common.py`](./_common.py), imported by all of them. The pure
+`*_detector.py` modules deliberately do **not** import it, so they stay
+pipeline-free and unit-testable.
 
 `inspect_region.py` is a cross-strip correlator: for a recording and a time window
 (or each sequence violation) it prints, time-ordered, every **peak** (with its

@@ -144,7 +144,7 @@ def _worker_init(params):
     _WORKER_PARAMS = params
     for s in (sys.stdout, sys.stderr):
         try:
-            s.reconfigure(encoding="utf-8", errors="replace")
+            s.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
     logging.getLogger().setLevel(logging.ERROR)
@@ -179,7 +179,7 @@ def main(argv=None):
 
     for s in (sys.stdout, sys.stderr):
         try:
-            s.reconfigure(encoding="utf-8", errors="replace")
+            s.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(message)s")

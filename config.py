@@ -246,6 +246,7 @@ DEFAULT_PARAMS = {
     "pass3_gap_recovery_peak_prominence_quantile_insensitive": 0.75,  # Higher = fewer peaks, more likely real S1/S2.
     "pass3_gap_recovery_peak_prominence_quantile_sensitive": 0.5,    # Lower = more peaks; used as an "anything at all here?" scan.
     "pass3_gap_recovery_height_scale": 0.85,              # Multiply dynamic noise-floor threshold (if available).
+    "pass3_gap_min_prom_to_noise_floor": 6.0,             # A gap only becomes fillable if its detected peaks' median prominence is >= this multiple of the LOCAL dynamic noise floor. Rejects isolated silent-pause ripple (~2x floor) while keeping faint-but-real beats (>=16x floor). 0 disables.
     "pass3_gap_snap_window_ms": 100.0,                     # Search radius (ms) around each synthetic S1/S2 center when snapping to a recovered peak.
 
     # --- 6.2.2 Large diastole — Pass 2-style peak labeling then state fill (before noise / gap insert) ---

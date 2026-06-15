@@ -3,9 +3,10 @@
 Benchmark runner for BPM analysis.
 
 Usage:
-    python run_benchmark.py [input_dir]
+    python run_benchmark.py [input_dir] [-j N]
 
-Default input_dir: inputs/Difficulty 3
+Default input_dir: repo-root inputs/. Runs a process pool (-j/--jobs, default
+CPU count - 1; -j 1 for serial). Output is identical regardless of job count.
 
 For each WAV file with a _manual_state_sequence.csv, runs the full analysis
 pipeline and compares predicted S1 segments (pass3_state_boundaries) against
@@ -26,6 +27,7 @@ import json
 import logging
 import tempfile
 import glob
+from concurrent.futures import ProcessPoolExecutor
 from typing import List, Tuple, Dict, Optional
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +35,7 @@ sys.path.insert(0, _SCRIPT_DIR)
 sys.path.insert(0, os.path.dirname(_SCRIPT_DIR))  # project root for config, pipeline, etc.
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-sig"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 import numpy as np
 from config import DEFAULT_PARAMS
@@ -341,6 +343,7 @@ def compare_file(
             flip_consecutive = 0
             correct_consecutive += 1
             if in_flip and correct_consecutive >= FLIP_RECOVERY_N:
+                assert flip_start_time is not None  # set whenever in_flip is True
                 flip_time_regions.append((flip_start_time, mc))
                 in_flip = False
                 flip_start_time = None
@@ -375,6 +378,7 @@ def compare_file(
                 })
 
     if in_flip and manual_centers:
+        assert flip_start_time is not None  # set whenever in_flip is True
         flip_time_regions.append((flip_start_time, manual_centers[-1]))
 
     # Extra errors: unmatched predicted S1s outside flip regions
@@ -452,18 +456,18 @@ def _print_subtotal(label: str, n_files: int, n_s1: int, n_err: int, n_flip: int
     )
 
 
-def run_benchmark(input_dir: str) -> None:
-    labeled = _collect_labeled_wav_files(input_dir)
-    if not labeled:
-        print("No labeled WAV files found.")
-        return
+_OUTPUT_OPTIONS = {
+    "html": False, "png": False, "csv": False, "summary": False, "debug": False,
+    "filtered_wav": False, "spectrogram": False, "fft_profiles": False,
+    "output_all_passes": False, "working_wav_in_output": False,
+}
 
-    params = {
-        **DEFAULT_PARAMS,
-        "save_filtered_wav": False,
-        "enable_fft_profiles": False,
-    }
-    # A/B a single param, e.g. BENCH_PARAM_OVERRIDES="pass3_interval_phase_relabel=false".
+
+def _build_params() -> Dict:
+    """DEFAULT_PARAMS with artifact writes off, plus optional env A/B overrides.
+    BENCH_PARAM_OVERRIDES="key=val,key=val" — read here (not passed) so the values
+    reach spawned worker processes (Windows spawn re-imports this module)."""
+    params = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
     for item in (s for s in os.environ.get("BENCH_PARAM_OVERRIDES", "").split(",") if s.strip()):
         k, _, v = item.partition("=")
         k, v = k.strip(), v.strip()
@@ -476,21 +480,78 @@ def run_benchmark(input_dir: str) -> None:
                 params[k] = float(v)
             except ValueError:
                 params[k] = v
+    return params
 
-    output_options = {
-        "html": False,
-        "png": False,
-        "csv": False,
-        "summary": False,
-        "debug": False,
-        "filtered_wav": False,
-        "spectrogram": False,
-        "fft_profiles": False,
-        "output_all_passes": False,
-        "working_wav_in_output": False,
-    }
 
-    sample_rate = int(params.get("preprocess_target_sample_rate", 600))
+# Worker globals: params built once per process, not pickled per task.
+_W_PARAMS: Optional[Dict] = None
+_W_SAMPLE_RATE: int = 600
+
+
+def _init_worker() -> None:
+    global _W_PARAMS, _W_SAMPLE_RATE
+    _W_PARAMS = _build_params()
+    _W_SAMPLE_RATE = int(_W_PARAMS.get("preprocess_target_sample_rate", 600))
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
+    logging.getLogger().setLevel(logging.ERROR)
+
+
+def _score_one(task: Tuple[str, str, str]) -> Dict:
+    """Load GT, run pipeline, compare one file. Returns a result/skip/error dict.
+    Only picklable primitives are returned (analysis_data stays in the worker)."""
+    subdir, wav_path, csv_path = task
+    wav_name = os.path.basename(wav_path)
+    manual_segments = _load_manual_state_sequence(csv_path)
+    if not manual_segments:
+        return {"subdir": subdir, "file": wav_name, "skip": "empty labels"}
+
+    params = _W_PARAMS if _W_PARAMS is not None else _build_params()
+    sample_rate = _W_SAMPLE_RATE
+    start_bpm = _extract_start_bpm(wav_path)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            _, _, _, analysis_data = analyze_wav_file(
+                wav_path, params, start_bpm,
+                original_file_path=wav_path,
+                output_directory=tmpdir,
+                output_options=_OUTPUT_OPTIONS,
+                collect_fft_for_aggregate=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"subdir": subdir, "file": wav_name, "error": f"PIPELINE ERROR: {exc}"}
+
+    if analysis_data is None:
+        return {"subdir": subdir, "file": wav_name,
+                "error": "PIPELINE ERROR: returned no data (too few peaks?)"}
+
+    pred_boundaries = analysis_data.get("pass3_state_boundaries") or []
+    result = compare_file(manual_segments, pred_boundaries, sample_rate, analysis_data)
+    return {"subdir": subdir, "file": wav_name, "result": result}
+
+
+def _iter_results(labeled, jobs):
+    """Yield per-file result dicts in input order, serial (jobs<=1) or pooled.
+    analyze_wav_file is CPU-bound, so processes (not threads) give real speedup."""
+    jobs = max(1, int(jobs))
+    if jobs == 1:
+        _init_worker()
+        for task in labeled:
+            yield _score_one(task)
+    else:
+        with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker) as ex:
+            yield from ex.map(_score_one, labeled)
+
+
+def run_benchmark(input_dir: str, jobs: int = 1) -> None:
+    labeled = _collect_labeled_wav_files(input_dir)
+    if not labeled:
+        print("No labeled WAV files found.")
+        return
 
     total_errors = total_flip = total_miss = total_extra = total_manual_s1 = 0
     file_results = []
@@ -501,7 +562,9 @@ def run_benchmark(input_dir: str) -> None:
 
     sep = "=" * 68
 
-    for subdir, wav_path, csv_path in labeled:
+    for res in _iter_results(labeled, jobs):
+        subdir = res["subdir"]
+        wav_name = res["file"]
         if subdir != current_subdir:
             if current_subdir is not None:
                 print()
@@ -513,36 +576,16 @@ def run_benchmark(input_dir: str) -> None:
             print(f"  {subdir}")
             print(sep)
 
-        wav_name = os.path.basename(wav_path)
-        manual_segments = _load_manual_state_sequence(csv_path)
-        if not manual_segments:
-            print(f"  SKIP {wav_name}  (empty labels)")
+        if "skip" in res:
+            print(f"  SKIP {wav_name}  ({res['skip']})")
+            continue
+        if "error" in res:
+            print(f"  {wav_name}")
+            print(f"    {res['error']}")
             continue
 
-        start_bpm = _extract_start_bpm(wav_path)
+        result = res["result"]
         print(f"  {wav_name}")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                _, _, _, analysis_data = analyze_wav_file(
-                    wav_path,
-                    params,
-                    start_bpm,
-                    original_file_path=wav_path,
-                    output_directory=tmpdir,
-                    output_options=output_options,
-                    collect_fft_for_aggregate=False,
-                )
-            except Exception as exc:
-                print(f"    PIPELINE ERROR: {exc}")
-                continue
-
-        if analysis_data is None:
-            print("    PIPELINE ERROR: returned no data (too few peaks?)")
-            continue
-
-        pred_boundaries = analysis_data.get("pass3_state_boundaries") or []
-        result = compare_file(manual_segments, pred_boundaries, sample_rate, analysis_data)
 
         n_s1 = result["manual_s1_count"]
         n_err = result["total_errors"]
@@ -663,18 +706,22 @@ def run_benchmark(input_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
 
-    if len(sys.argv) > 1:
-        input_dir = sys.argv[1]
-    else:
-        input_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "inputs"
-        )
+    ap = argparse.ArgumentParser(description="BPM analysis benchmark vs manual labels.")
+    ap.add_argument("input_dir", nargs="?",
+                    default=os.path.join(os.path.dirname(_SCRIPT_DIR), "inputs"),
+                    help="Directory of labeled WAVs (default: repo-root inputs/).")
+    ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+                    help="Parallel worker processes (default: CPU count - 1; 1 = serial).")
+    ns = ap.parse_args()
 
-    if not os.path.isdir(input_dir):
-        print(f"Error: not a directory: {input_dir}", file=sys.stderr)
+    if not os.path.isdir(ns.input_dir):
+        print(f"Error: not a directory: {ns.input_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Benchmark: {input_dir}\n")
-    run_benchmark(input_dir)
+    jobs = max(1, ns.jobs)
+    print(f"Benchmark: {ns.input_dir}  ({jobs} worker process(es))\n")
+    run_benchmark(ns.input_dir, jobs)
