@@ -36,6 +36,7 @@ from classifier import PeakClassifier
 from confidence_engine import calculate_bpm_intervals
 from hrv import median_mad_keep_mask_time_window, filter_interval_durations_by_limits
 from config import param
+import phase_decision
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2786,6 +2787,19 @@ def run_pass3_correction(
             _trimmed.append(_seg)
     state_boundaries = _trimmed
 
+    # ── Phase decision (ADR-0004): decide S1/S2 once, here, on the stable Beats ──
+    # Runs early — before noise repair / gap fill / snap can move any geometry — so
+    # the decision observes fixed evidence, not its own pipeline's mutated output.
+    # Replaces the two former post-hoc swap stages.
+    try:
+        state_labels, state_boundaries, _n_phase = _pass3_decide_phase(
+            state_labels, state_boundaries, sample_rate, params,
+        )
+        if _n_phase:
+            corrections.append({"type": "phase_decision", "changed": int(_n_phase)})
+    except Exception:
+        logging.debug("Pass 3: phase decision failed", exc_info=True)
+
     def _compute_and_store_measured_phase_curves(
         *,
         key_prefix: str,
@@ -3062,35 +3076,9 @@ def run_pass3_correction(
     except Exception:
         logging.debug("Pass 3: failed to compute final phase curves", exc_info=True)
 
-    # Global phase-correction: fix whole-recording S1/S2 inversions before
-    # publishing the timeline. Runs last so it sees the fully-repaired spans.
-    try:
-        state_labels, state_boundaries, _phase_swapped = _pass3_global_phase_correction(
-            state_labels, state_boundaries, sample_rate, fallback_bpm, params,
-        )
-        if _phase_swapped:
-            corrections.append({"type": "global_phase_swap", "bpm": round(float(fallback_bpm), 1)})
-            # Keep the measured systole/diastole curves consistent with the swap.
-            for _a, _b in (
-                ("pass3_measured_systole_times", "pass3_measured_diastole_times"),
-                ("pass3_measured_systole", "pass3_measured_diastole"),
-                ("pass3_measured_systole_t", "pass3_measured_diastole_t"),
-                ("pass3_measured_systole_dur", "pass3_measured_diastole_dur"),
-            ):
-                if _a in analysis_data and _b in analysis_data:
-                    analysis_data[_a], analysis_data[_b] = analysis_data[_b], analysis_data[_a]
-    except Exception:
-        logging.debug("Pass 3: global phase correction failed", exc_info=True)
-
-    # Per-beat phase relabel: repair partial (within-recording) S1/S2 flips.
-    try:
-        state_labels, state_boundaries, _n_relabel = _pass3_interval_phase_relabel(
-            state_labels, state_boundaries, sample_rate, fallback_bpm, params,
-        )
-        if _n_relabel:
-            corrections.append({"type": "interval_phase_relabel", "changed": int(_n_relabel)})
-    except Exception:
-        logging.debug("Pass 3: interval phase relabel failed", exc_info=True)
+    # Phase (S1/S2) was decided once, early, on the stable Beats (see ADR-0004 and
+    # _pass3_decide_phase above). The former post-hoc global swap + interval relabel
+    # stages are gone — nothing here re-judges phase from the mutated timeline.
 
     analysis_data["pass3_state_labels"]          = state_labels
     analysis_data["pass3_state_labels_encoding"] = dict(STATE_LABELS_ENCODING)

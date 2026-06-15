@@ -67,7 +67,22 @@ _METRICS = (
 
 
 def _params():
-    return {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    p = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    # A/B a single param against the gate, e.g. STATE_PARAM_OVERRIDES="pass3_interval_phase_relabel=false".
+    raw = os.environ.get("STATE_PARAM_OVERRIDES", "")
+    for item in (s for s in raw.split(",") if s.strip()):
+        k, _, v = item.partition("=")
+        k, v = k.strip(), v.strip()
+        if not k:
+            continue
+        if v.lower() in ("true", "false"):
+            p[k] = v.lower() == "true"
+        else:
+            try:
+                p[k] = float(v)
+            except ValueError:
+                p[k] = v
+    return p
 
 
 def _collect_wavs(paths):

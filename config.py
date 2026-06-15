@@ -222,6 +222,12 @@ DEFAULT_PARAMS = {
     # over-detection. Shares the BPM ceiling.
     "pass3_interval_phase_relabel": True,
     "pass3_phase_skip_penalty": 0.4,  # Cost to leave a detected sound off the chain (noise).
+    # Incumbent stickiness: reward keeping Pass 2's S1/S2 label, so timing must
+    # out-score this margin to *flip* a sound (the doc's "boost confidence that
+    # S1/S2 switched" inequality). 0 = blanket re-decode (old behaviour); higher =
+    # only flip on strong timing disagreement, protecting breathing/RSA recordings
+    # where gap durations wobble without a real swap.
+    "pass3_phase_stick_margin": 0.5,
     "pass3_phase_autocorr_cycle": False,  # (Evaluated, off: envelope-autocorrelation cycle anchor did not help the benchmark.)
     "pass3_phase_confidence_gate": True,      # Above the BPM ceiling, accept the decoder only when its mean duration-fit cost is below the threshold (regular rhythm → orientation trustworthy).
     "pass3_phase_confidence_max_cost": 0.08,  # Max mean per-beat duration-fit cost to trust an above-ceiling decode (tuned: CirCor +1.0pt F1, native unchanged).

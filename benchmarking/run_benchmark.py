@@ -463,6 +463,19 @@ def run_benchmark(input_dir: str) -> None:
         "save_filtered_wav": False,
         "enable_fft_profiles": False,
     }
+    # A/B a single param, e.g. BENCH_PARAM_OVERRIDES="pass3_interval_phase_relabel=false".
+    for item in (s for s in os.environ.get("BENCH_PARAM_OVERRIDES", "").split(",") if s.strip()):
+        k, _, v = item.partition("=")
+        k, v = k.strip(), v.strip()
+        if not k:
+            continue
+        if v.lower() in ("true", "false"):
+            params[k] = v.lower() == "true"
+        else:
+            try:
+                params[k] = float(v)
+            except ValueError:
+                params[k] = v
 
     output_options = {
         "html": False,

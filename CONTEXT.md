@@ -74,7 +74,7 @@ The algorithm's recent success rate at forming pairs, over a rolling window of ~
 _Avoid_: pairing ratio, pair_rate
 
 **Scoring lens**:
-One of the independent checks combined into a [[#Pairing confidence]], each deliberately blind to what the others measure so they catch different failure modes. The four lenses: *shape* (amplitude/contractility ratio of S1 vs S2), *timing* (S1-S2 interval plausibility), *stability* (the [[#Historical pair rate]]), and *physical-reality* (hard min/max interval bounds).
+One of the independent checks combined into a confidence, each deliberately blind to what the others measure so they catch different failure modes. Lenses read one of two kinds of evidence: *emission* evidence is a per-[[#State]] characteristic (does this S1/S2 span sound like S1? — *shape*, amplitude/contractility, spectral); *duration* evidence is a per-gap characteristic (is this gap short → systole, or long → diastole? — *timing*). A lens combination drives [[#Pairing confidence]] in Pass 2 and the S1/S2 phase decision in Pass 3; the four pairing lenses are *shape*, *timing* (S1-S2 interval plausibility), *stability* (the [[#Historical pair rate]]), and *physical-reality* (hard min/max interval bounds).
 _Avoid_: check, scorer, filter
 
 ### Belief & BPM estimation
@@ -98,7 +98,7 @@ _Avoid_: seed beat, reference beat
 ### Spectral discrimination
 
 **Spectral fingerprint**:
-The recording-specific frequency signature that distinguishes S1 from S2. The premise: within one recording every S1 sounds alike and differs from every S2, even though that difference varies recording to recording. (Exploited cautiously — separation is weak or inconsistent in much of the dataset.)
+The recording-specific frequency signature that distinguishes S1 from S2. The premise: within one recording every S1 sounds alike and differs from every S2, even though that difference varies recording to recording.
 _Avoid_: spectral profile, frequency signature
 
 
