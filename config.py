@@ -313,6 +313,18 @@ DEFAULT_PARAMS = {
     "pass4_transition_self_loop_weight": 0.85,      # Higher → decoder prefers longer state durations (more inertia). Lower → allows faster state transitions.
     "pass4_emission_weight": 0.7,                   # Balance between spectral emissions (1.0) and BPM-prior only (0.0). Tune when emission quality is uncertain.
 
+    # =================================================================================
+    # 9. Springer 2015 HSMM Algorithm (alternative to the native multi-pass pipeline)
+    # =================================================================================
+    # When True, replaces passes 1/2/3 with the Springer 2015 HSMM segmenter.
+    # springer_model: filename of the .npz model in springer2015/. Best options:
+    #   cristhian_potes_model.npz  — pretrained weights, 84.9% F1@60ms on CirCor (recommended)
+    #   springer_original.npz      — same weights reproduced from example_data.mat, 84.5%
+    #   springer_circor_trained.npz — retrained on CirCor, 81.5%
+    #   springer_pn2016_trained.npz — retrained on PhysioNet 2016, 80.6%
+    "use_springer_algorithm": False,
+    "springer_model": "cristhian_potes_model.npz",
+
 }
 
 # Single source of truth for pipeline output toggles. GUI and analyze_wav_file use this;

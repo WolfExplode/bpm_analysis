@@ -186,44 +186,55 @@ def viterbi_decode_pcg_springer(
     delta[0, :] = np.log(pi_vector + 1e-300) + np.log(observation_probs[0, :])
     psi[0, :] = -1
 
-    a_prev = [3, 0, 1, 2]  # previous state (0-based) for state j
+    a_prev = np.array([3, 0, 1, 2], dtype=np.int32)  # previous state (0-based) for state j
+
+    # Prefix-sum log emissions: cumsum_prefix[t+1, j] = sum(log_obs[0:t+1, j])
+    # Allows O(1) window-sum: sum(log_obs[a:b+1, j]) = prefix[b+1, j] - prefix[a, j]
+    log_obs = np.log(np.maximum(observation_probs, 1e-300))
+    cumsum_prefix = np.zeros((T + 1, N), dtype=np.float64)
+    cumsum_prefix[1:] = np.cumsum(log_obs, axis=0)
+
+    d_indices = np.arange(1, max_duration_D + 1)  # (D,)
+    _tiny = np.finfo(float).tiny
+
+    # Precompute log duration probs (D, N) for the static-HR case
+    if not hr_is_array:
+        log_dur_DN = np.log(np.maximum(
+            duration_probs[:, 1:max_duration_D + 1].T / duration_sum[None, :],
+            _tiny,
+        ))  # (D, N)
 
     for t in range(1, size_delta):
-        for j in range(N):
-            for d in range(1, max_duration_D + 1):
-                start_t = t - d
-                if start_t < 0:
-                    start_t = 0
-                if start_t > T - 1:
-                    start_t = T - 1
-                end_t = min(t, T - 1)
-                if start_t > end_t:
-                    continue
+        end_t = min(t, T - 1)
 
-                prev_j = a_prev[j]
-                max_delta = delta[start_t, prev_j]
+        # Frame where previous state ended (= first frame of current segment - 1): shape (D,)
+        prev_end_arr = np.clip(t - d_indices, 0, T - 1)
 
-                prod_prob = np.prod(observation_probs[start_t : end_t + 1, j])
-                if prod_prob <= 0:
-                    prod_prob = np.finfo(float).tiny
-                emission_probs = np.log(prod_prob)
+        # First frame of the current segment: t - d + 1, clamped to [0, T-1]
+        emission_start_arr = np.clip(t - d_indices + 1, 0, T - 1)
 
-                if hr_is_array:
-                    center = max(0, min(T - 1, t - d // 2))
-                    dur_prob = (
-                        duration_probs_by_frame[center, j, d]
-                        / duration_sum_by_frame[center, j]
-                    )
-                else:
-                    dur_prob = duration_probs[j, d] / duration_sum[j]
-                if dur_prob <= 0:
-                    dur_prob = np.finfo(float).tiny
-                delta_temp = max_delta + emission_probs + np.log(dur_prob)
+        # Emission log sums via prefix array: (D, N)
+        emission_DN = cumsum_prefix[end_t + 1][None, :] - cumsum_prefix[emission_start_arr, :]
 
-                if delta_temp > delta[t, j]:
-                    delta[t, j] = delta_temp
-                    psi[t, j] = prev_j
-                    psi_duration[t, j] = d
+        # Delta from the unique valid previous state for each j: (D, N)
+        max_delta_DN = delta[prev_end_arr[:, None], a_prev[None, :]]
+
+        # Duration log probs: (D, N)
+        if hr_is_array:
+            center_arr = np.clip(t - d_indices // 2, 0, T - 1)  # (D,)
+            dp = duration_probs_by_frame[center_arr, :, d_indices]   # (D, N)
+            ds = duration_sum_by_frame[center_arr, :]                # (D, N)
+            log_dur_DN = np.log(np.maximum(dp / ds, _tiny))
+
+        total_DN = max_delta_DN + emission_DN + log_dur_DN  # (D, N)
+
+        best_d_idx = np.argmax(total_DN, axis=0)  # (N,)
+        best_vals = total_DN[best_d_idx, np.arange(N)]
+
+        update = best_vals > delta[t]
+        delta[t, update] = best_vals[update]
+        psi[t, update] = a_prev[update]
+        psi_duration[t, update] = best_d_idx[update] + 1
 
     temp_delta = delta[T:]
     if temp_delta.size == 0:

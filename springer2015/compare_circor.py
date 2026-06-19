@@ -7,7 +7,7 @@ visual style as plotting.py (Plotly, secondary-y, legend filter, shaded state
 bands over the homomorphic envelope) showing three segmentations stacked:
 
     Ground truth  (CirCor .tsv)
-    Springer      (ported pretrained HSMM, springer_pretrained.npz)
+    Springer      (HSMM trained on original example_data.mat, springer_original.npz)
     Yours         (analyze_wav_file -> pass3_state_boundaries)
 
 plus a table of per-file Se / PPV / F1 (S1 detection vs GT, reusing
@@ -59,7 +59,16 @@ DEFAULT_ROOT = (
     r"G:\HB other\PCG Datasets"
     r"\the-circor-digiscope-phonocardiogram-dataset-1.0.3\training_data"
 )
-MODEL_NPZ = os.path.join(_HERE, "springer_pretrained.npz")
+MODEL_NPZ      = os.path.join(_HERE, "springer_original.npz")
+POTES_NPZ      = os.path.join(_HERE, "cristhian_potes_model.npz")
+CIRCOR_NPZ     = os.path.join(_HERE, "springer_circor_trained.npz")
+PN2016_NPZ     = os.path.join(_HERE, "springer_pn2016_trained.npz")
+
+# ── change this to switch models without CLI ──────────────────────────────────
+ACTIVE_MODEL = PN2016_NPZ
+# ─────────────────────────────────────────────────────────────────────────────
+
+OUT_DIR = os.path.join(_HERE, "compare_out")
 
 CODE_TO_STATE = {1: "S1", 2: "systole", 3: "S2", 4: "diastole"}
 STATE_COLOR = {
@@ -68,16 +77,6 @@ STATE_COLOR = {
     "S2": "#1f77b4",       # blue
     "diastole": "#2ca02c", # green
 }
-# Springer's decoded states lead the CirCor S1 labels by a near-constant ~120 ms
-# (verified across recordings: raw F1@60ms ~ 0%, but a single +120 ms shift lifts
-# clean files to 65-100%). The envelope/preprocessing and the pretrained model are
-# correctly aligned; the offset is systematic in the HSMM decode stage and matches
-# the reference MATLAB, i.e. it is an S1-onset *convention* difference vs CirCor,
-# not random error. We report BOTH raw and this fixed-offset-aligned score so the
-# comparison against your pipeline is fair. One global constant, not a per-file fit.
-ALIGN_OFFSET_SEC = 0.12
-
-SPR_ALIGNED_LABEL = f"Springer +{int(ALIGN_OFFSET_SEC*1000)}ms"
 
 # Project theme (mirrors assets/template.html)
 THEME = {
@@ -214,7 +213,7 @@ def f1_vs_gt(gt: List[Span], pred: List[Span], offset: float = 0.0) -> Dict[floa
 # toggleable via the toolbar select. Metrics render as a styled HTML table.
 # --------------------------------------------------------------------------
 
-PIPELINE_ROWS = ["Ground truth", "Springer", SPR_ALIGNED_LABEL, "Yours"]
+PIPELINE_ROWS = ["Ground truth", "Springer", "Yours"]
 
 STRIP_H = 16        # px per pipeline row
 STRIP_GAP = 3       # px between rows
@@ -259,11 +258,9 @@ def build_html(
     metrics: List[Tuple[str, Dict]], out_path: str,
 ) -> None:
     import json as _json
-    spr_aligned = shift_spans(spr, ALIGN_OFFSET_SEC)
     pipeline_list = [
         ("Ground truth", gt),
         ("Springer", spr),
-        (SPR_ALIGNED_LABEL, spr_aligned),
         ("Yours", yours),
     ]
     fig = _build_figure(env_norm, fs)
@@ -318,7 +315,6 @@ def _wrap_html(name, plot_div, metrics, pipelines_js) -> str:
         f'pointer-events:none;white-space:nowrap;overflow:hidden"></div>'
         for i in range(n)
     )
-    al = int(ALIGN_OFFSET_SEC * 1000)
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>{name} — Springer vs Yours</title>
 <style>
@@ -354,14 +350,13 @@ def _wrap_html(name, plot_div, metrics, pipelines_js) -> str:
 <div id="toolbar">
   <span class="title">Springer HSMM vs your pipeline</span>
   <span class="file">{name}</span>
-  <span class="note">Springer leads CirCor S1 by ~{al}ms (see "+{al}ms" row)</span>
   <span class="spacer"></span>
   <label for="show">Show:</label>
   <select id="show">
     <option value="all">All rows</option>
-    <option value="gt_spr">GT + Springer +{al}ms</option>
+    <option value="gt_spr">GT + Springer</option>
     <option value="gt_yours">GT + Yours</option>
-    <option value="spr_yours">Springer +{al}ms + Yours</option>
+    <option value="spr_yours">Springer + Yours</option>
     <option value="gt_only">Ground truth only</option>
   </select>
   <span class="note">scroll/box-zoom to zoom envelope y-axis</span>
@@ -372,23 +367,21 @@ def _wrap_html(name, plot_div, metrics, pipelines_js) -> str:
   {canvas_html}
 </div>
 <div class="panel">
-  <div class="cap">S1 detection vs ground truth (micro within labeled windows).
-  Raw Springer ~0 due to constant onset offset; +{al}ms row is same segmentation, calibrated.</div>
+  <div class="cap">S1 detection vs ground truth (micro within labeled windows).</div>
   {table}
 </div>
 <script>
 var PIPELINES = {pipelines_js};
 var STATE_COLORS = {{"S1":"{STATE_COLOR['S1']}","systole":"{STATE_COLOR['systole']}","S2":"{STATE_COLOR['S2']}","diastole":"{STATE_COLOR['diastole']}"}};
-var SPR_ALIGNED = "{SPR_ALIGNED_LABEL}";
 var STRIP_H = {STRIP_H};
 var STRIP_GAP = {STRIP_GAP};
 var visibleSet = new Set(PIPELINES.map(function(p){{return p.label;}}));
 
 var VIEWS = {{
   all: PIPELINES.map(function(p){{return p.label;}}),
-  gt_spr: ["Ground truth", SPR_ALIGNED],
+  gt_spr: ["Ground truth", "Springer"],
   gt_yours: ["Ground truth", "Yours"],
-  spr_yours: [SPR_ALIGNED, "Yours"],
+  spr_yours: ["Springer", "Yours"],
   gt_only: ["Ground truth"]
 }};
 
@@ -476,13 +469,13 @@ setTimeout(drawStrips, 300);
 # Runner
 # --------------------------------------------------------------------------
 
-def _pick_files_ui() -> Tuple[Optional[List[str]], Optional[str]]:
-    """Open tkinter dialogs to select WAV files + output dir. Returns (wavs, out_dir) or (None, None)."""
+def _pick_files_ui() -> Optional[List[str]]:
+    """Open tkinter file picker. Returns list of WAV paths or None."""
     try:
         import tkinter as tk
         from tkinter import filedialog
     except ImportError:
-        return None, None
+        return None
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
@@ -491,15 +484,8 @@ def _pick_files_ui() -> Tuple[Optional[List[str]], Optional[str]]:
         filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
         initialdir=DEFAULT_ROOT if os.path.isdir(DEFAULT_ROOT) else os.path.expanduser("~"),
     )
-    if not wavs:
-        root.destroy()
-        return None, None
-    out_dir = filedialog.askdirectory(
-        title="Output directory (Cancel = default compare_out/)",
-        initialdir=os.path.join(_HERE, "compare_out"),
-    )
     root.destroy()
-    return list(wavs), out_dir or os.path.join(_HERE, "compare_out")
+    return list(wavs) if wavs else None
 
 
 def _wavs_to_recs(wav_paths: List[str]) -> List[Tuple[str, str]]:
@@ -519,15 +505,20 @@ def main() -> None:
                     help="CirCor training_data dir (random sample)")
     ap.add_argument("--n", type=int, default=6, help="files to sample from --root")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", default=os.path.join(_HERE, "compare_out"))
+    ap.add_argument("--model", default=ACTIVE_MODEL,
+                    help="Springer .npz to evaluate (default: ACTIVE_MODEL in source)")
     ap.add_argument("--files", nargs="+", metavar="WAV",
                     help="specific WAV paths to process (skips --root/--n/--seed)")
     ap.add_argument("--ui", action="store_true",
                     help="open file picker (default when run with no arguments)")
     args = ap.parse_args()
 
-    if not os.path.isfile(MODEL_NPZ):
-        print(f"Missing {MODEL_NPZ}. Run: python springer2015/port_pretrained_model.py", file=sys.stderr)
+    if not os.path.isfile(args.model):
+        print(f"Missing {args.model}.", file=sys.stderr)
+        if args.model == MODEL_NPZ:
+            print("Run: python springer2015/port_pretrained_model.py", file=sys.stderr)
+        else:
+            print("Run: python springer2015/train_on_circor.py", file=sys.stderr)
         sys.exit(1)
 
     # Resolve recordings list
@@ -536,13 +527,12 @@ def main() -> None:
         if not recs:
             print("No valid WAV+TSV pairs in --files.", file=sys.stderr); sys.exit(1)
     elif args.ui or len(sys.argv) == 1:
-        wavs, picked_out = _pick_files_ui()
+        wavs = _pick_files_ui()
         if not wavs:
             print("No files selected."); sys.exit(0)
         recs = _wavs_to_recs(wavs)
         if not recs:
             print("No valid WAV+TSV pairs selected.", file=sys.stderr); sys.exit(1)
-        args.out = picked_out
     else:
         recs = collect_recordings(args.root)
         if not recs:
@@ -550,14 +540,13 @@ def main() -> None:
         random.Random(args.seed).shuffle(recs)
         recs = recs[: args.n]
 
-    os.makedirs(args.out, exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
 
-    model = load_springer_model(MODEL_NPZ)
+    model = load_springer_model(args.model)
     opts = default_springer_hsmm_options()
     params = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
 
-    spr_lbl = f"Springer +{int(ALIGN_OFFSET_SEC*1000)}ms"
-    who_keys = ["Springer (raw)", spr_lbl, "Yours"]
+    who_keys = ["Springer", "Yours"]
     agg = {w: {t: {"tp": 0, "fn": 0, "fp": 0} for t in DEFAULT_TOLERANCES_SEC} for w in who_keys}
 
     for i, (wav, tsv) in enumerate(recs, 1):
@@ -573,19 +562,17 @@ def main() -> None:
             print(f"[{i}/{len(recs)}] ERROR {name}: {exc}")
             continue
         m_spr = f1_vs_gt(gt, spr)
-        m_spr_a = f1_vs_gt(gt, spr, ALIGN_OFFSET_SEC)
         m_yrs = f1_vs_gt(gt, yrs)
-        per = [("Springer (raw)", m_spr), (spr_lbl, m_spr_a), ("Yours", m_yrs)]
+        per = [("Springer", m_spr), ("Yours", m_yrs)]
         for w, m in per:
             for tol in DEFAULT_TOLERANCES_SEC:
                 for k in ("tp", "fn", "fp"):
                     agg[w][tol][k] += m[tol][k]
-        out_path = os.path.join(args.out, f"{name}_compare.html")
+        out_path = os.path.join(OUT_DIR, f"{name}_compare.html")
         build_html(name, env_norm, fs, gt, spr, yrs, per, out_path)
         t6 = 0.06
         print(f"[{i}/{len(recs)}] {name:14s} "
-              f"Springer raw={m_spr[t6]['f1']*100:5.1f}%  "
-              f"+{int(ALIGN_OFFSET_SEC*1000)}ms={m_spr_a[t6]['f1']*100:5.1f}%  "
+              f"Springer={m_spr[t6]['f1']*100:5.1f}%  "
               f"Yours={m_yrs[t6]['f1']*100:5.1f}%  (F1@60ms)  -> {os.path.basename(out_path)}")
 
     print("\n=== aggregate over rendered files (micro, S1 detection vs GT) ===")
@@ -594,7 +581,7 @@ def main() -> None:
             m = derive_metrics(agg[who][tol])
             print(f"  {who:16s} tol={int(tol*1000)}ms  "
                   f"Se={m['se']*100:5.1f}%  PPV={m['ppv']*100:5.1f}%  F1={m['f1']*100:5.1f}%")
-    print(f"\nHTML written to {args.out}")
+    print(f"\nHTML written to {OUT_DIR}")
 
 
 if __name__ == "__main__":

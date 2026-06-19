@@ -66,6 +66,109 @@ class _NoisyAlgorithmLogFilter(logging.Filter):
         return not any(s in msg for s in self._NOISY_SUBSTRINGS)
 
 
+def _run_springer_mode(
+    wav_file_path: str,
+    algorithm_envelope: np.ndarray,
+    sample_rate: int,
+    params: Dict,
+) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Replace native passes 1-3 with the Springer 2015 pretrained HSMM segmenter.
+    Loads raw audio, resamples to sample_rate, runs the HSMM, converts per-sample
+    state assignments (1=S1,2=systole,3=S2,4=diastole) to pass3_state_boundaries and
+    a peak list, then returns (s1_peaks, all_raw_peaks, analysis_data).
+    """
+    import sys
+    import soundfile as sf
+
+    _SPRINGER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "springer2015")
+    if _SPRINGER_DIR not in sys.path:
+        sys.path.insert(0, _SPRINGER_DIR)
+
+    from springer_hsmm.run import run_springer_segmentation_algorithm  # noqa: PLC0415
+    from springer_hsmm.model_io import load_springer_model              # noqa: PLC0415
+    from springer_hsmm.options import default_springer_hsmm_options     # noqa: PLC0415
+
+    model_file = param(params, "springer_model") or "cristhian_potes_model.npz"
+    model_path = os.path.join(_SPRINGER_DIR, model_file)
+    if not os.path.isfile(model_path):
+        raise FileNotFoundError(
+            f"Springer model not found: {model_path}. "
+            f"Set springer_model in config.py to a .npz file in springer2015/."
+        )
+
+    # Run springer at native sample rate — it does a 25-400 Hz bandpass internally,
+    # so the audio must be at ≥800 Hz to avoid Nyquist truncation of that filter.
+    # After decoding, nearest-neighbor resample the integer state labels to the
+    # pipeline's sample_rate (600 Hz) so all downstream sample indices match.
+    audio_raw, native_fs = sf.read(wav_file_path, always_2d=False)
+    audio_raw = np.asarray(audio_raw, dtype=np.float64).flatten()
+
+    model = load_springer_model(model_path)
+    opts = default_springer_hsmm_options()
+    assigned_states_native, _ = run_springer_segmentation_algorithm(
+        audio_raw, float(native_fs),
+        model["B_matrix"], model["pi_vector"], model["total_obs_distribution"],
+        opts,
+    )
+    assigned_states_native = np.asarray(assigned_states_native, dtype=np.int32)
+
+    # Nearest-neighbor resample integer state labels from native_fs to sample_rate.
+    env_len = len(algorithm_envelope)
+    if int(native_fs) == int(sample_rate):
+        assigned_states = assigned_states_native[:env_len] if len(assigned_states_native) > env_len else assigned_states_native
+    else:
+        src_indices = np.arange(len(assigned_states_native), dtype=np.float64)
+        tgt_indices = np.linspace(0, len(assigned_states_native) - 1, env_len)
+        nn_idx = np.clip(np.round(tgt_indices).astype(np.int64), 0, len(assigned_states_native) - 1)
+        assigned_states = assigned_states_native[nn_idx]
+    assigned_states = np.asarray(assigned_states, dtype=np.int32)
+
+    # Final length guard.
+    if len(assigned_states) != env_len:
+        pad = int(assigned_states[-1]) if len(assigned_states) > 0 else 4
+        if len(assigned_states) < env_len:
+            assigned_states = np.concatenate(
+                [assigned_states, np.full(env_len - len(assigned_states), pad, dtype=np.int32)]
+            )
+        else:
+            assigned_states = assigned_states[:env_len]
+
+    _CODE_TO_NAME = {1: "S1", 2: "systole", 3: "S2", 4: "diastole"}
+    _STATE_ENCODING = {"S1": 1, "systole": 2, "S2": 3, "diastole": 4}
+
+    state_boundaries = []
+    s1_peaks_list = []
+    i = 0
+    while i < len(assigned_states):
+        code = int(assigned_states[i])
+        j = i
+        while j < len(assigned_states) and int(assigned_states[j]) == code:
+            j += 1
+        name = _CODE_TO_NAME.get(code)
+        if name is not None:
+            mid = (i + j) // 2
+            meta: Dict = {"s1": mid} if name == "S1" else {}
+            state_boundaries.append((i, j, name, meta))
+            if name == "S1":
+                s1_peaks_list.append(mid)
+        i = j
+
+    s1_peaks = np.asarray(s1_peaks_list, dtype=np.int64)
+    logging.info(
+        "Springer: %d S1 peaks, %d boundary segments, %.1f s at %d Hz",
+        len(s1_peaks), len(state_boundaries),
+        len(assigned_states) / float(sample_rate), sample_rate,
+    )
+    analysis_data: Dict = {
+        "pass3_state_labels": assigned_states,
+        "pass3_state_labels_encoding": _STATE_ENCODING,
+        "pass3_state_boundaries": state_boundaries,
+        "pass3_state_boundaries_before": state_boundaries,
+    }
+    return s1_peaks, np.array([], dtype=np.int64), analysis_data
+
+
 def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
                noise_floor: pd.Series, troughs: np.ndarray,
                start_bpm_hint: Optional[float],
@@ -356,71 +459,6 @@ def analyze_wav_file(
         except Exception as e:
             logging.warning("Noise event segmentation failed: %s", e)
 
-    _ui("Pass 1: detecting anchor beats...")
-    start_bpm, peak_time, recovery_time, anchor_beats, pass1_bpm, pass1_analysis_data = _run_pass1(
-        algorithm_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
-    )
-    pass1_analysis_data["bandpass_envelope"] = bandpass_envelope
-    if inverse_band_envelope is not None:
-        pass1_analysis_data["inverse_band_envelope"] = inverse_band_envelope
-    if noise_removed_envelope is not None:
-        pass1_analysis_data["noise_removed_envelope"] = noise_removed_envelope
-    if noise_event_segments:
-        pass1_analysis_data["noise_event_segments"] = noise_event_segments
-
-    # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
-    _opts = output_options
-    if _opts.get("html", True) and _opts.get("output_all_passes", True):
-        _ui("Generating pass 1 HTML report...")
-        plotter_pass1 = Plotter(
-            original_file_path,
-            params,
-            sample_rate,
-            output_directory,
-            source_audio_path=wav_file_path,
-        )
-        base_name = output_stem_from_path(original_file_path)
-        pass1_html_path = os.path.join(output_directory, f"{base_name}_pass1.html")
-        plotter_pass1.plot_pass1_save(
-            algorithm_envelope,
-            anchor_beats,
-            _opts,
-            pass1_html_path,
-            pass1_analysis_data=pass1_analysis_data,
-            pass1_bpm_data=pass1_bpm,
-        )
-
-    # STAGE 3: Pass 2 — main analysis with time-varying BPM prior from pass 1 curve
-    logging.info("--- STAGE 3: Pass 2 — main analysis ---")
-    _ui("Pass 2: classifying peaks...")
-    pass1_bpm_prior = (
-        _build_pass1_bpm_prior(
-            np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
-            np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
-        )
-        if pass1_bpm is not None
-        else None
-    )
-    classifier = PeakClassifier(
-        algorithm_envelope,
-        sample_rate,
-        params,
-        start_bpm,
-        noise_floor,
-        troughs,
-        peak_time,
-        recovery_time,
-        pass1_bpm_prior=pass1_bpm_prior,
-    )
-    s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
-    analysis_data["bandpass_envelope"] = bandpass_envelope
-    if inverse_band_envelope is not None:
-        analysis_data["inverse_band_envelope"] = inverse_band_envelope
-    if noise_removed_envelope is not None:
-        analysis_data["noise_removed_envelope"] = noise_removed_envelope
-    if noise_event_segments:
-        analysis_data["noise_event_segments"] = noise_event_segments
-
     # Pre-warm Kaleido so Chromium startup can overlap with analysis.
     try:
         if output_options.get("png", False):
@@ -432,56 +470,140 @@ def analyze_wav_file(
         output_options.get('png', False),
         output_options.get('csv', True),
     ])
+    output_all_passes = output_options.get("output_all_passes", True)
     plotter = None
     metrics_pass2 = None
 
-    # Compute pass 2 metrics when we might need them (pass 2 plot and/or pass 3 prior curve)
-    output_all_passes = output_options.get("output_all_passes", True)
-    if needs_plot_outputs and len(s1_peaks) >= 2:
-        _ui("Pass 2: computing heart rate metrics...")
-        metrics_pass2 = _calculate_metrics_from_peaks(s1_peaks, sample_rate, params)
-        if output_all_passes:
-            _ui("Pass 2: saving HTML / PNG / CSV...")
-            plotter = Plotter(
+    if bool(param(params, "use_springer_algorithm")):
+        # ── Springer 2015 HSMM path: replaces native passes 1/2/3/4 ─────────────
+        logging.info("--- STAGE 2-5: Springer 2015 HSMM (replaces native passes 1-3) ---")
+        _ui("Springer: running HSMM segmentation...")
+        peaks_after_pass4, all_raw_peaks, analysis_data = _run_springer_mode(
+            wav_file_path, algorithm_envelope, sample_rate, params
+        )
+        analysis_data["bandpass_envelope"] = bandpass_envelope
+        if inverse_band_envelope is not None:
+            analysis_data["inverse_band_envelope"] = inverse_band_envelope
+        if noise_removed_envelope is not None:
+            analysis_data["noise_removed_envelope"] = noise_removed_envelope
+        if noise_event_segments:
+            analysis_data["noise_event_segments"] = noise_event_segments
+        pass1_bpm = None
+        peak_time = None
+        recovery_time = None
+    else:
+        # ── Native multi-pass pipeline ────────────────────────────────────────────
+        _ui("Pass 1: detecting anchor beats...")
+        start_bpm, peak_time, recovery_time, anchor_beats, pass1_bpm, pass1_analysis_data = _run_pass1(
+            algorithm_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
+        )
+        pass1_analysis_data["bandpass_envelope"] = bandpass_envelope
+        if inverse_band_envelope is not None:
+            pass1_analysis_data["inverse_band_envelope"] = inverse_band_envelope
+        if noise_removed_envelope is not None:
+            pass1_analysis_data["noise_removed_envelope"] = noise_removed_envelope
+        if noise_event_segments:
+            pass1_analysis_data["noise_event_segments"] = noise_event_segments
+
+        # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
+        _opts = output_options
+        if _opts.get("html", True) and _opts.get("output_all_passes", True):
+            _ui("Generating pass 1 HTML report...")
+            plotter_pass1 = Plotter(
                 original_file_path,
                 params,
                 sample_rate,
                 output_directory,
                 source_audio_path=wav_file_path,
             )
-            plotter.plot_and_save(
+            base_name = output_stem_from_path(original_file_path)
+            pass1_html_path = os.path.join(output_directory, f"{base_name}_pass1.html")
+            plotter_pass1.plot_pass1_save(
                 algorithm_envelope,
-                all_raw_peaks,
-                analysis_data,
-                metrics_pass2,
-                output_options,
-                output_suffix="_pass2",
-                pass1_bpm_series=np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64) if pass1_bpm is not None else None,
-                pass1_bpm_times=np.asarray(pass1_bpm["curve_times"], dtype=np.float64) if pass1_bpm is not None else None,
-                is_final_pass=False,
+                anchor_beats,
+                _opts,
+                pass1_html_path,
+                pass1_analysis_data=pass1_analysis_data,
+                pass1_bpm_data=pass1_bpm,
             )
 
-    # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
-    peaks_after_pass2 = s1_peaks
-    _ui("Pass 3: refining peaks...")
-    peaks_after_pass3, analysis_data = _refine_and_correct_peaks(
-        peaks_after_pass2,
-        all_raw_peaks,
-        analysis_data,
-        algorithm_envelope,
-        sample_rate,
-        params,
-        wav_file_path=wav_file_path,
-    )
-
-    # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
-    peaks_after_pass4 = peaks_after_pass3
-    if param(params, "enable_pass4"):
-        from viterbi import run_pass4_viterbi
-        _ui("Pass 4: Viterbi holistic decode...")
-        peaks_after_pass4, analysis_data = run_pass4_viterbi(
-            peaks_after_pass3, analysis_data, algorithm_envelope, sample_rate, params,
+        # STAGE 3: Pass 2 — main analysis with time-varying BPM prior from pass 1 curve
+        logging.info("--- STAGE 3: Pass 2 — main analysis ---")
+        _ui("Pass 2: classifying peaks...")
+        pass1_bpm_prior = (
+            _build_pass1_bpm_prior(
+                np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
+                np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
+            )
+            if pass1_bpm is not None
+            else None
         )
+        classifier = PeakClassifier(
+            algorithm_envelope,
+            sample_rate,
+            params,
+            start_bpm,
+            noise_floor,
+            troughs,
+            peak_time,
+            recovery_time,
+            pass1_bpm_prior=pass1_bpm_prior,
+        )
+        s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
+        analysis_data["bandpass_envelope"] = bandpass_envelope
+        if inverse_band_envelope is not None:
+            analysis_data["inverse_band_envelope"] = inverse_band_envelope
+        if noise_removed_envelope is not None:
+            analysis_data["noise_removed_envelope"] = noise_removed_envelope
+        if noise_event_segments:
+            analysis_data["noise_event_segments"] = noise_event_segments
+
+        # Compute pass 2 metrics when we might need them (pass 2 plot and/or pass 3 prior curve)
+        if needs_plot_outputs and len(s1_peaks) >= 2:
+            _ui("Pass 2: computing heart rate metrics...")
+            metrics_pass2 = _calculate_metrics_from_peaks(s1_peaks, sample_rate, params)
+            if output_all_passes:
+                _ui("Pass 2: saving HTML / PNG / CSV...")
+                plotter = Plotter(
+                    original_file_path,
+                    params,
+                    sample_rate,
+                    output_directory,
+                    source_audio_path=wav_file_path,
+                )
+                plotter.plot_and_save(
+                    algorithm_envelope,
+                    all_raw_peaks,
+                    analysis_data,
+                    metrics_pass2,
+                    output_options,
+                    output_suffix="_pass2",
+                    pass1_bpm_series=np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64) if pass1_bpm is not None else None,
+                    pass1_bpm_times=np.asarray(pass1_bpm["curve_times"], dtype=np.float64) if pass1_bpm is not None else None,
+                    is_final_pass=False,
+                )
+
+        # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
+        peaks_after_pass2 = s1_peaks
+        _ui("Pass 3: refining peaks...")
+        peaks_after_pass3, analysis_data = _refine_and_correct_peaks(
+            peaks_after_pass2,
+            all_raw_peaks,
+            analysis_data,
+            algorithm_envelope,
+            sample_rate,
+            params,
+            wav_file_path=wav_file_path,
+        )
+
+        # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
+        peaks_after_pass4 = peaks_after_pass3
+        if param(params, "enable_pass4"):
+            from viterbi import run_pass4_viterbi
+            _ui("Pass 4: Viterbi holistic decode...")
+            peaks_after_pass4, analysis_data = run_pass4_viterbi(
+                peaks_after_pass3, analysis_data, algorithm_envelope, sample_rate, params,
+            )
 
     # STAGE 6: Metrics from latest pass (peaks_after_pass4 = pass3 when pass4 disabled).
     if len(peaks_after_pass4) < 2:

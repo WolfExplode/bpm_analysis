@@ -5,7 +5,7 @@ Reads the three .mat files shipped with the original release:
   Springer_pi_vector.mat             -> initial state distribution (4,)
   Springer_total_obs_distribution.mat-> (mean (4,), cov (4,4)) over pooled training obs
 
-and writes springer_pretrained.npz via springer_hsmm.model_io.save_springer_model.
+and writes cristhian_potes_model.npz via springer_hsmm.model_io.save_springer_model.
 
 This is the exact model behind the ~97.4% CirCor reference. Features are 4-D, so the
 segmentation must run with include_wavelet_feature=True (the port's default).
@@ -24,7 +24,7 @@ _MAT_DIR = os.path.join(
     "logistic-regression-hsmm-based-heart-sound-segmentation-1.0",
     "cristhian_potes-204",
 )
-_OUT = os.path.join(_HERE, "springer_pretrained.npz")
+_OUT = os.path.join(_HERE, "cristhian_potes_model.npz")
 
 
 def main() -> None:
@@ -35,7 +35,9 @@ def main() -> None:
     )["Springer_total_obs_distribution"]
 
     # B: (1,4) object cells, each (5,1) = [intercept, c1, c2, c3, c4]. Flatten to (5,).
-    B_matrix = [np.asarray(b_raw[0, i]).ravel().astype(np.float64) for i in range(4)]
+    # MATLAB logistic regression uses opposite sign convention to sklearn; negate so
+    # sigmoid(B @ x) gives P(state) instead of P(not-state).
+    B_matrix = [-np.asarray(b_raw[0, i]).ravel().astype(np.float64) for i in range(4)]
     assert all(len(b) == 5 for b in B_matrix), [len(b) for b in B_matrix]
 
     pi_vector = np.asarray(pi_raw).ravel().astype(np.float64)
