@@ -394,6 +394,28 @@
             display: none;
         }
 
+        /* Loop region (shift+drag selection, FL Studio / Edison style) */
+        .loop-region-fill {
+            position: absolute;
+            top: 0;
+            height: 100%;
+            background: rgba(46, 204, 113, 0.12);
+            pointer-events: none;
+            z-index: 99;
+            display: none;
+        }
+        .loop-region-marker {
+            position: absolute;
+            top: 0;
+            width: 2px;
+            height: 100%;
+            background: #2ecc71;
+            box-shadow: 0 0 6px #2ecc71;
+            pointer-events: none;
+            z-index: 101;
+            display: none;
+        }
+
         /* Hidden audio element */
         #audio-player {
             display: none;
@@ -541,6 +563,7 @@
                     <button id="flip-labels-right-btn" title="Flip S1↔S2 states to the right of the playhead">Flip Right</button>
                     <button id="regenerate-states-btn" title="Show auto labels unchanged until first edit; then fill gaps between S1/S2 anchors with systole/diastole">Regenerate</button>
                     <button id="download-labels-btn" title="Export manual state sequence as CSV">Download CSV</button>
+                    <button id="download-bpm-btn" title="Export S1-based BPM/time as CSV (uses manual BPM if available)">Download BPM CSV</button>
                     <button id="import-labels-btn" title="Import manual state sequence CSV (replaces current)">Import CSV</button>
                     <input type="file" id="import-labels-input" accept=".csv" style="display:none" />
                 </div>

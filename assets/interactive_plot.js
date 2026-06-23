@@ -401,6 +401,21 @@
     return plotLeft + ratio * plotWidth;
   }
 
+  // Inverse of getXPositionForTime: chart-container px -> seconds.
+  function getTimeForXPosition(px) {
+    if (!plotlyGraphDiv || !plotlyGraphDiv._fullLayout || !xAxisRange) return null;
+    const xaxis = plotlyGraphDiv._fullLayout.xaxis;
+    if (!xaxis) return null;
+    const plotLeft = xaxis._offset;
+    const plotWidth = xaxis._length;
+    if (!plotWidth) return null;
+    const ratio = (px - plotLeft) / plotWidth;
+    const xMin = new Date(xAxisRange[0]).getTime();
+    const xMax = new Date(xAxisRange[1]).getTime();
+    const xTime = xMin + ratio * (xMax - xMin);
+    return (xTime - EPOCH.getTime()) / 1000;
+  }
+
   // Initialize timeline ticks
   function initTimelineTicks() {
     if (!timelineTicks) return;
@@ -990,7 +1005,127 @@
   function seekTo(seconds) {
     if (!audio) return;
     audio.currentTime = Math.max(0, Math.min(seconds, TOTAL_DURATION));
+    // Re-evaluate loop gate: seeking right of the region disengages it.
+    loopEngaged = loopActive && audio.currentTime < loopEndSec;
     updatePlayhead(audio.currentTime);
+  }
+
+  // ----- Loop region (FL Studio / Edison style) -----
+  // Shift+drag on the chart selects a region; playback loops within it.
+  // Shift+click (no drag) clears the selection.
+  let loopActive = false;
+  let loopEngaged = false; // false = play through without wrapping (playhead started right of region)
+  let loopStartSec = 0;
+  let loopEndSec = 0;
+  let loopFillEl = null;
+  let loopStartMarkerEl = null;
+  let loopEndMarkerEl = null;
+
+  function ensureLoopRegionEls() {
+    if (loopFillEl || !chartContainer) return;
+    loopFillEl = document.createElement("div");
+    loopFillEl.className = "loop-region-fill";
+    loopStartMarkerEl = document.createElement("div");
+    loopStartMarkerEl.className = "loop-region-marker";
+    loopEndMarkerEl = document.createElement("div");
+    loopEndMarkerEl.className = "loop-region-marker";
+    chartContainer.appendChild(loopFillEl);
+    chartContainer.appendChild(loopStartMarkerEl);
+    chartContainer.appendChild(loopEndMarkerEl);
+  }
+
+  function positionLoopRegion() {
+    if (!loopFillEl) return;
+    const hide = !loopActive || !plotlyGraphDiv || !plotlyGraphDiv._fullLayout;
+    const xStart = hide ? null : getXPositionForTime(loopStartSec);
+    const xEnd = hide ? null : getXPositionForTime(loopEndSec);
+    if (xStart === null || xEnd === null) {
+      loopFillEl.style.display = "none";
+      loopStartMarkerEl.style.display = "none";
+      loopEndMarkerEl.style.display = "none";
+      return;
+    }
+    const left = Math.min(xStart, xEnd);
+    const right = Math.max(xStart, xEnd);
+    loopFillEl.style.display = "block";
+    loopFillEl.style.left = left + "px";
+    loopFillEl.style.width = right - left + "px";
+    loopStartMarkerEl.style.display = "block";
+    loopStartMarkerEl.style.left = left + "px";
+    loopEndMarkerEl.style.display = "block";
+    loopEndMarkerEl.style.left = right + "px";
+  }
+
+  function setLoopRegion(aSec, bSec) {
+    loopStartSec = Math.max(0, Math.min(aSec, bSec));
+    loopEndSec = Math.min(TOTAL_DURATION, Math.max(aSec, bSec));
+    loopActive = loopEndSec - loopStartSec > 0.02;
+    loopEngaged = loopActive && !!audio && audio.currentTime < loopEndSec;
+    positionLoopRegion();
+  }
+
+  function clearLoopRegion() {
+    loopActive = false;
+    loopEngaged = false;
+    positionLoopRegion();
+  }
+
+  // rAF watcher: tighter loop boundary than 4 Hz timeupdate. Self-stops on pause.
+  function loopWatch() {
+    if (!isPlaying) return;
+    if (loopActive && loopEngaged && audio && audio.currentTime >= loopEndSec) {
+      audio.currentTime = loopStartSec;
+    }
+    requestAnimationFrame(loopWatch);
+  }
+
+  function setupLoopRegionDrag() {
+    if (!plotlyGraphDiv || !chartContainer) return;
+    let dragging = false;
+    let dragStartSec = 0;
+    let dragStartX = 0;
+    let moved = false;
+
+    function clientXToSec(clientX) {
+      const rect = chartContainer.getBoundingClientRect();
+      const sec = getTimeForXPosition(clientX - rect.left);
+      if (sec === null) return null;
+      return Math.max(0, Math.min(TOTAL_DURATION, sec));
+    }
+
+    function onMove(ev) {
+      if (!dragging) return;
+      if (Math.abs(ev.clientX - dragStartX) > 3) moved = true;
+      const cur = clientXToSec(ev.clientX);
+      if (cur !== null) setLoopRegion(dragStartSec, cur);
+    }
+    function onUp() {
+      if (!dragging) return;
+      dragging = false;
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseup", onUp, true);
+      if (!moved) clearLoopRegion(); // shift-click clears
+    }
+
+    // Capture phase on the graph div: fires before Plotly's drag-layer
+    // handlers, so stopPropagation blocks the built-in shift-zoom/select.
+    plotlyGraphDiv.addEventListener(
+      "mousedown",
+      function (e) {
+        if (!e.shiftKey || e.button !== 0) return;
+        const sec = clientXToSec(e.clientX);
+        if (sec === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragging = true;
+        moved = false;
+        dragStartSec = sec;
+        dragStartX = e.clientX;
+        document.addEventListener("mousemove", onMove, true);
+        document.addEventListener("mouseup", onUp, true);
+      },
+      true
+    );
   }
 
   // Play/Pause toggle
@@ -1004,11 +1139,25 @@
         playBtn.classList.remove("active");
       }
     } else {
+      if (loopActive) {
+        if (audio.currentTime < loopEndSec) {
+          // Left of or inside region: snap to start, loop normally.
+          audio.currentTime = loopStartSec;
+          updatePlayhead(audio.currentTime);
+          loopEngaged = true;
+        } else {
+          // Right of region: snap back to loop start.
+          audio.currentTime = loopStartSec;
+          updatePlayhead(audio.currentTime);
+          loopEngaged = true;
+        }
+      }
       audio.play().catch((e) => console.log("Audio play error:", e));
       if (playBtn) {
         playBtn.textContent = "⏸ Pause";
         playBtn.classList.add("active");
       }
+      requestAnimationFrame(loopWatch);
     }
     isPlaying = !isPlaying;
   }
@@ -1720,11 +1869,60 @@
       alert("No manual states to export.");
       return;
     }
+
+    // Pre-build a sorted BPM lookup so CSV export is O(N log N) not O(N*M).
+    const bpmLookup = (() => {
+      if (!plotlyGraphDiv || !plotlyGraphDiv.data) return null;
+      const candidateNames = ["BPM (Pass 3)", "BPM (Pass 2)", "BPM (pass 1)", "Average BPM"];
+      for (const name of candidateNames) {
+        const idx = findTraceIndexByName(name);
+        if (idx === null) continue;
+        const tr = plotlyGraphDiv.data[idx];
+        if (!tr || !tr.x || !tr.y || !tr.x.length) continue;
+        const pairs = [];
+        const epochMs = EPOCH.getTime();
+        for (let i = 0; i < tr.x.length; i++) {
+          const xVal = tr.x[i];
+          if (!xVal) continue;
+          const ms = xVal instanceof Date ? xVal.getTime() : new Date(xVal).getTime();
+          if (!Number.isFinite(ms)) continue;
+          const tSec = (ms - epochMs) / 1000;
+          const yVal = getNumericFromArrayLike(tr.y, i);
+          if (Number.isFinite(tSec) && yVal !== null && Number.isFinite(yVal)) {
+            pairs.push([tSec, yVal]);
+          }
+        }
+        if (!pairs.length) continue;
+        pairs.sort((a, b) => a[0] - b[0]);
+        return pairs;
+      }
+      return null;
+    })();
+
+    const bpmAtTimeFast = bpmLookup
+      ? (timeSec) => {
+          // Binary search nearest point.
+          let lo = 0, hi = bpmLookup.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (bpmLookup[mid][0] < timeSec) lo = mid + 1; else hi = mid;
+          }
+          // Check lo and lo-1 for nearest.
+          let best = bpmLookup[lo][1];
+          if (lo > 0 && Math.abs(bpmLookup[lo - 1][0] - timeSec) < Math.abs(bpmLookup[lo][0] - timeSec)) {
+            best = bpmLookup[lo - 1][1];
+          }
+          return Number.isFinite(best) ? best : null;
+        }
+      : getBpmSmoothedAtTime;
+
     const header = "start_sec,end_sec,state,source,bpm_at_mid\n";
-    const rows = [...manualStateSegments]
+    const stateRows = [...manualStateSegments]
       .sort((a, b) => a.start_sec - b.start_sec)
       .map((seg) => {
-        const bpm = seg.bpm_at_mid;
+        const bpm = Number.isFinite(seg.bpm_at_mid)
+          ? seg.bpm_at_mid
+          : bpmAtTimeFast((seg.start_sec + seg.end_sec) / 2);
         return [
           seg.start_sec.toFixed(3),
           seg.end_sec.toFixed(3),
@@ -1733,7 +1931,8 @@
           Number.isFinite(bpm) ? bpm.toFixed(3) : "",
         ].join(",");
       });
-    const csvContent = header + rows.join("\n");
+
+    const csvContent = header + stateRows.join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url  = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -1744,6 +1943,90 @@
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  }
+
+  const MANUAL_BPM_TRACE_NAME = "BPM (Manual)";
+
+  // Gaussian kernel regression matching hrv.py:_gaussian_kernel_smooth.
+  // O(n²) — fine for typical S1 counts (~few hundred beats).
+  function _gaussianKernelSmooth(tEvals, tData, yData, sigma) {
+    if (!tData.length || tData.length !== yData.length) return tEvals.map(() => NaN);
+    if (sigma <= 1e-9) {
+      // Nearest-neighbor fallback.
+      return tEvals.map((t) => {
+        let bestI = 0, bestDt = Infinity;
+        for (let i = 0; i < tData.length; i++) {
+          const dt = Math.abs(tData[i] - t);
+          if (dt < bestDt) { bestDt = dt; bestI = i; }
+        }
+        return yData[bestI];
+      });
+    }
+    const mean = yData.reduce((a, b) => a + b, 0) / yData.length;
+    return tEvals.map((t) => {
+      let wsum = 0, wbpm = 0;
+      for (let i = 0; i < tData.length; i++) {
+        const d = (tData[i] - t) / sigma;
+        const w = Math.exp(-0.5 * d * d);
+        wsum += w;
+        wbpm += w * yData[i];
+      }
+      return wsum > 1e-12 ? wbpm / wsum : mean;
+    });
+  }
+
+  function computeBpmFromManualSegs() {
+    const s1s = manualStateSegments
+      .filter((s) => s.state === "S1")
+      .sort((a, b) => a.start_sec - b.start_sec);
+    if (s1s.length < 2) return null;
+
+    const tData = [], bpmRaw = [];
+    for (let i = 0; i < s1s.length - 1; i++) {
+      const t0 = (s1s[i].start_sec + s1s[i].end_sec) / 2;
+      const t1 = (s1s[i + 1].start_sec + s1s[i + 1].end_sec) / 2;
+      const interval = t1 - t0;
+      if (interval <= 0) continue;
+      tData.push(t1); // BPM timestamped at second beat — matches Python convention
+      bpmRaw.push(60 / interval);
+    }
+    if (!tData.length) return null;
+
+    const smoothingWindowSec = BPM_INTERVAL_PARAMS.output_smoothing_window_sec ?? 3;
+    const sigma = Math.max(0.05, smoothingWindowSec / 3.0);
+    const smoothed = _gaussianKernelSmooth(tData, tData, bpmRaw, sigma);
+
+    const epochMs = EPOCH.getTime();
+    return {
+      x: tData.map((t) => new Date(epochMs + t * 1000)),
+      y: smoothed,
+    };
+  }
+
+  function updateManualBpmTrace() {
+    if (!plotlyGraphDiv) return;
+    const bpmData = computeBpmFromManualSegs();
+    const existingIdx = findTraceIndexByName(MANUAL_BPM_TRACE_NAME);
+    if (!bpmData) {
+      if (existingIdx !== null) Plotly.deleteTraces(plotlyGraphDiv, existingIdx);
+      return;
+    }
+    if (existingIdx !== null) {
+      Plotly.restyle(plotlyGraphDiv, { x: [bpmData.x], y: [bpmData.y] }, existingIdx);
+    } else {
+      TRACE_AUDIENCE[MANUAL_BPM_TRACE_NAME] = "both";
+      Plotly.addTraces(plotlyGraphDiv, {
+        x: bpmData.x,
+        y: bpmData.y,
+        name: MANUAL_BPM_TRACE_NAME,
+        type: "scatter",
+        mode: "lines+markers",
+        line: { color: "#00e5a0", width: 2 },
+        marker: { color: "#00e5a0", size: 5 },
+        yaxis: "y2",
+        hovertemplate: "%{y:.1f} BPM<extra>BPM (Manual)</extra>",
+      });
+    }
   }
 
   // Import replaces the entire manual state timeline.
@@ -1795,11 +2078,88 @@
     const snapshotBefore = _snapshotManualEdits();
     manualStateSegments = imported.sort((a, b) => a.start_sec - b.start_sec);
     finishManualStateEdit(`Imported ${manualStateSegments.length} state segment(s) from CSV.`, false);
+    updateManualBpmTrace();
     const snapshotAfter = _snapshotManualEdits();
     _recordEdit(
       { type: "snapshot", snapshot: snapshotBefore },
       { type: "snapshot", snapshot: snapshotAfter }
     );
+  }
+
+  function downloadBpmCsv() {
+    const s1s = manualStateSegments
+      .filter((s) => s.state === "S1")
+      .sort((a, b) => a.start_sec - b.start_sec);
+    if (!s1s.length) {
+      alert("No S1 segments available to export.");
+      return;
+    }
+
+    // BPM lookup: prefer Manual trace, then original analysis curves.
+    const bpmCandidates = [MANUAL_BPM_TRACE_NAME, "BPM (Pass 3)", "BPM (Pass 2)", "BPM (pass 1)", "Average BPM"];
+    const bpmLookup = (() => {
+      if (!plotlyGraphDiv || !plotlyGraphDiv.data) return null;
+      const epochMs = EPOCH.getTime();
+      for (const name of bpmCandidates) {
+        const idx = findTraceIndexByName(name);
+        if (idx === null) continue;
+        const tr = plotlyGraphDiv.data[idx];
+        if (!tr || !tr.x || !tr.y || !tr.x.length) continue;
+        const pairs = [];
+        for (let i = 0; i < tr.x.length; i++) {
+          const xVal = tr.x[i];
+          if (!xVal) continue;
+          const ms = xVal instanceof Date ? xVal.getTime() : new Date(xVal).getTime();
+          if (!Number.isFinite(ms)) continue;
+          const tSec = (ms - epochMs) / 1000;
+          const yVal = getNumericFromArrayLike(tr.y, i);
+          if (Number.isFinite(tSec) && yVal !== null && Number.isFinite(yVal)) pairs.push([tSec, yVal]);
+        }
+        if (!pairs.length) continue;
+        pairs.sort((a, b) => a[0] - b[0]);
+        return pairs;
+      }
+      return null;
+    })();
+
+    const bpmAtTime = bpmLookup
+      ? (timeSec) => {
+          let lo = 0, hi = bpmLookup.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (bpmLookup[mid][0] < timeSec) lo = mid + 1; else hi = mid;
+          }
+          let best = bpmLookup[lo][1];
+          if (lo > 0 && Math.abs(bpmLookup[lo - 1][0] - timeSec) < Math.abs(bpmLookup[lo][0] - timeSec)) {
+            best = bpmLookup[lo - 1][1];
+          }
+          return Number.isFinite(best) ? best : null;
+        }
+      : getBpmSmoothedAtTime;
+
+    const header = "start_sec,end_sec,state,bpm\n";
+    const rows = s1s.map((seg) => {
+      const tMid = (seg.start_sec + seg.end_sec) / 2;
+      const bpm = bpmAtTime(tMid);
+      return [
+        seg.start_sec.toFixed(3),
+        seg.end_sec.toFixed(3),
+        seg.state,
+        Number.isFinite(bpm) ? bpm.toFixed(3) : "",
+      ].join(",");
+    });
+
+    const csvContent = header + rows.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const baseName = (audioFileNameEl && audioFileNameEl.dataset && audioFileNameEl.dataset.defaultName) || "analysis";
+    link.href = url;
+    link.download = `${baseName}_bpm.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 
   if (applyLabelBtn) {
@@ -1816,6 +2176,10 @@
   }
   if (downloadLabelsBtn) {
     downloadLabelsBtn.addEventListener("click", downloadStateCsv);
+  }
+  const downloadBpmBtn = document.getElementById("download-bpm-btn");
+  if (downloadBpmBtn) {
+    downloadBpmBtn.addEventListener("click", downloadBpmCsv);
   }
   if (importLabelsBtn && importLabelsInput) {
     importLabelsBtn.addEventListener("click", () => {
@@ -1897,6 +2261,9 @@
 
     // Audio time update
     audio.addEventListener("timeupdate", () => {
+      if (loopActive && loopEngaged && audio.currentTime >= loopEndSec) {
+        audio.currentTime = loopStartSec;
+      }
       updatePlayhead(audio.currentTime);
     });
 
@@ -2026,6 +2393,8 @@
       }
 
       applyBeatHoverToPlot();
+      ensureLoopRegionEls();
+      setupLoopRegionDrag();
 
       function updateAxisRange() {
         if (plotlyGraphDiv._fullLayout && plotlyGraphDiv._fullLayout.xaxis) {
@@ -2046,6 +2415,7 @@
         updateSpectrogramPosition();
         refreshAxisGridButtons();
         scheduleDrawPass3StateStrip();
+        positionLoopRegion();
       });
 
       plotlyGraphDiv.on("plotly_afterplot", function () {
@@ -2055,6 +2425,7 @@
         updateSpectrogramPosition();
         refreshAxisGridButtons();
         scheduleDrawPass3StateStrip();
+        positionLoopRegion();
       });
 
       window.addEventListener("resize", () => {
@@ -2065,6 +2436,7 @@
         updateSpectrogramPosition();
         scheduleDrawPass3StateStrip();
         Plotly.Plots.resize(plotlyGraphDiv);
+        positionLoopRegion();
       });
 
       plotlyGraphDiv.on("plotly_click", function (data) {

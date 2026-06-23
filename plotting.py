@@ -2039,6 +2039,7 @@ class Plotter:
                 "weissler_slope_ms_per_bpm":  float(param(self.params, "s1_s2_expected_weissler_slope_ms_per_bpm")),
                 "min_s1_s2_interval_sec":     float(param(self.params, "min_s1_s2_interval_sec")),
                 "s1_s2_interval_cap_sec":     float(param(self.params, "s1_s2_interval_cap_sec")),
+                "output_smoothing_window_sec": float(param(self.params, "output_smoothing_window_sec")),
             },
         }
         # Pass 3: state timeline overlay (compact strip above chart).

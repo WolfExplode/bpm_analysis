@@ -21,8 +21,12 @@ EXPORT_X_SCALE = 60.0  # X-axis: multiply by 60 for time in seconds
 
 def read_csv_points(file_path):
     """Read CSV and return list of (x, y, z) coordinates.
-    Supports (1) two columns: time, BPM e.g. Time (s), BPM (Pass 3), or
-    (2) HTML labels export: time_sec,...,bpm_smoothed (uses time_sec + bpm_smoothed; skips empty BPM cells).
+    Supports:
+    (1) manual_state_sequence: start_sec, end_sec, state, source, bpm_at_mid
+        → one point per row at midpoint time, y = bpm_at_mid (skips empty bpm).
+    (2) HTML labels export: time_sec,...,bpm_smoothed
+        → uses time_sec + bpm_smoothed; skips empty BPM cells.
+    (3) two-column fallback: time, BPM.
     """
     points = []
     try:
@@ -33,32 +37,54 @@ def read_csv_points(file_path):
                 return []
             lowered = [h.strip().lower() for h in header]
 
-            if "time_sec" in lowered and "bpm_smoothed" in lowered:
-                i_t = lowered.index("time_sec")
+            if "start_sec" in lowered and "end_sec" in lowered and "bpm_at_mid" in lowered:
+                i_start = lowered.index("start_sec")
+                i_end   = lowered.index("end_sec")
+                i_bpm   = lowered.index("bpm_at_mid")
+                for row in csvreader:
+                    if len(row) <= max(i_start, i_end, i_bpm):
+                        continue
+                    try:
+                        b_cell = row[i_bpm].strip()
+                        if not b_cell:
+                            continue
+                        value    = float(b_cell)
+                        start    = float(row[i_start].strip())
+                        end      = float(row[i_end].strip())
+                        mid_sec  = (start + end) / 2.0
+                        x = mid_sec * IMPORT_X_SCALE
+                        y = value   * IMPORT_Y_SCALE
+                        points.append((x, y, 0.0))
+                    except ValueError:
+                        print(f"Skipping invalid row: {row}")
+
+            elif "time_sec" in lowered and "bpm_smoothed" in lowered:
+                i_t   = lowered.index("time_sec")
                 i_bpm = lowered.index("bpm_smoothed")
                 for row in csvreader:
                     if len(row) <= max(i_t, i_bpm):
                         continue
                     try:
                         time_sec = float(row[i_t].strip())
-                        b_cell = row[i_bpm].strip()
+                        b_cell   = row[i_bpm].strip()
                         if not b_cell:
                             continue
                         value = float(b_cell)
                         x = time_sec * IMPORT_X_SCALE
-                        y = value * IMPORT_Y_SCALE
+                        y = value    * IMPORT_Y_SCALE
                         points.append((x, y, 0.0))
                     except ValueError:
                         print(f"Skipping invalid row: {row}")
+
             else:
                 for row in csvreader:
                     if len(row) != 2:
                         continue
                     try:
                         time_sec = float(row[0])
-                        value = float(row[1])
+                        value    = float(row[1])
                         x = time_sec * IMPORT_X_SCALE
-                        y = value * IMPORT_Y_SCALE
+                        y = value    * IMPORT_Y_SCALE
                         points.append((x, y, 0.0))
                     except ValueError:
                         print(f"Skipping invalid row: {row}")
