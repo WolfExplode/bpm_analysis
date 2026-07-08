@@ -112,4 +112,7 @@ def batch_cli_defaults_from_ui_settings(settings: Optional[Dict[str, Any]]) -> D
             s.get("use_springer_algorithm", DEFAULT_PARAMS["use_springer_algorithm"])
         ),
         "springer_model": str(s.get("springer_model", DEFAULT_PARAMS["springer_model"])),
+        "auto_switch_algorithm": bool(
+            s.get("auto_switch_algorithm", DEFAULT_PARAMS["auto_switch_algorithm"])
+        ),
     }

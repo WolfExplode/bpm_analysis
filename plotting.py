@@ -560,6 +560,7 @@ class Plotter:
             pass_metrics.get("hrr_stats"),
             pass_metrics.get("peak_recovery_stats"),
             pass_metrics.get("bpm_failure_report"),
+            pass_metrics.get("algorithm_switch_reason"),
         )
         self._prepare_bpm_axis_center(pass_metrics)
 
@@ -1741,9 +1742,23 @@ class Plotter:
         self._has_systolic_traces = True
 
     def _add_annotations_and_summary(
-        self, bpm_times, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats, bpm_failure_report=None
+        self, bpm_times, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats,
+        bpm_failure_report=None, algorithm_switch_reason=None,
     ):
         """Adds min/max BPM annotations on the plot and builds plain-text summary for the HTML Analysis Summary modal."""
+        if algorithm_switch_reason:
+            self.fig.add_annotation(
+                x=0.5,
+                y=1.14,
+                xref="paper",
+                yref="paper",
+                text="🔁 Auto-switch: " + algorithm_switch_reason,
+                showarrow=False,
+                font=dict(color="#e3c56f", size=13),
+                bgcolor="rgba(60,50,20,0.6)",
+                bordercolor="#e3c56f",
+                borderwidth=1,
+            )
         if bpm_failure_report and bpm_failure_report.get("failed"):
             reasons = bpm_failure_report.get("reasons") or []
             self.fig.add_annotation(
@@ -1796,6 +1811,8 @@ class Plotter:
 
         # Build plain-text summary for HTML (Analysis Summary button popup); no longer drawn on plot.
         summary_lines: List[str] = []
+        if algorithm_switch_reason:
+            summary_lines.append(f"🔁 Auto-switch: {algorithm_switch_reason}")
         if bpm_failure_report and bpm_failure_report.get("failed"):
             summary_lines.append("⚠ Possible BPM tracking failure:")
             for reason in bpm_failure_report.get("reasons") or []:

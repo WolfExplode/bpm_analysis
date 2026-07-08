@@ -164,6 +164,7 @@ class BPMApp:
         self.algorithm_console_logging = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["algorithm_console_logging"])
         self.general_console_logging = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["general_console_logging"])
         self.use_springer_algorithm = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["use_springer_algorithm"])
+        self.auto_switch_algorithm = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["auto_switch_algorithm"])
         self.html_s1_s2_hover_on_by_default = tk.BooleanVar(
             value=DEFAULT_OUTPUT_OPTIONS.get("html_s1_s2_hover_on_by_default", False)
         )
@@ -257,9 +258,16 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=4, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
+        ttk.Checkbutton(
+            debug_frame,
+            text="Auto-switch algorithm if the BPM plausibility gate flags the primary run (retries with the other algorithm)",
+            variable=self.auto_switch_algorithm,
+            command=self.save_ui_settings,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+
         self.cli_batch_jobs = tk.IntVar(value=DEFAULT_UI_SETTINGS["cli_batch_jobs"])
         jobs_row = ttk.Frame(debug_frame)
-        jobs_row.grid(row=5, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        jobs_row.grid(row=6, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
         ttk.Label(jobs_row, text="Parallel batch jobs (1 = sequential):").pack(side=tk.LEFT)
         _jobs_spin = ttk.Spinbox(
             jobs_row,
@@ -278,7 +286,7 @@ class BPMApp:
             text="Auto-close when batch finishes successfully (no per-file errors)",
             variable=self.auto_close_when_done,
             command=self.save_ui_settings,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
+        ).grid(row=7, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
         # Action Buttons
         btn_frame = ttk.Frame(main_frame)
@@ -499,6 +507,7 @@ class BPMApp:
             'html_inline_interactive_script',
             'cli_batch_jobs',
             'use_springer_algorithm',
+            'auto_switch_algorithm',
         )
     )
 
@@ -749,6 +758,7 @@ class BPMApp:
             self.params["algorithm_console_logging"] = bool(algorithm_console_logging)
             self.params["general_console_logging"] = bool(general_console_logging)
             self.params["use_springer_algorithm"] = bool(self.use_springer_algorithm.get())
+            self.params["auto_switch_algorithm"] = bool(self.auto_switch_algorithm.get())
 
             output_options = self.get_output_options()
 

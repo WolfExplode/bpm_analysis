@@ -349,7 +349,9 @@ DEFAULT_PARAMS = {
     # Heuristics applied to the raw (pre-smoothing) instant BPM series, common to both
     # the native pipeline and Springer mode. Flags a run as likely-failed (tracking
     # lost lock, double-counted/missed beats) without needing ground truth. See
-    # hrv.detect_bpm_failure(). Does not change which algorithm runs (flag-only).
+    # hrv.detect_bpm_failure(). When auto_switch_algorithm is False (default) this is
+    # flag-only; when True, pipeline.py retries the other algorithm on a flagged run
+    # and keeps whichever result passes (or fails less badly).
     "bpm_min_physiological": 30.0,       # BPM below this is flagged as implausible.
     "bpm_max_physiological": 220.0,      # BPM above this is flagged as implausible.
     "bpm_jump_ratio_threshold": 1.35,        # Consecutive-beat ratio (higher/lower) beyond this counts as a "jump".
@@ -359,6 +361,11 @@ DEFAULT_PARAMS = {
     "bpm_trailing_coverage_frac": 0.9,   # Detected beats must reach at least this fraction of the recording duration.
     "bpm_min_beats_for_fraction_checks": 8,  # Below this many beats, jump/range fractions are too noisy
                                               # (one bad beat can be 50-100% of the total) to judge reliably.
+    # When True, a flagged run is retried once with the other algorithm (native <-> Springer);
+    # the pipeline keeps whichever of the two has fewer plausibility-gate failure reasons (ties
+    # keep the original, to avoid flip-flopping on files where both algorithms struggle equally).
+    # Costs up to 2x runtime, but only on files that actually trip the gate.
+    "auto_switch_algorithm": False,
 
 }
 
@@ -392,6 +399,7 @@ DEFAULT_UI_SETTINGS = {
     "algorithm_console_logging": False,
     "general_console_logging": False,
     "use_springer_algorithm": False,
+    "auto_switch_algorithm": False,
     "optimize_long_plots": False,
     "cli_batch_jobs": 1,
     "auto_close_when_done": False,

@@ -101,6 +101,15 @@ class AnalysisData(TypedDict, total=False):
     here from metrics_after_pass3 for callers that only see analysis_data (debug_helpers,
     benchmarking). Shape: {"failed": bool, "reasons": [str, ...], "metrics": {...}}."""
 
+    algorithm_used: str
+    """Which algorithm actually produced this result: "native" or "springer". Set by
+    pipeline._run_algorithm_pass; may differ from the "use_springer_algorithm" param if
+    auto_switch_algorithm retried with the other algorithm."""
+
+    algorithm_switch_reason: Optional[str]
+    """None unless auto_switch_algorithm retried and switched away from the primary
+    algorithm; otherwise a human-readable reason string for the report/plot annotation."""
+
     # =========================================================================
     # Pass 3 core outputs — set by correction.run_pass3_correction
     # =========================================================================

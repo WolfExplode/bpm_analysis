@@ -177,6 +177,24 @@ def main(argv: List[str] | None = None) -> int:
         help="Springer model .npz file name under springer2015/ (default: ui_settings.json springer_model).",
     )
     parser.add_argument(
+        "--auto-switch-algorithm",
+        dest="auto_switch_algorithm",
+        action="store_const",
+        const=True,
+        default=_SUP,
+        help="Retry with the other algorithm (native <-> Springer) when the BPM plausibility "
+        "gate flags the primary run, keeping whichever result fails less badly "
+        "(default: ui_settings.json auto_switch_algorithm).",
+    )
+    parser.add_argument(
+        "--no-auto-switch-algorithm",
+        dest="auto_switch_algorithm",
+        action="store_const",
+        const=False,
+        default=_SUP,
+        help="Never retry with the other algorithm (default behavior).",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Root log level WARNING (ignores ui_settings.json general_console_logging).",
@@ -383,6 +401,10 @@ def main(argv: List[str] | None = None) -> int:
     if hasattr(ns, "springer_model"):
         springer_model = ns.springer_model
 
+    auto_switch_algorithm = bool(merged["auto_switch_algorithm"])
+    if hasattr(ns, "auto_switch_algorithm"):
+        auto_switch_algorithm = bool(ns.auto_switch_algorithm)
+
     opts = dict(merged["output_options"])
     overrides = [
         ("html", "html_ex"),
@@ -420,6 +442,7 @@ def main(argv: List[str] | None = None) -> int:
     params["general_console_logging"] = bool(merged["general_console_logging"])
     params["use_springer_algorithm"] = use_springer_algorithm
     params["springer_model"] = springer_model
+    params["auto_switch_algorithm"] = auto_switch_algorithm
 
     summary = run_batch_parallel(
         inputs,
