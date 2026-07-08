@@ -559,6 +559,7 @@ class Plotter:
             pass_metrics.get("hrv_summary"),
             pass_metrics.get("hrr_stats"),
             pass_metrics.get("peak_recovery_stats"),
+            pass_metrics.get("bpm_failure_report"),
         )
         self._prepare_bpm_axis_center(pass_metrics)
 
@@ -1739,8 +1740,24 @@ class Plotter:
             )
         self._has_systolic_traces = True
 
-    def _add_annotations_and_summary(self, bpm_times, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats):
+    def _add_annotations_and_summary(
+        self, bpm_times, smoothed_bpm, hrv_summary, hrr_stats, peak_recovery_stats, bpm_failure_report=None
+    ):
         """Adds min/max BPM annotations on the plot and builds plain-text summary for the HTML Analysis Summary modal."""
+        if bpm_failure_report and bpm_failure_report.get("failed"):
+            reasons = bpm_failure_report.get("reasons") or []
+            self.fig.add_annotation(
+                x=0.5,
+                y=1.08,
+                xref="paper",
+                yref="paper",
+                text="⚠ Possible BPM tracking failure: " + "; ".join(reasons),
+                showarrow=False,
+                font=dict(color="#e36f6f", size=13),
+                bgcolor="rgba(60,20,20,0.6)",
+                bordercolor="#e36f6f",
+                borderwidth=1,
+            )
         # smoothed_bpm is stored as a dense raster (array) in pass_metrics.
         if bpm_times is not None and smoothed_bpm is not None and len(bpm_times) > 0 and len(bpm_times) == len(smoothed_bpm):
             arr = np.asarray(smoothed_bpm, dtype=np.float64)
@@ -1779,6 +1796,10 @@ class Plotter:
 
         # Build plain-text summary for HTML (Analysis Summary button popup); no longer drawn on plot.
         summary_lines: List[str] = []
+        if bpm_failure_report and bpm_failure_report.get("failed"):
+            summary_lines.append("⚠ Possible BPM tracking failure:")
+            for reason in bpm_failure_report.get("reasons") or []:
+                summary_lines.append(f"  - {reason}")
         if hrv_summary:
             if hrv_summary.get("avg_bpm") is not None:
                 summary_lines.append(

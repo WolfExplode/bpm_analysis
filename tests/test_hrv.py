@@ -70,3 +70,62 @@ def test_windowed_hrv_too_few_beats_returns_empty_frame():
     df = hrv.calculate_windowed_hrv(np.arange(5) * 100, 100, params)
     assert df.empty
     assert list(df.columns) == ["time", "rmssdc", "sdnn", "bpm"]
+
+
+def test_detect_bpm_failure_empty_input_not_failed():
+    report = hrv.detect_bpm_failure(np.array([]), np.array([]), 60.0, {})
+    assert report["failed"] is False
+    assert report["reasons"] == []
+
+
+def test_detect_bpm_failure_steady_rhythm_passes():
+    # 60 beats at exactly 1s apart (60 BPM), covering the full 60s recording.
+    bpm_times = np.arange(1, 60, dtype=np.float64)
+    instant_bpm = np.full(len(bpm_times), 60.0)
+    report = hrv.detect_bpm_failure(bpm_times, instant_bpm, 60.0, {})
+    assert report["failed"] is False
+    assert report["reasons"] == []
+
+
+def test_detect_bpm_failure_flags_range_violation():
+    bpm_times = np.arange(1, 21, dtype=np.float64)
+    instant_bpm = np.full(len(bpm_times), 300.0)  # above bpm_max_physiological default (220)
+    report = hrv.detect_bpm_failure(bpm_times, instant_bpm, 21.0, {})
+    assert report["failed"] is True
+    assert any("outside" in r for r in report["reasons"])
+    assert report["metrics"]["range_violation_frac"] == 1.0
+
+
+def test_detect_bpm_failure_flags_beat_to_beat_jumps():
+    bpm_times = np.arange(1, 21, dtype=np.float64)
+    instant_bpm = np.tile([60.0, 150.0], 10)  # 2.5x ratio every beat, both values in-range
+    report = hrv.detect_bpm_failure(bpm_times, instant_bpm, 21.0, {})
+    assert report["failed"] is True
+    assert any("jump" in r for r in report["reasons"])
+    assert report["metrics"]["range_violation_frac"] == 0.0
+
+
+def test_detect_bpm_failure_flags_coverage_gap():
+    bpm_times = np.array([0.0, 1.0, 2.0, 3.0, 20.0, 21.0, 22.0, 23.0])
+    instant_bpm = np.full(len(bpm_times), 60.0)
+    report = hrv.detect_bpm_failure(bpm_times, instant_bpm, 24.0, {})
+    assert report["failed"] is True
+    assert any("silent gap" in r for r in report["reasons"])
+    assert report["metrics"]["max_gap_sec"] == 17.0
+
+
+def test_detect_bpm_failure_flags_trailing_dropout():
+    # Beats stop at t=9s but the recording is 60s long (like a Springer lost-lock tail).
+    bpm_times = np.arange(1, 10, dtype=np.float64)
+    instant_bpm = np.full(len(bpm_times), 60.0)
+    report = hrv.detect_bpm_failure(bpm_times, instant_bpm, 60.0, {})
+    assert report["failed"] is True
+    assert any("beat detection stops" in r for r in report["reasons"])
+
+
+def test_detect_bpm_failure_params_override_thresholds():
+    bpm_times = np.arange(1, 21, dtype=np.float64)
+    instant_bpm = np.full(len(bpm_times), 25.0)  # below default bpm_min_physiological (30)
+    params = {"bpm_min_physiological": 10.0}
+    report = hrv.detect_bpm_failure(bpm_times, instant_bpm, 21.0, params)
+    assert report["failed"] is False

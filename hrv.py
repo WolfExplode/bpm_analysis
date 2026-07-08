@@ -506,6 +506,96 @@ def calculate_bpm_series_from_s1_state_labels(
     return smoothed_bpm, bpm_times, instant_bpm
 
 
+def detect_bpm_failure(
+    bpm_times: np.ndarray,
+    instant_bpm: np.ndarray,
+    total_duration_sec: float,
+    params: Dict,
+) -> Dict:
+    """
+    Algorithm-agnostic post-hoc plausibility gate on a raw (pre-smoothing) instant-BPM
+    series. Flags likely tracking failure (lost lock, double-counted or missed beats)
+    using only the beat-to-beat BPM sequence and its time coverage — no ground truth,
+    no algorithm-specific internals — so the same check applies to native-pipeline and
+    Springer output alike. Does not alter which algorithm ran; purely diagnostic.
+
+    Returns {"failed": bool, "reasons": [str, ...], "metrics": {...}}.
+    """
+    bpm_times = np.asarray(bpm_times, dtype=np.float64) if bpm_times is not None else np.array([])
+    instant_bpm = np.asarray(instant_bpm, dtype=np.float64) if instant_bpm is not None else np.array([])
+
+    if len(instant_bpm) == 0 or total_duration_sec is None or total_duration_sec <= 0:
+        return {"failed": False, "reasons": [], "metrics": {}}
+
+    bpm_min = float(param(params, "bpm_min_physiological"))
+    bpm_max = float(param(params, "bpm_max_physiological"))
+    jump_ratio_threshold = float(param(params, "bpm_jump_ratio_threshold"))
+    anomaly_frac_threshold = float(param(params, "bpm_anomaly_fraction_threshold"))
+    max_gap_sec = float(param(params, "bpm_coverage_gap_sec"))
+    trailing_frac_threshold = float(param(params, "bpm_trailing_coverage_frac"))
+    min_beats_for_fractions = int(param(params, "bpm_min_beats_for_fraction_checks"))
+
+    reasons: List[str] = []
+    metrics: Dict = {}
+
+    # With too few beats, a single anomaly dominates the fraction (e.g. 1 bad beat out of 2
+    # is "100% jump") — rules 1 and 2 below need a minimum sample size to mean anything.
+    enough_beats = len(instant_bpm) >= min_beats_for_fractions
+
+    # 1. Physiological range violation.
+    out_of_range = (instant_bpm < bpm_min) | (instant_bpm > bpm_max)
+    range_violation_frac = float(np.mean(out_of_range))
+    metrics["range_violation_frac"] = range_violation_frac
+    if enough_beats and range_violation_frac > anomaly_frac_threshold:
+        reasons.append(
+            f"{range_violation_frac * 100:.0f}% of beats outside {bpm_min:.0f}-{bpm_max:.0f} BPM"
+        )
+
+    # 2. Beat-to-beat jump ratio: real HRV rarely swings this fast between adjacent beats;
+    #    a high rate of jumps points to double-counted or missed beats.
+    if len(instant_bpm) >= 2:
+        raw_ratio = instant_bpm[1:] / np.maximum(instant_bpm[:-1], 1e-9)
+        symmetric_ratio = np.maximum(raw_ratio, 1.0 / np.maximum(raw_ratio, 1e-9))
+        jump_frac = float(np.mean(symmetric_ratio > jump_ratio_threshold))
+        metrics["jump_fraction"] = jump_frac
+        if enough_beats and jump_frac > anomaly_frac_threshold:
+            reasons.append(
+                f"{jump_frac * 100:.0f}% of beat-to-beat intervals jump by "
+                f">{(jump_ratio_threshold - 1) * 100:.0f}%"
+            )
+    else:
+        metrics["jump_fraction"] = 0.0
+
+    # 3. Coverage gap: a long silent stretch mid-recording means the tracker lost lock.
+    if len(bpm_times) >= 2:
+        gaps = np.diff(bpm_times)
+        gap_idx = int(np.argmax(gaps))
+        max_gap = float(gaps[gap_idx])
+        metrics["max_gap_sec"] = max_gap
+        if max_gap > max_gap_sec:
+            reasons.append(
+                f"{max_gap:.1f}s silent gap with no detected beat (at {bpm_times[gap_idx]:.1f}s)"
+            )
+    else:
+        metrics["max_gap_sec"] = 0.0
+
+    # 4. Trailing coverage: detections dying out early gets padded flat by downstream
+    #    rasterization, which reads as a real plateau unless caught here. Gated on the
+    #    *absolute* trailing gap too, so a missed beat at the tail of a 2s clip (small
+    #    absolute gap, but a big fraction of a short recording) doesn't trip this.
+    last_beat_time = float(bpm_times[-1]) if len(bpm_times) else 0.0
+    coverage_frac = last_beat_time / total_duration_sec
+    trailing_gap_sec = total_duration_sec - last_beat_time
+    metrics["trailing_coverage_frac"] = coverage_frac
+    if coverage_frac < trailing_frac_threshold and trailing_gap_sec > max_gap_sec:
+        reasons.append(
+            f"beat detection stops at {last_beat_time:.1f}s, only {coverage_frac * 100:.0f}% of the "
+            f"{total_duration_sec:.1f}s recording"
+        )
+
+    return {"failed": bool(reasons), "reasons": reasons, "metrics": metrics}
+
+
 def _find_major_hr_trends(
     smoothed_bpm_series: pd.Series,
     min_duration_sec: int,

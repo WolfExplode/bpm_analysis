@@ -33,6 +33,7 @@ class ReportGenerator:
 
         with open(output_path, "w", encoding="utf-8") as f:
             self._write_summary_header(f)
+            self._write_bpm_failure_warning(f, metrics.get("bpm_failure_report"))
             self._write_overall_summary(f, metrics.get("hrv_summary"), metrics.get("hrr_stats"))
             self._write_steepest_slopes(
                 f, metrics.get("peak_exertion_stats"), metrics.get("peak_recovery_stats")
@@ -144,6 +145,16 @@ class ReportGenerator:
     def _write_summary_header(self, f):
         f.write(f"# Analysis Report for: {os.path.basename(self.file_name)}\n")
         f.write(f"*Generated on: {timestamp_str()}*\n\n")
+
+    def _write_bpm_failure_warning(self, f, bpm_failure_report):
+        """Writes a warning block if the BPM plausibility gate flagged this analysis (see hrv.detect_bpm_failure)."""
+        if not bpm_failure_report or not bpm_failure_report.get("failed"):
+            return
+        f.write("## ⚠ Possible BPM Tracking Failure\n\n")
+        f.write("This analysis tripped the BPM plausibility gate; results may be unreliable:\n\n")
+        for reason in bpm_failure_report.get("reasons") or []:
+            f.write(f"- {reason}\n")
+        f.write("\n")
 
     def _write_overall_summary(self, f, hrv_summary, hrr_stats):
         """Writes the main summary table to the markdown report file."""

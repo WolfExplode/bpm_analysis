@@ -343,6 +343,23 @@ DEFAULT_PARAMS = {
     "use_springer_algorithm": False,
     "springer_model": "cristhian_potes_model.npz",
 
+    # =================================================================================
+    # 10. BPM Failure Detection (algorithm-agnostic post-hoc plausibility gate)
+    # =================================================================================
+    # Heuristics applied to the raw (pre-smoothing) instant BPM series, common to both
+    # the native pipeline and Springer mode. Flags a run as likely-failed (tracking
+    # lost lock, double-counted/missed beats) without needing ground truth. See
+    # hrv.detect_bpm_failure(). Does not change which algorithm runs (flag-only).
+    "bpm_min_physiological": 30.0,       # BPM below this is flagged as implausible.
+    "bpm_max_physiological": 220.0,      # BPM above this is flagged as implausible.
+    "bpm_jump_ratio_threshold": 1.35,        # Consecutive-beat ratio (higher/lower) beyond this counts as a "jump".
+    "bpm_anomaly_fraction_threshold": 0.08,  # Fraction of beats that must be jumps/out-of-range to flag failure.
+    "bpm_coverage_gap_sec": 4.0,         # Longest allowed silent gap between consecutive detected beats;
+                                          # also the minimum absolute trailing dropout before rule 4 fires.
+    "bpm_trailing_coverage_frac": 0.9,   # Detected beats must reach at least this fraction of the recording duration.
+    "bpm_min_beats_for_fraction_checks": 8,  # Below this many beats, jump/range fractions are too noisy
+                                              # (one bad beat can be 50-100% of the total) to judge reliably.
+
 }
 
 # Single source of truth for pipeline output toggles. GUI and analyze_wav_file use this;

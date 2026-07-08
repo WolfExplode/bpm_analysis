@@ -29,6 +29,7 @@ from hrv import (
     find_peak_exertion_rate,
     calculate_windowed_hrv,
     calculate_global_hrv_frequency,
+    detect_bpm_failure,
 )
 from fft_profiles import (
     compute_fft_profiles,
@@ -258,6 +259,11 @@ def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: D
     """Calculates BPM, HRV, and slope metrics from a peak list. Used by any pass (pass 2, pass 3, etc.)."""
     metrics = {}
     smoothed_bpm, bpm_times, instant_bpm = calculate_bpm_series(peaks, sample_rate, params)
+    # Peak-derived raw series; overwritten by _apply_pass3_state_timeline_bpm below when
+    # pass3_state_labels is available (state-timeline BPM is the more accurate final source,
+    # used by both native and Springer paths). Kept here as the fallback / native-only case.
+    metrics['bpm_times_raw'] = bpm_times
+    metrics['instant_bpm_raw'] = instant_bpm
     metrics['major_inclines'] = find_major_hr_inclines(smoothed_bpm)
     metrics['major_declines'] = find_major_hr_declines(smoothed_bpm)
     metrics['hrr_stats'] = calculate_hrr(smoothed_bpm)
@@ -625,6 +631,21 @@ def analyze_wav_file(
         metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass4, sample_rate, params)
 
     _apply_pass3_state_timeline_bpm(metrics_after_pass3, analysis_data, sample_rate, params)
+
+    metrics_after_pass3["bpm_failure_report"] = detect_bpm_failure(
+        metrics_after_pass3.get("bpm_times_raw"),
+        metrics_after_pass3.get("instant_bpm_raw"),
+        duration_sec,
+        params,
+    )
+    # Also mirrored onto analysis_data: that's the dict callers/tools outside the plotter
+    # and reporter (debug_helpers, benchmarking) actually get back from analyze_wav_file.
+    analysis_data["bpm_failure_report"] = metrics_after_pass3["bpm_failure_report"]
+    if metrics_after_pass3["bpm_failure_report"]["failed"]:
+        logging.warning(
+            "BPM plausibility gate flagged this analysis as likely failed: %s",
+            "; ".join(metrics_after_pass3["bpm_failure_report"]["reasons"]),
+        )
 
     plotly_figure = None
 

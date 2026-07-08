@@ -96,6 +96,11 @@ class AnalysisData(TypedDict, total=False):
     """S1 vs S2 frequency separation vector (from fft_profiles.compute_frequency_separation).
     None when FFT profiles are disabled or when too few peaks exist."""
 
+    bpm_failure_report: dict
+    """Algorithm-agnostic post-hoc plausibility gate result (hrv.detect_bpm_failure), mirrored
+    here from metrics_after_pass3 for callers that only see analysis_data (debug_helpers,
+    benchmarking). Shape: {"failed": bool, "reasons": [str, ...], "metrics": {...}}."""
+
     # =========================================================================
     # Pass 3 core outputs — set by correction.run_pass3_correction
     # =========================================================================
