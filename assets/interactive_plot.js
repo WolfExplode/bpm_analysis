@@ -2478,12 +2478,29 @@
   initCardiacAndNoiseStripHovers();
   setTimeout(initPlotlyIntegration, 500);
 
-  // DEBUG: Check for audio file presence relative to HTML
+  // DEBUG: Check for audio file presence relative to HTML.
+  // debugAudioPath is already percent-encoded (matches what audio.src uses below),
+  // so it must NOT be decodeURIComponent'd before fetching - fetch() needs an encoded
+  // URL, and re-decoding it here previously produced a raw path containing the
+  // filename's literal characters, which was fragile for no benefit.
   const debugAudioPath =
     AUDIO_SOURCES[currentAudioKey] || AUDIO_SOURCES[DEFAULT_AUDIO_KEY] || "";
-  if (debugAudioPath) {
+  if (!debugAudioPath) {
+    console.warn("⚠️ No audio file specified for HEAD check.");
+  } else if (location.protocol === "file:") {
+    // Chromium refuses fetch() against file:// URLs entirely ("URL scheme 'file' is
+    // not supported"), for every file regardless of name, so a HEAD check here would
+    // always throw and falsely look like a missing/broken audio file. Actual playback
+    // (audio.src below) works fine under file://; real load failures are already
+    // reported by the audio "error" event handler, so just skip this check.
+    console.log(
+      "📂 Skipping audio HEAD check under file:// (fetch() doesn't support this protocol); " +
+        "playback itself is unaffected. Run a local server (python -m http.server 8000) " +
+        "if you want this check to run."
+    );
+  } else {
     console.log("📂 Checking for audio file in same directory...", debugAudioPath);
-    fetch("./" + decodeURIComponent(debugAudioPath), { method: "HEAD" })
+    fetch("./" + debugAudioPath, { method: "HEAD" })
       .then((response) => {
         if (response.ok) {
           console.log("✅ Audio file found at expected location!");
@@ -2493,13 +2510,7 @@
       })
       .catch((err) => {
         console.error("❌ Cannot access audio file:", err);
-        console.log(
-          "💡 If you're using file:// protocol, try running a local server instead:"
-        );
-        console.log("   python -m http.server 8000");
       });
-  } else {
-    console.warn("⚠️ No audio file specified for HEAD check.");
   }
 })();
 
