@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 
 from batch_runner import run_batch_parallel
 from bpm_input_rename import rename_analysis_outputs_after_input_bpm_rename, try_rename_input_with_bpm_annotation
-from config import DEFAULT_PARAMS
+from config import DEFAULT_PARAMS, ui_settings_path
 from console_logging import configure_analysis_console_logging
 from audio_preprocessing import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
 from ui_settings_loader import batch_cli_defaults_from_ui_settings, load_ui_settings_json
@@ -152,6 +152,29 @@ def main(argv: List[str] | None = None) -> int:
         const=False,
         default=_SUP,
         help="Reduce algorithm-detail console logging.",
+    )
+    parser.add_argument(
+        "--springer",
+        dest="use_springer_algorithm",
+        action="store_const",
+        const=True,
+        default=_SUP,
+        help="Use the Springer 2015 HSMM algorithm instead of the native multi-pass pipeline "
+        "(default: ui_settings.json use_springer_algorithm).",
+    )
+    parser.add_argument(
+        "--no-springer",
+        dest="use_springer_algorithm",
+        action="store_const",
+        const=False,
+        default=_SUP,
+        help="Use the native multi-pass pipeline (default behavior).",
+    )
+    parser.add_argument(
+        "--springer-model",
+        dest="springer_model",
+        default=_SUP,
+        help="Springer model .npz file name under springer2015/ (default: ui_settings.json springer_model).",
     )
     parser.add_argument(
         "--quiet",
@@ -292,7 +315,7 @@ def main(argv: List[str] | None = None) -> int:
     ns = parser.parse_args(argv)
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    settings_path = os.path.join(os.getcwd(), "ui_settings.json")
+    settings_path = ui_settings_path()
     ui_raw = load_ui_settings_json(settings_path)
     merged = batch_cli_defaults_from_ui_settings(ui_raw)
 
@@ -352,6 +375,14 @@ def main(argv: List[str] | None = None) -> int:
     if hasattr(ns, "rename_input_with_bpm"):
         rename_input_with_bpm = bool(ns.rename_input_with_bpm)
 
+    use_springer_algorithm = bool(merged["use_springer_algorithm"])
+    if hasattr(ns, "use_springer_algorithm"):
+        use_springer_algorithm = bool(ns.use_springer_algorithm)
+
+    springer_model = merged["springer_model"]
+    if hasattr(ns, "springer_model"):
+        springer_model = ns.springer_model
+
     opts = dict(merged["output_options"])
     overrides = [
         ("html", "html_ex"),
@@ -387,6 +418,8 @@ def main(argv: List[str] | None = None) -> int:
         params["optimize_long_plots"] = True
     params["algorithm_console_logging"] = algorithm_verbose
     params["general_console_logging"] = bool(merged["general_console_logging"])
+    params["use_springer_algorithm"] = use_springer_algorithm
+    params["springer_model"] = springer_model
 
     summary = run_batch_parallel(
         inputs,

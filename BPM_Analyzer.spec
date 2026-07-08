@@ -23,8 +23,11 @@ def _optional_hiddenimports(mod_names):
     """Return only modules that are importable in the build env."""
     out = []
     for name in mod_names:
-        if importlib.util.find_spec(name) is not None:
-            out.append(name)
+        try:
+            if importlib.util.find_spec(name) is not None:
+                out.append(name)
+        except (ModuleNotFoundError, ValueError):
+            pass
     return out
 
 # SciPy uses internal array_api_compat shims (e.g. scipy._lib.array_api_compat.numpy.fft)

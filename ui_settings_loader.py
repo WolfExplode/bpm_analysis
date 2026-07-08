@@ -10,7 +10,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from config import DEFAULT_OUTPUT_OPTIONS
+from config import DEFAULT_OUTPUT_OPTIONS, DEFAULT_PARAMS
 from audio_preprocessing import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
 
 # Must match gui.OUTPUT_FILE_OPTIONS (first element of each tuple).
@@ -108,4 +108,8 @@ def batch_cli_defaults_from_ui_settings(settings: Optional[Dict[str, Any]]) -> D
         "algorithm_console_logging": bool(s.get("algorithm_console_logging", True)),
         "general_console_logging": bool(s.get("general_console_logging", False)),
         "rename_input_with_bpm": bool(s.get("rename_input_with_bpm", False)),
+        "use_springer_algorithm": bool(
+            s.get("use_springer_algorithm", DEFAULT_PARAMS["use_springer_algorithm"])
+        ),
+        "springer_model": str(s.get("springer_model", DEFAULT_PARAMS["springer_model"])),
     }

@@ -38,6 +38,7 @@ build/
 
 # Other Files
 ui_settings.json
+BPM_Analyzer_ui_settings.json
 benchmark_result.json
 benchmark_summary.json
 benchmarking/circor_benchmark_result.json

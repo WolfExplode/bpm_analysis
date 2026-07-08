@@ -10,7 +10,10 @@ from typing import Optional
 _FILENAME_WS_RE = re.compile(r"\s+")
 
 # Emojis stripped from stems used for generated outputs (input files on disk are unchanged).
-_OUTPUT_FILENAME_EMOJIS = ("⭐", "🌟", "💦")
+# Stripping disabled: set to () so strip_output_filename_emojis/normalize_output_filename_stem
+# are effectively a no-op passthrough (whitespace collapsing in normalize_output_filename_stem
+# still applies). Re-populate to re-enable.
+_OUTPUT_FILENAME_EMOJIS: tuple = ()
 
 
 def strip_output_filename_emojis(stem: str) -> str:

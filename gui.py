@@ -11,7 +11,8 @@ import logging
 from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
-from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS
+import config
+from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS, DEFAULT_UI_SETTINGS
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, List, Optional, Tuple
@@ -72,7 +73,7 @@ class BPMApp:
         self.current_files = []
         self.params = DEFAULT_PARAMS.copy()
         self.log_queue = queue.Queue()
-        self.settings_file = os.path.join(os.getcwd(), "ui_settings.json")
+        self.settings_file = config.ui_settings_path()
         self._loading_settings = True  # Prevent saving during initialization
         self._analysis_running = False
         self._general_console_log_filters: list[tuple[logging.Handler, logging.Filter]] = []
@@ -124,7 +125,7 @@ class BPMApp:
         self.bpm_entry.bind('<KeyRelease>', lambda e: self.save_ui_settings())
         self.bpm_entry.bind('<FocusOut>', lambda e: self.save_ui_settings())
 
-        self.bpm_from_filename = tk.BooleanVar(value=True)
+        self.bpm_from_filename = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["bpm_from_filename"])
         ttk.Checkbutton(
             param_frame,
             text="Read starting BPM from file name (e.g. 120,60-150bpm \u2192 120; 90to132bpm \u2192 90; 150bpm)",
@@ -132,7 +133,7 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
 
-        self.rename_input_with_bpm = tk.BooleanVar(value=False)
+        self.rename_input_with_bpm = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["rename_input_with_bpm"])
         ttk.Checkbutton(
             param_frame,
             text="Rename input file with BPM tag: [start,min-maxbpm] (uses analysis; not for multi-channel)",
@@ -141,7 +142,8 @@ class BPMApp:
         ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
 
         # Channel handling option
-        self.channel_mode = tk.StringVar(value=_CHANNEL_MODE_LABEL_BY_VALUE[CHANNEL_MODE_MIXED])
+        _default_channel = normalize_channel_mode(DEFAULT_UI_SETTINGS["channel_mode"])
+        self.channel_mode = tk.StringVar(value=_CHANNEL_MODE_LABEL_BY_VALUE.get(_default_channel, _CHANNEL_MODE_LABEL_BY_VALUE[CHANNEL_MODE_MIXED]))
         ttk.Label(param_frame, text="Audio channels:").grid(row=3, column=0, sticky=tk.W, pady=(4, 0))
         channel_combo = ttk.Combobox(
             param_frame,
@@ -156,12 +158,12 @@ class BPMApp:
         # Output file options (defaults from config only)
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
             setattr(self, "output_" + opt_key, tk.BooleanVar(value=DEFAULT_OUTPUT_OPTIONS.get(opt_key, False)))
-        self.optimize_long_plots = tk.BooleanVar(value=False)
-        self.output_to_input_dir = tk.BooleanVar(value=False)
-        self.output_all_passes = tk.BooleanVar(value=True)
-        self.algorithm_console_logging = tk.BooleanVar(value=True)
-        self.general_console_logging = tk.BooleanVar(value=False)
-        self.use_springer_algorithm = tk.BooleanVar(value=False)
+        self.optimize_long_plots = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["optimize_long_plots"])
+        self.output_to_input_dir = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["output_to_input_dir"])
+        self.output_all_passes = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["output_all_passes"])
+        self.algorithm_console_logging = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["algorithm_console_logging"])
+        self.general_console_logging = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["general_console_logging"])
+        self.use_springer_algorithm = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["use_springer_algorithm"])
         self.html_s1_s2_hover_on_by_default = tk.BooleanVar(
             value=DEFAULT_OUTPUT_OPTIONS.get("html_s1_s2_hover_on_by_default", False)
         )
@@ -255,7 +257,7 @@ class BPMApp:
             command=self.save_ui_settings,
         ).grid(row=4, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
 
-        self.cli_batch_jobs = tk.IntVar(value=1)
+        self.cli_batch_jobs = tk.IntVar(value=DEFAULT_UI_SETTINGS["cli_batch_jobs"])
         jobs_row = ttk.Frame(debug_frame)
         jobs_row.grid(row=5, column=0, columnspan=2, sticky="w", padx=(0, 20), pady=(2, 0))
         ttk.Label(jobs_row, text="Parallel batch jobs (1 = sequential):").pack(side=tk.LEFT)
@@ -270,7 +272,7 @@ class BPMApp:
         _jobs_spin.pack(side=tk.LEFT, padx=(8, 0))
         _jobs_spin.bind("<FocusOut>", lambda e: self.save_ui_settings())
 
-        self.auto_close_when_done = tk.BooleanVar(value=False)
+        self.auto_close_when_done = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["auto_close_when_done"])
         ttk.Checkbutton(
             debug_frame,
             text="Auto-close when batch finishes successfully (no per-file errors)",
