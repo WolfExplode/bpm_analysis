@@ -11,14 +11,16 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from pcg import analysis as A
+from pcg import batch
 from pcg import annotation as an
 from pcg import context, recording
 from pcg.engine.traces import KIND_LINE, KIND_POINTS, KIND_SPANS, Trace
 
 from .audio import SOURCE_FILTERED, Player, load_playback_audio, spectrogram
-from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, palette_row, qcolor
+from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, clock_text, palette_row, qcolor
 from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir
 
+STATES_DEFAULT_HEIGHT = 160  # px, until the user drags a handle; the other lanes share the rest
 LANE_ORDER = ["states", "signal", "bpm", "intervals", "scores", "hrv", "contractility", "spectrogram"]
 LANE_TITLES = {
     "states": "States", "signal": "Signal", "bpm": "Heart rate (BPM)", "intervals": "Intervals (s)",
@@ -52,13 +54,33 @@ HOVER_PX = 8
 class Lane:
     name: str
     plot: pg.PlotItem
+    widget: Optional[pg.PlotWidget] = None
     items: Dict[str, object] = field(default_factory=dict)
     playhead: Optional[pg.InfiniteLine] = None
     region: Optional[pg.LinearRegionItem] = None
 
 
+def _whole_data_bounds(item: pg.PlotDataItem):
+    """dataBounds over the full series: with view clipping on, pyqtgraph's own bounds follow the visible
+    window, which would make an auto-ranged y-axis rescale while panning."""
+    cache: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+
+    def bounds(ax, frac=1.0, orthoRange=None):
+        if ax not in cache:
+            data = item.getOriginalDataset()[ax]
+            finite = data[np.isfinite(data)] if data is not None and len(data) else data
+            cache[ax] = (float(finite.min()), float(finite.max())) if finite is not None and len(finite) else (None, None)
+        return cache[ax]
+
+    return bounds
+
+
 class LaneViewBox(pg.ViewBox):
-    """X-only pan/zoom, plus the workspace's drag gestures (shift = region, N = noisy, noisy edges)."""
+    """X-only pan/zoom, plus the workspace's drag gestures (shift = region, N = noisy, noisy edges).
+
+    The wheel zooms time over the plot; over the y-axis (or with Ctrl) it scales the y-axis around
+    the cursor. Double-clicking the y-axis returns to auto-range.
+    """
 
     def __init__(self, ws: "Workspace", lane: str):
         super().__init__()
@@ -69,7 +91,18 @@ class LaneViewBox(pg.ViewBox):
         self._drag_mode: Optional[str] = None
         self._drag_ref: object = None
 
+    def wheelEvent(self, ev, axis=None):
+        if self.lane == "states" or not (axis == 1 or ev.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier):
+            return super().wheelEvent(ev, axis)
+        ev.accept()
+        delta = ev.delta()  # QGraphicsSceneWheelEvent: no angleDelta()
+        if delta:
+            self.ws.zoom_y(self.lane, self.mapSceneToView(ev.scenePos()).y(), 0.9 ** (delta / 120))
+
     def mouseDragEvent(self, ev, axis=None):
+        if ev.button() == QtCore.Qt.MouseButton.RightButton:  # pyqtgraph's right-drag zoom is not wanted
+            ev.ignore()
+            return
         if ev.button() != QtCore.Qt.MouseButton.LeftButton:
             return super().mouseDragEvent(ev, axis)
         x = self.mapSceneToView(ev.scenePos()).x()
@@ -101,11 +134,42 @@ class LaneViewBox(pg.ViewBox):
         if ev.button() != QtCore.Qt.MouseButton.LeftButton:
             return
         ev.accept()
+        if not self.sceneBoundingRect().contains(ev.scenePos()):  # forwarded from the y-axis
+            if ev.double():
+                self.ws.reset_y(self.lane)
+            return
         pos = self.mapSceneToView(ev.scenePos())
         if ev.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
             self.ws.set_region(None, final=True)
             return
         self.ws.click(self.lane, pos.x(), pos.y())
+
+
+class OverviewViewBox(pg.ViewBox):
+    """Click or drag anywhere on the overview to centre the view window on the cursor; the wheel
+    grows/shrinks the window."""
+
+    def __init__(self, ws: "Workspace"):
+        super().__init__(enableMenu=False)
+        self.ws = ws
+        self.setMouseEnabled(x=False, y=False)
+
+    def mouseClickEvent(self, ev):
+        if ev.button() == QtCore.Qt.MouseButton.LeftButton:
+            ev.accept()
+            self.ws.center_view_at(self.mapSceneToView(ev.scenePos()).x())
+
+    def wheelEvent(self, ev, axis=None):
+        ev.accept()
+        if ev.delta():
+            self.ws.scale_view(0.9 ** (-ev.delta() / 120))  # scroll up grows the window (opposite of the lanes)
+
+    def mouseDragEvent(self, ev, axis=None):
+        if ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        ev.accept()
+        self.ws.center_view_at(self.mapSceneToView(ev.scenePos()).x())
 
 
 class Workspace(QtWidgets.QWidget):
@@ -145,6 +209,8 @@ class Workspace(QtWidgets.QWidget):
         self._filtered_loaded.connect(self._filtered_ready)
         self._spectrogram_loaded.connect(self._spectrogram_ready)
         self._spec = None  # (t0, dt, f_top, dB) of the open recording, computed when its lane is shown
+        self._y_manual: Dict[str, List[float]] = {}  # lane -> [lo, hi] the user set, for the open Recording
+        self._spec_token = 0  # bumped to drop an in-flight spectrogram (new audio, or the lane turned off)
         self._audio_error.connect(self._audio_failed)
         self._build_ui()
         self._build_shortcuts()
@@ -175,19 +241,25 @@ class Workspace(QtWidgets.QWidget):
         self.cancel_btn.hide()
         self.flip_btn = QtWidgets.QPushButton("Flip S1/S2 right of playhead", clicked=self.flip_after_playhead)
         self.follow_btn = QtWidgets.QPushButton("Follow playhead (L)", checkable=True, checked=True)
-        self.source_label = QtWidgets.QLabel("Audio: original")
+        self.source_btn = QtWidgets.QPushButton(clicked=self.toggle_source)
+        self.source_btn.setToolTip("Switch between the original and the band-passed audio (T)")
+        self._show_source("Audio: loading…", enabled=False)
         for w in (self.name_label, self.stale_badge, self.info_label):
             top.addWidget(w)
         top.addStretch(1)
         for w in (self.progress_label, self.cancel_btn, self.rerun_btn, self.flip_btn, self.follow_btn,
-                  self.source_label):
+                  self.source_btn):
             top.addWidget(w)
 
-        self.glw = pg.GraphicsLayoutWidget()
-        self.glw.ci.setSpacing(2)
-        self.glw.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        # One widget per lane in a vertical splitter, so lanes can be resized by dragging between them.
+        self.lane_split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.lane_split.setHandleWidth(5)
+        self.lane_split.setChildrenCollapsible(False)
+        self.lane_split.setStyleSheet("QSplitter::handle { background: #2e2e2e; } "
+                                      "QSplitter::handle:hover { background: #5a7fb5; }")
+        self.lane_split.splitterMoved.connect(self._save_lane_heights)
 
-        self.overview = pg.PlotItem(axisItems={"bottom": TimeAxis("bottom")})
+        self.overview = pg.PlotItem(viewBox=OverviewViewBox(self), axisItems={"bottom": TimeAxis("bottom")})
         self.overview.setMouseEnabled(x=False, y=False)
         self.overview.setMenuEnabled(False)
         self.overview.hideButtons()
@@ -195,12 +267,10 @@ class Workspace(QtWidgets.QWidget):
         # Its own fixed-height widget: a maximum height inside the lanes' layout collapses every row.
         self.overview_widget = pg.PlotWidget(plotItem=self.overview)
         self.overview_widget.setFixedHeight(80)
-        self.overview_region = pg.LinearRegionItem(brush=(80, 140, 255, 50))
-        self.overview_region.sigRegionChanged.connect(self._overview_moved)
+        self.overview_region = pg.LinearRegionItem(brush=(80, 140, 255, 50), movable=False)
         self.overview_curve = pg.PlotDataItem(pen=pg.mkPen("#47a5c4"))
-        self.overview_ticks = pg.ScatterPlotItem(symbol="t1", size=7, brush=qcolor(DEFECT_COLOR), pen=None)
         self.overview_playhead = pg.InfiniteLine(angle=90, pen=pg.mkPen("#ffffff", width=1))
-        for it in (self.overview_curve, self.overview_ticks, self.overview_region, self.overview_playhead):
+        for it in (self.overview_curve, self.overview_region, self.overview_playhead):
             self.overview.addItem(it)
 
         for name in LANE_ORDER:
@@ -234,7 +304,7 @@ class Workspace(QtWidgets.QWidget):
         lb.setContentsMargins(0, 0, 0, 0)
         lb.setSpacing(0)
         lb.addWidget(self.overview_widget)
-        lb.addWidget(self.glw, 1)
+        lb.addWidget(self.lane_split, 1)
         split.addWidget(lanes_box)
         split.addWidget(side)
         split.setStretchFactor(0, 1)
@@ -265,8 +335,11 @@ class Workspace(QtWidgets.QWidget):
             plot.setLabel("left", "")
         else:
             plot.enableAutoRange(axis="y", enable=True)
-            plot.setAutoVisible(y=True)
+            plot.setAutoVisible(y=False)  # fit the whole recording, not the visible window, so panning never rescales
         lane = Lane(name, plot)
+        lane.widget = pg.PlotWidget(plotItem=plot)
+        lane.widget.setMinimumHeight(40)
+        lane.widget.scene().sigMouseMoved.connect(lambda pos, lane=lane: self._on_mouse_moved(pos, lane))
         lane.playhead = pg.InfiniteLine(angle=90, pen=pg.mkPen("#ffffff", width=1))
         lane.region = pg.LinearRegionItem(brush=(255, 255, 255, 30), movable=False)
         lane.region.hide()
@@ -287,17 +360,25 @@ class Workspace(QtWidgets.QWidget):
         return self.lane_vis.get(name, name in DEFAULT_LANES)
 
     def _layout_lanes(self) -> None:
-        self.glw.ci.clear()
-        row = 0
         visible = [n for n in self.lanes if self._lane_visible(n)]
-        for n in self.lanes:
-            self.lanes[n].plot.setVisible(n in visible)
-        for i, n in enumerate(visible):
-            plot = self.lanes[n].plot
-            plot.getAxis("bottom").setStyle(showValues=(i == len(visible) - 1))
-            self.glw.ci.addItem(plot, row=row, col=0)
-            self.glw.ci.layout.setRowStretchFactor(row, 1 if n == "states" else 3)
-            row += 1
+        saved = self.settings.lane_heights()
+        total = self.lane_split.height() if self.lane_split.height() > 200 else 800
+        fixed = {n: saved.get(n, STATES_DEFAULT_HEIGHT if n == "states" else None) for n in visible}
+        free = [n for n in visible if fixed[n] is None]
+        share = max(100, (total - sum(h for h in fixed.values() if h is not None)) // max(1, len(free)))
+        sizes = []
+        for i, (n, lane) in enumerate(self.lanes.items()):
+            self.lane_split.insertWidget(i, lane.widget)
+            lane.widget.setVisible(n in visible)
+            self.lane_split.setStretchFactor(i, 0 if n == "states" else 1)  # window resizes go to the plots
+            if n in visible:
+                lane.plot.getAxis("bottom").setStyle(showValues=(n == visible[-1]))
+            sizes.append((fixed[n] if fixed[n] is not None else share) if n in visible else 0)
+        self.lane_split.setSizes(sizes)
+
+    def _save_lane_heights(self) -> None:
+        sizes = dict(zip(self.lanes, self.lane_split.sizes()))
+        self.settings.set_lane_heights({n: h for n, h in sizes.items() if h > 0})
 
     def _build_shortcuts(self) -> None:
         def sc(key, fn):
@@ -315,6 +396,7 @@ class Workspace(QtWidgets.QWidget):
         sc("]", lambda: self.step_issue(+1))
         sc("[", lambda: self.step_issue(-1))
         sc("L", self.follow_btn.toggle)
+        sc("G", lambda: self.set_lane_visible("spectrogram", not self._lane_visible("spectrogram")))
         sc("Ctrl+Z", self.undo)
         sc("Ctrl+Shift+Z", self.redo)
         sc("Ctrl+Y", self.redo)
@@ -423,7 +505,7 @@ class Workspace(QtWidgets.QWidget):
         path = self.path
         channel = self.analysis.channel if self.analysis else recording.CHANNEL_MIXED
         params = dict(self.analysis.params) if self.analysis else A.effective_params({})
-        self.source_label.setText("Audio: loading…")
+        self._show_source("Audio: loading…", enabled=False)
 
         def work():
             try:
@@ -440,9 +522,10 @@ class Workspace(QtWidgets.QWidget):
         sig, sr, params = payload
         self.player.set_audio(sig, sr)
         self._spec = None
+        self._spec_token += 1
         if self._lane_visible("spectrogram"):
             self._compute_spectrogram()
-        self.source_label.setText("Audio: original (T: filtered loading…)")
+        self._show_source("Listening to: original  (filtered loading…)")
 
         def work():
             self._filtered_loaded.emit(token, recording.bandpassed(sig, sr, params))
@@ -452,13 +535,15 @@ class Workspace(QtWidgets.QWidget):
     def _filtered_ready(self, token: int, filt) -> None:
         if token == self._audio_token:
             self.player.set_filtered(filt)
-            self.source_label.setText(f"Audio: {self.player.source}")
+            self._show_source(self._source_text())
 
     def _compute_spectrogram(self) -> None:
         src = self.player.samples()
         if src is None:
             return
-        token, sr = self._audio_token, self.player.sample_rate
+        self._spec_token += 1
+        token, sr = self._spec_token, self.player.sample_rate
+        self.status.setText("Computing spectrogram…")
 
         def work():
             self._spectrogram_loaded.emit(token, spectrogram(src, sr))
@@ -466,10 +551,19 @@ class Workspace(QtWidgets.QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def _spectrogram_ready(self, token: int, payload) -> None:
-        if token != self._audio_token:
+        if token != self._spec_token:
             return
         self._spec = payload
+        self.status.setText("")
         self._draw_spectrogram()
+
+    def _drop_spectrogram(self) -> None:
+        """Lane turned off: discard any in-flight result and free the image."""
+        self._spec_token += 1
+        self._spec = None
+        self._set_internal(self.lanes["spectrogram"], "_spec", None)
+        if self.status.text().startswith("Computing spectrogram"):
+            self.status.setText("")
 
     def _draw_spectrogram(self) -> None:
         lane = self.lanes["spectrogram"]
@@ -486,7 +580,7 @@ class Workspace(QtWidgets.QWidget):
         self._set_internal(lane, "_spec", img)
 
     def _audio_failed(self, msg: str) -> None:
-        self.source_label.setText("Audio: unavailable")
+        self._show_source("Audio: unavailable", enabled=False)
         self.status.setText(f"Could not load audio: {msg}")
 
     # ─────────────────────────────────────────────────────────────────────
@@ -498,7 +592,6 @@ class Workspace(QtWidgets.QWidget):
                 lane.plot.removeItem(item)
             lane.items.clear()
         self.overview_curve.setData([], [])
-        self.overview_ticks.setData([], [])
         self.trace_tree.clear()
 
     def _trace_visible(self, name: str, default: bool) -> bool:
@@ -522,6 +615,7 @@ class Workspace(QtWidgets.QWidget):
         self._draw_states()
         self._draw_overview()
         self._fill_tree()
+        self._restore_y()
 
     @staticmethod
     def _add_item(lane: Lane, item) -> None:
@@ -533,6 +627,7 @@ class Workspace(QtWidgets.QWidget):
             item.opts["autoDownsampleFactor"] = 1.0
             item.setClipToView(True)
             item.setDownsampling(auto=True, method="peak" if item.opts.get("symbol") is None else "subsample")
+            item.dataBounds = _whole_data_bounds(item)
 
     def _make_trace_item(self, t: Trace):
         color = t.color or "#cccccc"
@@ -682,12 +777,8 @@ class Workspace(QtWidgets.QWidget):
             self.overview_curve.setData(xx, yy)
             top = float(np.percentile(yy, 99.5)) if len(yy) else 1.0
             self.overview.setYRange(0, top * 1.15, padding=0)
-            ticks_y = top * 1.08
         else:
             self.overview_curve.setData([], [])
-            ticks_y = 1.0
-        xs = [d.start for d in a.defects]
-        self.overview_ticks.setData(xs, [ticks_y] * len(xs))
 
     def _fill_tree(self) -> None:
         self.trace_tree.blockSignals(True)
@@ -720,11 +811,7 @@ class Workspace(QtWidgets.QWidget):
         kind, name = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         on = item.checkState(0) == QtCore.Qt.CheckState.Checked
         if kind == "lane":
-            self.lane_vis[name] = on
-            self.settings.set_lane_visibility(self.lane_vis)
-            self._layout_lanes()
-            if on and self.analysis is not None:
-                self._realize_lane(name)
+            self.set_lane_visible(name, on)
             return
         self.trace_vis[name] = on
         self.settings.set_trace_visibility(self.trace_vis)
@@ -736,6 +823,29 @@ class Workspace(QtWidgets.QWidget):
             t = self.analysis.trace(name)
             if t is not None:
                 self._set_trace_shown(t, on)
+
+    def set_lane_visible(self, name: str, on: bool) -> None:
+        """The one path for showing/hiding a lane (Traces tree and the G key)."""
+        if self._lane_visible(name) == on:
+            return
+        self.lane_vis[name] = on
+        self.settings.set_lane_visibility(self.lane_vis)
+        self._layout_lanes()
+        if name == "spectrogram" and not on:
+            self._drop_spectrogram()
+        if self.analysis is not None:
+            self._sync_tree_lane(name, on)
+            if on:
+                self._realize_lane(name)
+
+    def _sync_tree_lane(self, name: str, on: bool) -> None:
+        state = QtCore.Qt.CheckState.Checked if on else QtCore.Qt.CheckState.Unchecked
+        for i in range(self.trace_tree.topLevelItemCount()):
+            top = self.trace_tree.topLevelItem(i)
+            if top.data(0, QtCore.Qt.ItemDataRole.UserRole) == ("lane", name) and top.checkState(0) != state:
+                self.trace_tree.blockSignals(True)
+                top.setCheckState(0, state)
+                self.trace_tree.blockSignals(False)
 
     def _realize_lane(self, lane_name: str) -> None:
         """Create the items of a lane that just became visible."""
@@ -780,13 +890,23 @@ class Workspace(QtWidgets.QWidget):
         self.overview_region.setRegion(rng)
         self._syncing = False
 
-    def _overview_moved(self) -> None:
-        if self._syncing:
+    def center_view_at(self, x: float) -> None:
+        """Move the view window (keeping its width) so it is centred on x, inside the recording."""
+        if self.analysis is None:
             return
-        self._syncing = True
-        a, b = self.overview_region.getRegion()
-        self.lanes["states"].plot.setXRange(a, b, padding=0)
-        self._syncing = False
+        t0, t1 = self.view_range()
+        a = min(max(x - (t1 - t0) / 2, 0.0), max(0.0, self.analysis.duration_sec - (t1 - t0)))
+        self.lanes["states"].plot.setXRange(a, a + (t1 - t0), padding=0)
+
+    def scale_view(self, factor: float) -> None:
+        """Grow (>1) or shrink (<1) the view window around its centre, within the recording."""
+        if self.analysis is None:
+            return
+        t0, t1 = self.view_range()
+        dur = self.analysis.duration_sec
+        width = min(max((t1 - t0) * factor, 0.5), dur)
+        a = min(max((t0 + t1) / 2 - width / 2, 0.0), dur - width)
+        self.lanes["states"].plot.setXRange(a, a + width, padding=0)
 
     def center_on(self, a: float, b: float) -> None:
         t0, t1 = self.view_range()
@@ -813,13 +933,52 @@ class Workspace(QtWidgets.QWidget):
         self.player.toggle()
 
     def toggle_source(self) -> None:
-        src = self.player.toggle_source()
-        loading = "" if self.player.has(SOURCE_FILTERED) else " (filtered still loading)"
-        self.source_label.setText(f"Audio: {src}{loading}")
+        if not self.source_btn.isEnabled():
+            return
+        self.player.toggle_source()
+        self._show_source(self._source_text())
+
+    def _source_text(self) -> str:
+        loading = "" if self.player.has(SOURCE_FILTERED) else "  (filtered loading…)"
+        return f"Listening to: {self.player.source}  (T){loading}"
+
+    def _show_source(self, text: str, enabled: bool = True) -> None:
+        self.source_btn.setText(text)
+        self.source_btn.setEnabled(enabled)
 
     # ─────────────────────────────────────────────────────────────────────
     # Mouse
     # ─────────────────────────────────────────────────────────────────────
+    def zoom_y(self, lane_name: str, center: float, factor: float) -> None:
+        plot = self.lanes[lane_name].plot
+        lo, hi = plot.getViewBox().viewRange()[1]
+        new = [center - (center - lo) * factor, center + (hi - center) * factor]
+        plot.setYRange(*new, padding=0)  # also switches y auto-range off
+        self._y_manual[lane_name] = new
+        self.settings.set_y_ranges(self.fingerprint, self._y_manual)
+
+    def reset_y(self, lane_name: str) -> None:
+        self._y_manual.pop(lane_name, None)
+        self.settings.set_y_ranges(self.fingerprint, self._y_manual)
+        self._auto_y(lane_name)
+
+    def _auto_y(self, lane_name: str) -> None:
+        plot = self.lanes[lane_name].plot
+        if lane_name == "spectrogram":
+            plot.setYRange(0, 1000, padding=0)
+        else:
+            plot.enableAutoRange(axis="y", enable=True)
+
+    def _restore_y(self) -> None:
+        """Re-apply the y-ranges saved for this Recording (lanes the previous one had scaled go back to auto)."""
+        saved = self.settings.y_ranges(self.fingerprint)
+        for name, lane in self.lanes.items():
+            if name in saved:
+                lane.plot.setYRange(*saved[name], padding=0)
+            elif name in self._y_manual and name != "states":
+                self._auto_y(name)
+        self._y_manual = dict(saved)
+
     def click(self, lane: str, x: float, y: float) -> None:
         self.player.seek(x)
         self._tick()
@@ -876,23 +1035,19 @@ class Workspace(QtWidgets.QWidget):
         (t0, t1), _ = vb.viewRange()
         return (t1 - t0) / max(1.0, vb.width())
 
-    def _on_mouse_moved(self, scene_pos) -> None:
-        if self.analysis is None:
+    def _on_mouse_moved(self, scene_pos, lane: Lane) -> None:
+        if self.analysis is None or not lane.plot.sceneBoundingRect().contains(scene_pos):
             return
-        for lane in self.lanes.values():
-            if not lane.plot.isVisible() or not lane.plot.sceneBoundingRect().contains(scene_pos):
-                continue
-            vb = lane.plot.getViewBox()
-            pt = vb.mapSceneToView(scene_pos)
-            self.status.setText(f"{pt.x():.3f} s   {lane.name}: {pt.y():.4g}")
-            text = self._hover_text(lane, vb, pt.x(), pt.y(), scene_pos)
-            view = self.glw
+        vb = lane.plot.getViewBox()
+        pt = vb.mapSceneToView(scene_pos)
+        self.status.setText(f"{clock_text(pt.x())}   {pt.x():.3f} s   {lane.name}: {pt.y():.4g}")
+        text = self._hover_text(lane, vb, pt.x(), pt.y(), scene_pos)
+        view = lane.widget
+        if text:
             gpos = view.mapToGlobal(view.mapFromScene(scene_pos))
-            if text:
-                QtWidgets.QToolTip.showText(gpos + QtCore.QPoint(14, 10), text, view)
-            else:
-                QtWidgets.QToolTip.hideText()
-            return
+            QtWidgets.QToolTip.showText(gpos + QtCore.QPoint(14, 10), text, view)
+        else:
+            QtWidgets.QToolTip.hideText()
 
     def _hover_text(self, lane: Lane, vb, x: float, y: float, scene_pos) -> str:
         spp = self._sec_per_px(vb)
@@ -1117,7 +1272,9 @@ class Workspace(QtWidgets.QWidget):
         bpm = (a.summary or {}).get("bpm") or {}
         gate = (a.summary or {}).get("gate") or {}
         txt = f"{a.algorithm_used}"
-        if bpm:
+        # The filename often carries the same BPM tag (written by "rename"); show the BPM here only when
+        # it adds something: the name has no tag, or an older run's tag that no longer matches.
+        if bpm and batch.format_bpm_tag(bpm["start_bpm"], bpm["min_bpm"], bpm["max_bpm"]) not in Path(self.path).stem:
             txt += f"  ·  {bpm['start_bpm']:.0f}, {bpm['min_bpm']:.0f}–{bpm['max_bpm']:.0f} BPM"
         if gate.get("failed"):
             txt += "  ·  ⚠ gate failed"
@@ -1228,7 +1385,7 @@ class Workspace(QtWidgets.QWidget):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export view as image", str(downloads_dir() / f"{Path(self.path).stem}_view.png"), "PNG (*.png)")
         if path:
-            self.glw.grab().save(path)
+            self.lane_split.grab().save(path)
 
     def shutdown(self) -> None:
         self.player.stop()

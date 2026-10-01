@@ -22,7 +22,9 @@ HELP = """\
 <tr><td><b>Click</b></td><td>move playhead (on the Annotation row: select span)</td></tr>
 <tr><td><b>Shift+drag / Shift+click</b></td><td>set loop region / clear it</td></tr>
 <tr><td><b>Drag, wheel</b></td><td>pan, zoom (time only)</td></tr>
+<tr><td><b>Wheel on a y-axis / Ctrl+wheel</b></td><td>scale that lane's y-axis (double-click the axis to auto-range again); remembered per recording</td></tr>
 <tr><td><b>L</b></td><td>follow playhead on/off</td></tr>
+<tr><td><b>G</b></td><td>spectrogram lane on/off (only computed while on)</td></tr>
 <tr><td><b>1 / 2</b></td><td>place S1 / S2 at the playhead (replaces what it overlaps)</td></tr>
 <tr><td><b>X / Del</b></td><td>delete selected span (else the one under the playhead)</td></tr>
 <tr><td><b>F</b></td><td>relabel S1 ↔ S2</td></tr>
@@ -99,7 +101,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Could not open recording", f"{Path(path).name}\n\n{e}")
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
-        self.workspace.glw.setFocus()
+        self.workspace.lane_split.setFocus()
 
     def edit_protected_folders(self) -> None:
         text, ok = QtWidgets.QInputDialog.getMultiLineText(
@@ -130,6 +132,9 @@ def main(paths: Optional[List[str]] = None, library: Optional[str] = None, analy
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("PCG Workspace")
     app.setStyle("Fusion")
+    # Windows rolls tooltips open; the peak-reasoning tooltips are long, so show them at once.
+    for effect in (QtCore.Qt.UIEffect.UI_AnimateTooltip, QtCore.Qt.UIEffect.UI_FadeTooltip):
+        app.setEffectEnabled(effect, False)
     pal = QtGui.QPalette()
     for role, color in ((QtGui.QPalette.ColorRole.Window, "#1e1e1e"), (QtGui.QPalette.ColorRole.WindowText, "#dddddd"),
                         (QtGui.QPalette.ColorRole.Base, "#151515"), (QtGui.QPalette.ColorRole.AlternateBase, "#222222"),

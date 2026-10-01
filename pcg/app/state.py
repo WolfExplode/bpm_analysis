@@ -49,6 +49,24 @@ class Settings:
     def set_trace_visibility(self, vis: dict) -> None:
         self.set_json("trace_visibility", vis)
 
+    def y_ranges(self, fingerprint: str) -> dict:
+        """Manual y-ranges {lane: [lo, hi]} the user set for one Recording."""
+        return self.get_json("y_ranges", {}).get(fingerprint, {})
+
+    def set_y_ranges(self, fingerprint: str, ranges: dict) -> None:
+        every = self.get_json("y_ranges", {})
+        if ranges:
+            every[fingerprint] = ranges
+        else:
+            every.pop(fingerprint, None)
+        self.set_json("y_ranges", every)
+
+    def lane_heights(self) -> dict:
+        return self.get_json("lane_heights", {})
+
+    def set_lane_heights(self, heights: dict) -> None:
+        self.set_json("lane_heights", heights)
+
     def lane_visibility(self) -> dict:
         return self.get_json("lane_visibility", {})
 

@@ -166,6 +166,15 @@ def _paint_raster(p, row: SpanRow, sl: slice, t0, t1, px_w, y0, y1) -> None:
     p.drawImage(QtCore.QRectF(t0, y0, t1 - t0, y1 - y0), qimg)
 
 
+def clock_text(seconds: float) -> str:
+    """hh:mm:ss.xxx (milliseconds rounded, so 59.9996 s carries into the next minute)."""
+    ms = int(round(abs(seconds) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{'-' if seconds < 0 and (h or m or s or ms) else ''}{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
 class TimeAxis(pg.AxisItem):
     """Seconds shown as m:ss(.fff) depending on zoom."""
 
