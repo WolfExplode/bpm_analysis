@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from debug_helpers.coverage_detector import find_label_boundary_desync, summarize  # noqa: E402
+from pcg.engine.defects.coverage import find_label_boundary_desync, summarize  # noqa: E402
 
 _ENC = {"S1": 0, "systole": 1, "S2": 2, "diastole": 3, "unknown": 4}
 

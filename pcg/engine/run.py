@@ -15,7 +15,7 @@ stay free of UI/output code.
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -43,6 +43,8 @@ from .hrv import (
     detect_bpm_failure,
 )
 from .correction import run_pass3_correction
+from .defects import Defect, find_defects
+from .traces import Trace, collect_traces
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -75,6 +77,10 @@ class EngineResult:
     duration_sec: float
     # start/min/max of the final smoothed BPM (used for BPM-annotated renames), or None.
     bpm_summary: Optional[Dict[str, float]]
+    # Instrumentation (times relative to the analysed audio): every named series, and
+    # every invariant violation. Never feeds back into the algorithm.
+    traces: List[Trace]
+    defects: List[Defect]
 
     @property
     def ok(self) -> bool:
@@ -450,6 +456,7 @@ def _run_algorithm_pass(
         pass1_bpm = None
         peak_time = None
         recovery_time = None
+        pass1 = None
     else:
         # ── Native multi-pass pipeline ────────────────────────────────────────────
         _ui("Pass 1: detecting anchor beats...")
@@ -457,11 +464,12 @@ def _run_algorithm_pass(
             algorithm_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
         )
         _attach_envelopes(pass1_analysis_data, envelopes)
-        _emit(STAGE_PASS1, {
+        pass1 = {
             "anchor_beats": anchor_beats,
             "analysis_data": pass1_analysis_data,
             "pass1_bpm": pass1_bpm,
-        })
+        }
+        _emit(STAGE_PASS1, pass1)
 
         # STAGE 3: Pass 2 — main analysis with time-varying BPM prior from pass 1 curve
         logging.info("--- STAGE 3: Pass 2 — main analysis ---")
@@ -564,6 +572,7 @@ def _run_algorithm_pass(
         "metrics_pass2": metrics_pass2,
         "s1_peaks": s1_peaks,
         "pass1_bpm": pass1_bpm,
+        "pass1": pass1,
         "peak_time": peak_time,
         "recovery_time": recovery_time,
         "algorithm_name": "springer" if use_springer else "native",
@@ -720,6 +729,17 @@ def run_analysis(
         metrics["algorithm_used"] = result["algorithm_name"]
         metrics["algorithm_switch_reason"] = algorithm_switch_reason
 
+    traces = collect_traces(
+        analysis_data,
+        sample_rate=sample_rate,
+        algorithm_envelope=algorithm_envelope,
+        metrics=metrics,
+        params=params,
+        pass1=result["pass1"],
+        metrics_pass2=result["metrics_pass2"],
+    )
+    defects = find_defects(analysis_data, sample_rate, duration_sec, result["bpm_failure_report"])
+
     return EngineResult(
         peaks=result["peaks_after_pass4"],
         all_raw_peaks=result["all_raw_peaks"],
@@ -736,4 +756,6 @@ def run_analysis(
         sample_rate=sample_rate,
         duration_sec=duration_sec,
         bpm_summary=_bpm_summary(metrics),
+        traces=traces,
+        defects=defects,
     )

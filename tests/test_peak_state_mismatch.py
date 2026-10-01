@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from debug_helpers.peak_state_mismatch_detector import (  # noqa: E402
+from pcg.engine.defects.peak_state import (  # noqa: E402
     find_peak_state_mismatches,
     summarize,
 )

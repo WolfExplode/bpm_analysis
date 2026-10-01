@@ -28,7 +28,7 @@ if _REPO not in sys.path:
 from debug_helpers._common import (  # noqa: E402
     collect_wavs, default_jobs, parallel_scan, params, reconfigure_stdio, run_pipeline,
 )
-from debug_helpers.overlap_detector import find_overlapping_states, summarize  # noqa: E402
+from pcg.engine.defects.overlaps import find_overlapping_states, summarize  # noqa: E402
 
 
 def scan_file(wav_path, run_params):

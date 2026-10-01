@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from debug_helpers.state_sequence_detector import (  # noqa: E402
+from pcg.engine.defects.sequence import (  # noqa: E402
     find_sequence_violations,
     summarize,
 )

@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from debug_helpers.overlap_detector import find_overlapping_states  # noqa: E402
+from pcg.engine.defects.overlaps import find_overlapping_states  # noqa: E402
 
 
 def test_detector_flags_strict_overlap_only():

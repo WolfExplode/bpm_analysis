@@ -49,10 +49,10 @@ import soundfile as sf  # noqa: E402
 
 from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
 from pipeline import analyze_wav_file  # noqa: E402
-from debug_helpers.overlap_detector import find_overlapping_states  # noqa: E402
-from debug_helpers.coverage_detector import find_label_boundary_desync  # noqa: E402
-from debug_helpers.state_sequence_detector import find_sequence_violations  # noqa: E402
-from debug_helpers.peak_state_mismatch_detector import find_peak_state_mismatches  # noqa: E402
+from pcg.engine.defects.overlaps import find_overlapping_states  # noqa: E402
+from pcg.engine.defects.coverage import find_label_boundary_desync  # noqa: E402
+from pcg.engine.defects.sequence import find_sequence_violations  # noqa: E402
+from pcg.engine.defects.peak_state import find_peak_state_mismatches  # noqa: E402
 from debug_helpers.scan_sequence import _bpm_hint_from_name  # noqa: E402
 
 _BASELINE = os.path.join(_SCRIPT_DIR, "state_invariants_baseline.json")

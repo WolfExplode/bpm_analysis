@@ -29,7 +29,7 @@ from debug_helpers._common import (  # noqa: E402
     bpm_hint_from_name, collect_wavs, default_jobs, env_sample_rate,
     parallel_scan, params, reconfigure_stdio, run_pipeline,
 )
-from debug_helpers.state_sequence_detector import find_sequence_violations, summarize  # noqa: E402
+from pcg.engine.defects.sequence import find_sequence_violations, summarize  # noqa: E402
 
 # Back-compat alias: benchmarking/state_invariants.py and other helpers import
 # this name from here.

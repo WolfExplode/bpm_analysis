@@ -50,3 +50,5 @@ debug_helpers/*_report.json
 debug_helpers/inv_off.json
 
 Archived
+# Analysis library (pcg.analysis.Library)
+library/

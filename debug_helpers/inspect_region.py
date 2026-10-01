@@ -33,7 +33,7 @@ from pcg.engine.peak_utils import PeakType  # noqa: E402
 from debug_helpers._common import (  # noqa: E402
     bpm_hint_from_name, env_sample_rate, params, reconfigure_stdio, run_pipeline,
 )
-from debug_helpers.state_sequence_detector import find_sequence_violations  # noqa: E402
+from pcg.engine.defects.sequence import find_sequence_violations  # noqa: E402
 
 
 def _peak_kind(peak_type: str) -> str:

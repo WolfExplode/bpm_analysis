@@ -28,7 +28,7 @@ from debug_helpers._common import (  # noqa: E402
     bpm_hint_from_name, collect_wavs, default_jobs, env_sample_rate,
     parallel_scan, params, reconfigure_stdio, run_pipeline,
 )
-from debug_helpers.peak_state_mismatch_detector import (  # noqa: E402
+from pcg.engine.defects.peak_state import (  # noqa: E402
     find_peak_state_mismatches,
     summarize,
 )
