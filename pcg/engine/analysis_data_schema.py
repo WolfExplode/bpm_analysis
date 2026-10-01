@@ -12,7 +12,7 @@
 # that produces it. Removing a key: grep for it across all files before deleting.
 
 from __future__ import annotations
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 
@@ -46,7 +46,7 @@ except ImportError:
 
 class AnalysisData(TypedDict, total=False):
     # =========================================================================
-    # Preprocessing — set by pipeline.py before Pass 1 and Pass 2
+    # Preprocessing — set by run.py before Pass 1 and Pass 2
     # =========================================================================
 
     bandpass_envelope: np.ndarray
@@ -89,12 +89,8 @@ class AnalysisData(TypedDict, total=False):
     """Long-term BPM values at pass2_lt_bpm_times. Same length."""
 
     # =========================================================================
-    # Pass 2 → pipeline — set by pipeline.py after classify_peaks
+    # Run results — set by run.py after the algorithm passes
     # =========================================================================
-
-    fft_separation: Optional[Any]
-    """S1 vs S2 frequency separation vector (from fft_profiles.compute_frequency_separation).
-    None when FFT profiles are disabled or when too few peaks exist."""
 
     bpm_failure_report: dict
     """Algorithm-agnostic post-hoc plausibility gate result (hrv.detect_bpm_failure), mirrored
@@ -103,7 +99,7 @@ class AnalysisData(TypedDict, total=False):
 
     algorithm_used: str
     """Which algorithm actually produced this result: "native" or "springer". Set by
-    engine._run_algorithm_pass; may differ from the "use_springer_algorithm" param if
+    run._run_algorithm_pass; may differ from the "use_springer_algorithm" param if
     auto_switch_algorithm retried with the other algorithm."""
 
     algorithm_switch_reason: Optional[str]

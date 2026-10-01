@@ -8,9 +8,9 @@ Usage:
 Default input_dir: repo-root inputs/. Runs a process pool (-j/--jobs, default
 CPU count - 1; -j 1 for serial). Output is identical regardless of job count.
 
-For each WAV file with a _manual_state_sequence.csv, runs the full analysis
+For each recording with an Annotation (<stem>.annotation.json), runs the full analysis
 pipeline and compares predicted S1 segments (pass3_state_boundaries) against
-manual ground truth. Reports error counts per file and totals.
+the Annotation. Reports error counts per file and totals.
 
 Error types:
     phase_flip  S1/S2 labels swapped for a stretch; counted once at the trigger point.
@@ -22,24 +22,22 @@ JSON summary written to benchmark_result.json alongside this script.
 
 import sys
 import os
-import csv
 import json
 import logging
-import tempfile
-import glob
 from concurrent.futures import ProcessPoolExecutor
 from typing import List, Tuple, Dict, Optional
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
-sys.path.insert(0, os.path.dirname(_SCRIPT_DIR))  # project root for config, pipeline, etc.
+sys.path.insert(0, os.path.dirname(_SCRIPT_DIR))  # project root (pcg)
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-sig"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
-import numpy as np
-from pcg.engine.config import DEFAULT_PARAMS
-from pipeline import analyze_wav_file
+import numpy as np  # noqa: E402
+from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
+from pcg import annotation, batch  # noqa: E402
+from pcg.engine import run_analysis  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -57,21 +55,9 @@ def _seg_center(start: float, end: float) -> float:
     return (start + end) / 2.0
 
 
-def _load_manual_state_sequence(csv_path: str) -> List[Tuple[float, float, str]]:
-    segments = []
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            state = (row.get("state") or "").strip()
-            if not state:
-                continue
-            try:
-                start = float(row["start_sec"])
-                end = float(row["end_sec"])
-            except (KeyError, ValueError):
-                continue
-            segments.append((start, end, state))
-    return segments
+def _load_annotation_states(annotation_path: str) -> List[Tuple[float, float, str]]:
+    """Annotation spans plus derived systole/diastole as (start, end, state)."""
+    return annotation.derived_states(annotation.load(annotation_path).spans)
 
 
 def _extract_start_bpm(wav_path: str) -> Optional[float]:
@@ -430,21 +416,11 @@ def compare_file(
 # ---------------------------------------------------------------------------
 
 def _collect_labeled_wav_files(root: str) -> List[Tuple[str, str, str]]:
-    """
-    Walk root recursively. Return (subdir_label, wav_path, csv_path) for every
-    WAV that has a matching _manual_state_se*.csv beside it.
-    """
-    found = []
-    for dirpath, _dirs, files in os.walk(root):
-        subdir = os.path.relpath(dirpath, root)
-        for fname in sorted(files):
-            if not fname.lower().endswith(".wav"):
-                continue
-            wav_path = os.path.join(dirpath, fname)
-            matches = glob.glob(glob.escape(wav_path) + "_manual_state_se*.csv")
-            if matches:
-                found.append((subdir, wav_path, matches[0]))
-    return found
+    """(subdir_label, recording_path, annotation_path) for every annotated recording under root."""
+    return [
+        (os.path.relpath(str(rec.parent), root), str(rec), str(ann))
+        for rec, ann in batch.annotated_recordings([root])
+    ]
 
 
 def _print_subtotal(label: str, n_files: int, n_s1: int, n_err: int, n_flip: int, n_miss: int, n_extra: int) -> None:
@@ -456,18 +432,11 @@ def _print_subtotal(label: str, n_files: int, n_s1: int, n_err: int, n_flip: int
     )
 
 
-_OUTPUT_OPTIONS = {
-    "html": False, "png": False, "csv": False, "summary": False, "debug": False,
-    "filtered_wav": False, "spectrogram": False, "fft_profiles": False,
-    "output_all_passes": False, "working_wav_in_output": False,
-}
-
-
 def _build_params() -> Dict:
-    """DEFAULT_PARAMS with artifact writes off, plus optional env A/B overrides.
+    """DEFAULT_PARAMS plus optional env A/B overrides.
     BENCH_PARAM_OVERRIDES="key=val,key=val" — read here (not passed) so the values
     reach spawned worker processes (Windows spawn re-imports this module)."""
-    params = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    params = dict(DEFAULT_PARAMS)
     for item in (s for s in os.environ.get("BENCH_PARAM_OVERRIDES", "").split(",") if s.strip()):
         k, _, v = item.partition("=")
         k, v = k.strip(), v.strip()
@@ -503,9 +472,9 @@ def _init_worker() -> None:
 def _score_one(task: Tuple[str, str, str]) -> Dict:
     """Load GT, run pipeline, compare one file. Returns a result/skip/error dict.
     Only picklable primitives are returned (analysis_data stays in the worker)."""
-    subdir, wav_path, csv_path = task
+    subdir, wav_path, annotation_path = task
     wav_name = os.path.basename(wav_path)
-    manual_segments = _load_manual_state_sequence(csv_path)
+    manual_segments = _load_annotation_states(annotation_path)
     if not manual_segments:
         return {"subdir": subdir, "file": wav_name, "skip": "empty labels"}
 
@@ -513,18 +482,12 @@ def _score_one(task: Tuple[str, str, str]) -> Dict:
     sample_rate = _W_SAMPLE_RATE
     start_bpm = _extract_start_bpm(wav_path)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            _, _, _, analysis_data = analyze_wav_file(
-                wav_path, params, start_bpm,
-                original_file_path=wav_path,
-                output_directory=tmpdir,
-                output_options=_OUTPUT_OPTIONS,
-                collect_fft_for_aggregate=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return {"subdir": subdir, "file": wav_name, "error": f"PIPELINE ERROR: {exc}"}
+    try:
+        result = run_analysis(wav_path, params, start_bpm)
+    except Exception as exc:  # noqa: BLE001
+        return {"subdir": subdir, "file": wav_name, "error": f"PIPELINE ERROR: {exc}"}
 
+    analysis_data = result.analysis_data if result.ok else None
     if analysis_data is None:
         return {"subdir": subdir, "file": wav_name,
                 "error": "PIPELINE ERROR: returned no data (too few peaks?)"}
@@ -536,7 +499,7 @@ def _score_one(task: Tuple[str, str, str]) -> Dict:
 
 def _iter_results(labeled, jobs):
     """Yield per-file result dicts in input order, serial (jobs<=1) or pooled.
-    analyze_wav_file is CPU-bound, so processes (not threads) give real speedup."""
+    the engine is CPU-bound, so processes (not threads) give real speedup."""
     jobs = max(1, int(jobs))
     if jobs == 1:
         _init_worker()

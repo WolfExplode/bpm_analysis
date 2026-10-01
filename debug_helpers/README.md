@@ -3,40 +3,44 @@
 Throwaway-but-keepable tooling for investigating pipeline bugs. Not part of the
 shipped pipeline; safe to run ad hoc.
 
-Independent state-timeline checks live here, each a **pure detector** + a
-**pipeline scanner**:
+The four state-timeline checks are **pure detectors** that now live in the engine
+(`pcg/engine/defects/`) — every Analysis runs them and stores the results as
+**Defects**, which the workspace lists and jumps between. The scanners here run
+them across many recordings:
 
-| concern | detector | scanner |
+| concern | detector (`pcg/engine/defects/`) | scanner |
 |---|---|---|
-| spans overlap each other | `overlap_detector.py` | `scan_overlaps.py` |
-| labels vs boundary list disagree | `coverage_detector.py` | (use `coverage_detector` ad hoc) |
-| boundary sequence breaks the cycle | `state_sequence_detector.py` | `scan_sequence.py` |
-| state band disagrees with peak label | `peak_state_mismatch_detector.py` | `scan_peak_state.py` |
+| spans overlap each other | `overlaps.py` | `scan_overlaps.py` |
+| labels vs boundary list disagree | `coverage.py` | (use `coverage` ad hoc) |
+| boundary sequence breaks the cycle | `sequence.py` | `scan_sequence.py` |
+| state band disagrees with peak label | `peak_state.py` | `scan_peak_state.py` |
 
 Single-file **audit** tools (one WAV in, explanatory dump out — no detector):
 
 | tool | answers |
 |---|---|
 | `inspect_region.py` | what peaks/states/noise-windows sit in a time window (or each violation) |
-| `compare_to_manual.py` | how well Pass-3 output matches a hand-marked `_manual_state_sequence.csv` |
+| `compare_to_annotation.py` | how well Pass-3 output matches the recording's Annotation (per-sample agreement, per-state recall, beat count) |
 | `gap_decision_audit.py` | why each wide diastole became QUIET vs a phantom-insert GAP |
 | `phantom_insert_detector.py` | which rebuilt cycles sit over a flat envelope with no real beat |
 
 ## Shared plumbing — `_common.py`
 
-Every scanner/audit tool runs the same pipeline the GUI runs, artifacts off, then
-feeds the result to a detector. That boilerplate — `params()`, `OUTPUT_OPTIONS`,
-the tempdir + `run_pipeline()` wrapper, `env_sample_rate()`, `bpm_hint_from_name()`,
-`collect_wavs()`, `reconfigure_stdio()`, and the CPU-bound `parallel_scan()` process
-pool — lives in [`_common.py`](./_common.py), imported by all of them. The pure
-`*_detector.py` modules deliberately do **not** import it, so they stay
-pipeline-free and unit-testable.
+Every scanner/audit tool runs the engine (`pcg.engine.run_analysis`) and feeds
+the result to a detector. That boilerplate — `params()`, the `run_pipeline()`
+wrapper, `env_sample_rate()`, `bpm_hint_from_name()`, `collect_wavs()`,
+`reconfigure_stdio()`, and the CPU-bound `parallel_scan()` process pool — lives in
+[`_common.py`](./_common.py), imported by all of them. The detectors deliberately do
+**not** import it, so they stay engine-run-free and unit-testable.
+
+For a single recording, the workspace (`python -m pcg`) shows the same information
+interactively, and `python -m pcg inspect <rec> --from S --to S` dumps it as text.
 
 `inspect_region.py` is a cross-strip correlator: for a recording and a time window
 (or each sequence violation) it prints, time-ordered, every **peak** (with its
 `peak_type`), every **cardiac-state** segment (with anchor metadata), and which
-**noise/quiet/gap** windows cover the region — the same three data sources the two
-HTML strips render from. Use it to explain *why* a violation happens.
+**noise/quiet/gap** windows cover the region — the same data the workspace's states
+and signal lanes draw. Use it to explain *why* a violation happens.
 
 ```
 python debug_helpers/inspect_region.py "inputs/.../file.wav"            # each violation
@@ -53,7 +57,7 @@ they check — so a change can trade accuracy for structural breakage invisibly
 [`benchmarking/state_invariants.py`](../benchmarking/state_invariants.py) runs the
 pipeline once per file and applies **all four** detectors, aggregates the totals,
 and compares them to a committed baseline — failing if any metric regresses. It
-needs no manual ground truth (unlike `run_benchmark.py`). Run it before/after any
+needs no ground truth (unlike `run_benchmark.py`, which scores against Annotations). Run it before/after any
 change to Pass 3:
 
 ```
@@ -87,12 +91,12 @@ zero violations.
 
 ### Files
 
-- `state_sequence_detector.py` — pure. `find_sequence_violations(boundaries, sample_rate=...)`
+- `pcg/engine/defects/sequence.py` — pure. `find_sequence_violations(boundaries, sample_rate=...)`
   collapses the boundary list to real-state runs and flags every illegal transition
   between **abutting** runs (a gap / `unknown` between runs legitimately breaks the
   cycle and is not flagged). `summarize()` rolls up by kind / transition.
 - `scan_sequence.py` — runs the pipeline (parsing the starting BPM from each file
-  name, matching the GUI's `bpm_from_filename` default) and reports violations.
+  name, as the run screen and CLI do by default) and reports violations.
   Exit code `1` if any.
 
 ### Usage (from repo root)
@@ -104,13 +108,13 @@ python debug_helpers/scan_sequence.py inputs --json debug_helpers/sequence_repor
 ```
 
 Both `scan_sequence.py` and `scan_overlaps.py` run the pipeline across files in a
-**process pool** (`analyze_wav_file` is CPU-bound, so processes — not threads —
+**process pool** (the engine is CPU-bound, so processes — not threads —
 give real speedup). Defaults to `CPU count - 1` workers; override with
 `--jobs N` (`-j N`), or `--jobs 1` for serial debugging.
 
 ### Root-cause notes (confirmed mechanism — not yet fixed)
 
-Correlating the three strips with `inspect_region.py` + `peak_state_mismatch_detector.py`
+Correlating the three strips with `inspect_region.py` + `pcg/engine/defects/peak_state.py`
 shows the `diastole -> S2` is **not** a missing S1 nor a noise peak landing in S2.
 It is a **regional S1<->S2 label swap**:
 
@@ -139,11 +143,10 @@ meanings claiming the same samples.
 
 ### Files
 
-- `overlap_detector.py` — pure detector. `find_overlapping_states(boundaries, sample_rate=...)`
+- `pcg/engine/defects/overlaps.py` — pure detector. `find_overlapping_states(boundaries, sample_rate=...)`
   returns one record per overlapping span pair; `summarize(records)` rolls them up.
   No pipeline import, so it is unit-testable and reusable.
-- `scan_overlaps.py` — runs the real pipeline (`analyze_wav_file`, no artifacts
-  written) on input WAVs and reports overlaps.
+- `scan_overlaps.py` — runs the engine on input WAVs and reports overlaps.
 
 ### Usage (from repo root)
 

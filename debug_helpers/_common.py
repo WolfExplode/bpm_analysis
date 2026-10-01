@@ -18,7 +18,6 @@ import logging
 import os
 import re
 import sys
-import tempfile
 from concurrent.futures import ProcessPoolExecutor
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,19 +27,12 @@ if _REPO not in sys.path:
 import soundfile as sf  # noqa: E402
 
 from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
-from pipeline import analyze_wav_file  # noqa: E402
-
-# Suppress every output artifact: these tools only want analysis_data.
-OUTPUT_OPTIONS = {
-    "html": False, "png": False, "csv": False, "summary": False, "debug": False,
-    "filtered_wav": False, "spectrogram": False, "fft_profiles": False,
-    "output_all_passes": False, "working_wav_in_output": False,
-}
+from pcg.engine import run_analysis  # noqa: E402
 
 
 def params(**overrides):
-    """DEFAULT_PARAMS with artifact writes off, plus any caller overrides."""
-    p = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    """DEFAULT_PARAMS plus any caller overrides."""
+    p = dict(DEFAULT_PARAMS)
     p.update(overrides)
     return p
 
@@ -86,24 +78,16 @@ def collect_wavs(paths):
 
 
 def run_pipeline(wav_path, run_params, bpm_hint=None):
-    """Run analyze_wav_file with artifacts off; return analysis_data or None.
+    """Run the engine; return analysis_data, or None when it failed or found < 2 beats.
 
-    Pipeline exceptions are logged and swallowed (returns None) so a batch scan
-    survives a single bad file.
+    Exceptions are logged and swallowed so a batch scan survives a single bad file.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            _, _, _, data = analyze_wav_file(
-                wav_path, run_params, bpm_hint,
-                original_file_path=wav_path,
-                output_directory=tmp,
-                output_options=OUTPUT_OPTIONS,
-                collect_fft_for_aggregate=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logging.error("pipeline error on %s: %s", os.path.basename(wav_path), exc)
-            return None
-    return data or None
+    try:
+        result = run_analysis(wav_path, run_params, bpm_hint)
+    except Exception as exc:  # noqa: BLE001
+        logging.error("pipeline error on %s: %s", os.path.basename(wav_path), exc)
+        return None
+    return result.analysis_data if result.ok else None
 
 
 # ---------------------------------------------------------------------------

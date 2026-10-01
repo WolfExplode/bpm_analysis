@@ -3,12 +3,12 @@
 NOT integrated into the main codebase: this script only *imports* it (read-only,
 the same way benchmarking/adapters/circor.py does) to obtain your pipeline's
 segmentation. It produces, per recording, an interactive Plotly HTML in the same
-visual style as plotting.py (Plotly, secondary-y, legend filter, shaded state
+visual style as the old plotting.py (Plotly, secondary-y, legend filter, shaded state
 bands over the homomorphic envelope) showing three segmentations stacked:
 
     Ground truth  (CirCor .tsv)
     Springer      (HSMM trained on original example_data.mat, springer_original.npz)
-    Yours         (analyze_wav_file -> pass3_state_boundaries)
+    Yours         (run_analysis -> pass3_state_boundaries)
 
 plus a table of per-file Se / PPV / F1 (S1 detection vs GT, reusing
 benchmarking/bench_scoring) for Springer and for your pipeline.
@@ -22,7 +22,6 @@ import glob
 import os
 import random
 import sys
-import tempfile
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -53,7 +52,7 @@ from bench_scoring import (  # noqa: E402
     score_file,
 )
 from pcg.engine.config import DEFAULT_PARAMS, param  # noqa: E402
-from pipeline import analyze_wav_file  # noqa: E402
+from pcg.engine import run_analysis  # noqa: E402
 
 DEFAULT_ROOT = (
     r"G:\HB other\PCG Datasets"
@@ -82,12 +81,6 @@ STATE_COLOR = {
 THEME = {
     "bg": "#111", "panel": "#1e1e2e", "panel2": "#151520", "accent": "#00d4ff",
     "btn": "#2a2a35", "border": "#444", "text": "#e0e0e0", "muted": "#aaa",
-}
-
-_OUTPUT_OPTIONS = {
-    "html": False, "png": False, "csv": False, "summary": False, "debug": False,
-    "filtered_wav": False, "spectrogram": False, "fft_profiles": False,
-    "output_all_passes": False, "working_wav_in_output": False,
 }
 
 
@@ -175,16 +168,10 @@ def springer_spans(wav_path: str, model: Dict, opts: Dict) -> Tuple[List[Span], 
 
 def yours_spans(wav_path: str, params: Dict) -> List[Span]:
     sr = float(int(param(params, "preprocess_target_sample_rate") or 600))
-    with tempfile.TemporaryDirectory() as tmp:
-        _, _, _, data = analyze_wav_file(
-            wav_path, params, None,
-            original_file_path=wav_path,
-            output_directory=tmp,
-            output_options=_OUTPUT_OPTIONS,
-            collect_fft_for_aggregate=False,
-        )
-    if not data:
+    result = run_analysis(wav_path, params, None)
+    if not result.ok:
         return []
+    data = result.analysis_data
     boundaries = data.get("pass3_state_boundaries") or []
     return [(b[0] / sr, b[1] / sr, str(b[2])) for b in boundaries]
 
@@ -544,7 +531,7 @@ def main() -> None:
 
     model = load_springer_model(args.model)
     opts = default_springer_hsmm_options()
-    params = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    params = dict(DEFAULT_PARAMS)
 
     who_keys = ["Springer", "Yours"]
     agg = {w: {t: {"tp": 0, "fn": 0, "fp": 0} for t in DEFAULT_TOLERANCES_SEC} for w in who_keys}

@@ -1,6 +1,6 @@
 """
 Run the real pipeline on input WAVs and report BPM-plausibility-gate failures
-(hrv.detect_bpm_failure, wired in pipeline.py STAGE 6). Used to validate the
+(hrv.detect_bpm_failure, run at the end of pcg.engine.run_analysis). Used to validate the
 bpm_min_physiological / bpm_jump_ratio_threshold / bpm_coverage_gap_sec /
 bpm_trailing_coverage_frac defaults in config.py against the real corpus before
 trusting them, the same way state_invariants.py validates structural invariants.

@@ -5,6 +5,12 @@ reports. Terms in **bold** are defined in [CONTEXT.md](../CONTEXT.md); the big
 decisions are recorded in [ADR 0004](adr/0004-recording-identity-by-audio-fingerprint.md)
 and [ADR 0005](adr/0005-native-python-workspace-replaces-html-reports.md).
 
+**Status (2026-10-01): implemented** on branch `new-UI` (`pcg/`). Deviations: trace kind
+"band" is called `spans`; `fft_profiles.py` was deleted whole (nothing used its non-HTML
+parts once the HTML and cross-file aggregation went); `BPM_Analyzer.spec` (PyInstaller) was
+deleted — a frozen exe can't re-run fresh engine code, which is the point of Ctrl+R.
+Not yet built: the optional spectrum/spectrogram lane.
+
 The tool is first an instrument for debugging the algorithm, second a tool for
 producing **Annotations**. No backwards compatibility with the old GUI, HTML
 reports or file formats is required (existing annotation CSVs are converted once).

@@ -1,7 +1,7 @@
 # audio_preprocessing.py
 # Engine stage 1: signal conditioning, envelope extraction, and noise-floor estimation.
-# Pure computation — format conversion, channel splitting and debug WAV writing live in
-# audio_io.py (outside the engine). Consumed by engine.py and fft_profiles.
+# Pure computation — format conversion and channel selection live in pcg/recording.py
+# (outside the engine). Consumed by run.py; apply_bandpass_only also by playback audio.
 import gc
 import logging
 import time

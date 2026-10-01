@@ -24,7 +24,6 @@ import logging
 import os
 import random
 import sys
-import tempfile
 from multiprocessing import Pool
 from typing import Dict, List, Optional, Tuple
 
@@ -56,7 +55,7 @@ from bench_scoring import (  # noqa: E402
     span_center,
 )
 from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
-from pipeline import analyze_wav_file  # noqa: E402
+from pcg.engine import run_analysis  # noqa: E402
 
 DEFAULT_ROOT = (
     r"G:\HB other\PCG Datasets"
@@ -129,15 +128,9 @@ def collect_recordings(root: str) -> List[Tuple[str, str]]:
 # Pipeline run -> predicted S1/S2 centers
 # ---------------------------------------------------------------------------
 
-_OUTPUT_OPTIONS = {
-    "html": False, "png": False, "csv": False, "summary": False, "debug": False,
-    "filtered_wav": False, "spectrogram": False, "fft_profiles": False,
-    "output_all_passes": False, "working_wav_in_output": False,
-}
-
 
 def _params() -> Dict:
-    p = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    p = dict(DEFAULT_PARAMS)
     # Optional param overrides via env (so sweeps reach spawned workers).
     # Format: BENCH_PARAM_OVERRIDES="key=val,key=val" (numeric/bool values).
     raw = os.environ.get("BENCH_PARAM_OVERRIDES", "")
@@ -160,20 +153,14 @@ def predict_centers(
     wav_path: str, params: Dict, sample_rate: int
 ) -> Optional[Tuple[List[float], List[float]]]:
     """Run the pipeline; return (pred_s1_centers, pred_s2_centers) in seconds."""
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            _, _, _, data = analyze_wav_file(
-                wav_path, params, None,
-                original_file_path=wav_path,
-                output_directory=tmp,
-                output_options=_OUTPUT_OPTIONS,
-                collect_fft_for_aggregate=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logging.error("pipeline error on %s: %s", os.path.basename(wav_path), exc)
-            return None
-    if data is None:
+    try:
+        result = run_analysis(wav_path, params, None)
+    except Exception as exc:  # noqa: BLE001
+        logging.error("pipeline error on %s: %s", os.path.basename(wav_path), exc)
         return None
+    if not result.ok:
+        return None
+    data = result.analysis_data
 
     sr = float(sample_rate)
     # pass3_state_boundaries: (start_sample, end_sample, state_name, meta)

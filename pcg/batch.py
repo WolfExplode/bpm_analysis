@@ -236,3 +236,31 @@ def run(jobs: List[Job], settings: RunSettings, library: analysis.Library,
             if on_done:
                 on_done(r)
     return results
+
+
+def annotated_recordings(roots: Iterable[os.PathLike | str],
+                         library: Optional[analysis.Library] = None) -> List[Tuple[Path, Path]]:
+    """(recording, annotation) pairs under the given folders.
+
+    The sidecar name is tried first; a renamed recording is found by fingerprint
+    among the audio files in the Annotation's folder.
+    """
+    from pcg import annotation
+
+    lib = library or analysis.Library()
+    out: List[Tuple[Path, Path]] = []
+    for root in map(Path, roots):
+        for ann_path in sorted(root.rglob(f"*{annotation.SUFFIX}")):
+            stem = ann_path.name[: -len(annotation.SUFFIX)]
+            audio = [p for p in ann_path.parent.iterdir() if recording.is_audio_file(p)]
+            named = [p for p in audio if p.stem == stem]
+            if named:
+                out.append((named[0], ann_path))
+                continue
+            fp = annotation.load(ann_path).fingerprint
+            hit = next((p for p in audio if lib.fingerprints.get(p) == fp), None)
+            if hit is not None:
+                out.append((hit, ann_path))
+            else:
+                log.warning("no recording found for %s", ann_path)
+    return out

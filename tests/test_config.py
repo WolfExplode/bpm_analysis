@@ -1,7 +1,6 @@
 """Config sanity + validate_params behavior."""
 import logging
 
-import app_settings
 from pcg.engine import config
 
 
@@ -10,11 +9,6 @@ def test_default_params_is_dict_of_known_keys():
     assert config.DEFAULT_PARAMS  # non-empty
     # All keys are strings (used as kwargs / dict lookups throughout).
     assert all(isinstance(k, str) for k in config.DEFAULT_PARAMS)
-
-
-def test_default_output_options_are_booleans():
-    assert isinstance(app_settings.DEFAULT_OUTPUT_OPTIONS, dict)
-    assert all(isinstance(v, bool) for v in app_settings.DEFAULT_OUTPUT_OPTIONS.values())
 
 
 def test_bpm_bounds_are_ordered():

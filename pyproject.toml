@@ -13,10 +13,6 @@ extend-exclude = ["Blender BPM tool"]
 select = ["E4", "E7", "E9", "F", "W"]
 
 [tool.ruff.lint.per-file-ignores]
-# ttkbootstrap's documented usage is `from ttkbootstrap.constants import *`
-# (INFO, PRIMARY, LEFT, ...). The star import is the library idiom, not debt,
-# so the resulting "may be undefined" noise is silenced for the UI files.
-"gui.py" = ["F403", "F405"]
-# scripts/ are standalone GUI tools: module-level config constants sit above
+# scripts/ are standalone tools: module-level config constants sit above
 # the imports by design (E402), and they share the ttkbootstrap idiom.
 "scripts/*.py" = ["F403", "F405", "E402"]

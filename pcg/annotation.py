@@ -183,13 +183,20 @@ def flip_after(spans: Spans, t: float) -> Spans:
 
 def from_states(starts: Sequence[float], ends: Sequence[float], states: Sequence[str],
                 origin: str = ORIGIN_ALGORITHM) -> Spans:
-    """Sound spans from an algorithm state timeline. Overlapping sounds are cut at the
-    midpoint of their overlap and marked `clipped`; touching same-kind spans merge."""
-    raw = sorted(
-        (float(a), float(b), s) for a, b, s in zip(starts, ends, states) if s in SOUNDS and b > a
-    )
+    """Sound spans from an algorithm state timeline (systole/diastole/unknown dropped)."""
+    return from_spans([(a, b, s, origin) for a, b, s in zip(starts, ends, states) if s in SOUNDS])
+
+
+def from_spans(rows: Iterable[Tuple[float, float, str, str]], clips: Optional[List[dict]] = None) -> Spans:
+    """Valid spans from possibly overlapping (start, end, kind, origin) rows.
+
+    Overlapping spans of different kinds are cut at the midpoint of their overlap and
+    marked `clipped`; touching/overlapping spans of the same kind merge. Each cut is
+    appended to `clips` (if given) so it can be reported for spot-checking.
+    """
+    raw = sorted((float(a), float(b), k, o) for a, b, k, o in rows if k in KINDS and float(b) > float(a))
     out: List[Span] = []
-    for a, b, kind in raw:
+    for a, b, kind, origin in raw:
         clipped = False
         merged = False
         while out:
@@ -200,9 +207,13 @@ def from_states(starts: Sequence[float], ends: Sequence[float], states: Sequence
                 break
             if a >= last.end - _EPS:
                 break
-            # Overlaps a different sound: cut both at the midpoint of the overlap.
-            mid = 0.5 * (max(a, last.start) + min(last.end, b))
+            # Overlaps a different kind: cut both at the midpoint of the overlap.
+            lo, hi = max(a, last.start), min(last.end, b)
+            mid = 0.5 * (lo + hi)
             clipped = True
+            if clips is not None:
+                clips.append({"at": lo, "overlap_sec": hi - lo, "first": last.kind, "second": kind,
+                              "first_span": (last.start, last.end), "second_span": (a, b)})
             if mid - last.start < _MIN_SPAN:
                 out.pop()  # swallowed; keep resolving against the span before it
                 continue
@@ -226,6 +237,22 @@ def replace_region(spans: Spans, a: float, b: float, algorithm: Spans) -> Spans:
             kept.extend(_cut_noisy(s, a, b))
     kept.extend(s for s in algorithm if s.kind in SOUNDS and s.start >= a - _EPS and s.end <= b + _EPS)
     return _normalize(kept)
+
+
+def derived_states(spans: Spans) -> List[Tuple[float, float, str]]:
+    """The full state sequence: sounds and Noisy spans plus the gaps between sounds —
+    S1 -> S2 is systole, S2 -> S1 diastole, S1 -> S1 a cycle with no audible S2 ("cycle").
+    Gaps next to a Noisy span (or another kind of transition) are left unlabelled."""
+    gap_name = {(S1, S2): "systole", (S2, S1): "diastole", (S1, S1): "cycle"}
+    out: List[Tuple[float, float, str]] = []
+    for i, s in enumerate(spans):
+        out.append((s.start, s.end, s.kind))
+        if i + 1 < len(spans):
+            nxt = spans[i + 1]
+            name = gap_name.get((s.kind, nxt.kind))
+            if name and nxt.start > s.end + _EPS:
+                out.append((s.end, nxt.start, name))
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────

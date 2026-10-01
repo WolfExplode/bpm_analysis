@@ -36,7 +36,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 from concurrent.futures import ProcessPoolExecutor
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,7 +47,7 @@ for _p in (_REPO, _SCRIPT_DIR):
 import soundfile as sf  # noqa: E402
 
 from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
-from pipeline import analyze_wav_file  # noqa: E402
+from pcg.engine import run_analysis  # noqa: E402
 from pcg.engine.defects.overlaps import find_overlapping_states  # noqa: E402
 from pcg.engine.defects.coverage import find_label_boundary_desync  # noqa: E402
 from pcg.engine.defects.sequence import find_sequence_violations  # noqa: E402
@@ -56,10 +55,6 @@ from pcg.engine.defects.peak_state import find_peak_state_mismatches  # noqa: E4
 from debug_helpers.scan_sequence import _bpm_hint_from_name  # noqa: E402
 
 _BASELINE = os.path.join(_SCRIPT_DIR, "state_invariants_baseline.json")
-_OO = {k: False for k in (
-    "html", "png", "csv", "summary", "debug", "filtered_wav",
-    "spectrogram", "fft_profiles", "output_all_passes", "working_wav_in_output",
-)}
 _METRICS = (
     "overlaps_gap_rebuild", "overlaps_edge_paint", "coverage_desync_runs",
     "seq_missing_s1", "seq_bad_transition", "swap_mismatches",
@@ -67,7 +62,7 @@ _METRICS = (
 
 
 def _params():
-    p = {**DEFAULT_PARAMS, "save_filtered_wav": False, "enable_fft_profiles": False}
+    p = dict(DEFAULT_PARAMS)
     # A/B a single param against the gate, e.g. STATE_PARAM_OVERRIDES="pass3_interval_phase_relabel=false".
     raw = os.environ.get("STATE_PARAM_OVERRIDES", "")
     for item in (s for s in raw.split(",") if s.strip()):
@@ -98,18 +93,14 @@ def _collect_wavs(paths):
 def _metrics_for_file(wav, params):
     """Run the pipeline once and apply all four detectors. Returns a metrics dict
     (or None on pipeline failure)."""
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            _, _, _, data = analyze_wav_file(
-                wav, params, _bpm_hint_from_name(wav),
-                original_file_path=wav, output_directory=tmp,
-                output_options=_OO, collect_fft_for_aggregate=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logging.error("pipeline error on %s: %s", os.path.basename(wav), exc)
-            return None
-    if not data:
+    try:
+        result = run_analysis(wav, params, _bpm_hint_from_name(wav))
+    except Exception as exc:  # noqa: BLE001
+        logging.error("pipeline error on %s: %s", os.path.basename(wav), exc)
         return None
+    if not result.ok:
+        return None
+    data = result.analysis_data
     labels = data.get("pass3_state_labels")
     bounds = data.get("pass3_state_boundaries") or []
     enc = data.get("pass3_state_labels_encoding")

@@ -1,6 +1,6 @@
 # peak_utils.py
 # Shared peak types, debug-entry formatters, and per-peak prominence calculations.
-# Consumed by bpm_analysis (engine), plotting, and reporting.
+# Consumed by the engine, pcg.analysis (per-peak reasoning text) and the traces catalog.
 # This module has no dependency on any other project module.
 
 from enum import Enum

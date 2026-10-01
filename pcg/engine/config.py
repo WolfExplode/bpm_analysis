@@ -1,6 +1,6 @@
 # config.py
-# Default parameters for the analysis engine (engine.py and the modules it uses).
-# Output toggles, GUI defaults and the ui_settings path live in app_settings.py.
+# Default parameters for the analysis engine (pcg/engine). The only place parameters are tuned;
+# the app has no parameter editor. Run settings (algorithm, auto-switch, start offset) override per run.
 # Values are tuned for typical PCG recordings from consumer hardware.
 # See Documentation.md "Parameter Tuning Rationale" for reasoning behind specific values.
 
@@ -11,13 +11,7 @@ DEFAULT_PARAMS = {
     # 1. General & Preprocessing Settings
     # Controls the initial loading and filtering of the audio.
     # =================================================================================
-    # Console-logging verbosity. Set by the GUI/CLI into the params dict; declared here so they are
-    # documented, drift-guarded, and accepted by validate_params (rather than warned as unknown keys).
-    "algorithm_console_logging": True,   # Verbose per-pass algorithm-detail INFO logs. False keeps stage-level INFO, suppresses chatty detail.
-    "general_console_logging": False,    # Root logger at DEBUG (very noisy). False keeps non-algorithm logging at INFO.
-
     "downsample_factor": 300,     # Factor to reduce sample rate. Higher = faster processing, less detail.
-    "save_filtered_wav": True,    # If True, saves *_filtered_debug.wav and *_filtered_inverse_debug.wav when output_options.filtered_wav is True.
     "analysis_start_sec": 0.0,    # Discard this many seconds from the start of the recording before any processing (e.g. skip a noisy lead-in). 0 = use the full file.
 
     # Main preprocessing: target sample rate and bandpass (single wide band before envelope); typical PCG range for S1/S2.
@@ -265,16 +259,13 @@ DEFAULT_PARAMS = {
 
     # =================================================================================
     # 7. Output, HRV & Reporting
-    # Controls for final calculations, reports, and plots
+    # Controls for the final BPM, HRV and interval calculations
     # =================================================================================
     "output_smoothing_window_sec": 3,        # Time window (seconds) for smoothing the final BPM curve for display (Gaussian σ ≈ window/3; lower = less smoothing).
     "hrv_window_size_beats": 40,             # Sliding window size (in beats) for HRV calculation.
     "hrv_step_size_beats": 5,                # How many beats the HRV window moves in each step.
     "enable_hrv_frequency_domain": True,     # If True, compute Lomb-Scargle LF/HF and optional global VLF/LF/HF.
     "hrv_global_min_duration_sec": 300.0,    # Only compute global spectrum when recording duration >= this (5 min).
-    "plot_amplitude_scale_factor": 250.0,    # Adjusts the default y-axis range of the signal amplitude plot.
-    # In plotting.py: avoid dashed lines (dash=...) for line traces--they cause noticeable lag.
-    "plot_downsample_factor": 4,            # Downsample only large traces: Bandpass / Noise Removed / Noise Envelope, Dynamic Noise Floor (keep 1 of every N points). Does NOT apply to Average S1/S2 contractility, BPM, HRV, or markers.
     "pass1_bpm_outlier_window_sec": 10.0,   # Half-window (seconds) for pass 1 BPM outlier removal: keep point if within median ± k*MAD in [t-window, t+window].
     "pass1_bpm_outlier_mad_k": 2.5,         # Number of MADs. Lower = more aggressive outlier removal.
     "pass1_bpm_global_outlier_mad_k": 5.0,    # After local pass: global median ± k*MAD. Higher = less sensitive. Set <= 0 to disable this pass.
@@ -290,23 +281,7 @@ DEFAULT_PARAMS = {
     "diastole_duration_clamp_min_sec": 0.02,  # S2→next S1 / diastole segment floor.
     "diastole_duration_clamp_max_sec": 3.0,  # Ceiling for absurd gaps/mislabels.
     "systole_gaussian_frac": 0.05,          # Used to derive Gaussian smoothing sigma for systole curve (smaller = tighter smoothing).
-    "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility plot: Used in: long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
-
-    # --- 7.1. Long Plot Optimization ---
-    # When enabled, very long recordings can skip detailed debug traces in the HTML plot
-    # to keep file sizes manageable. Shorter recordings are always shown in full detail.
-    "optimize_long_plots": False,                 # Long recordings: lighter traces (envelope/peaks debug, S1/S2/noise scores, systole/diastole overlay series). Does not override the >60 min plot-output cutoff in pipeline.
-    "long_plot_duration_threshold_sec": 600.0,   # Duration threshold (seconds) to treat a file as "long" (default: 10 minutes).
-
-    # --- 7.1.1. FFT Profiles (S1/S2 frequency spectra from raw and preprocessed audio) ---
-    "enable_fft_profiles": True,                 # If True, generate separate HTML with S1/S2 FFT profiles.
-    "fft_window_ms": 120.0,                      # Time window (ms) centered on each peak for FFT.
-    "fft_max_peaks_per_type": 200,               # Max S1 and S2 peaks (each) for FFT; selected by highest pairing confidence. Lone S1s excluded.
-    "fft_aggregate_sr": 32000,                   # Sample rate for multi-file FFT aggregation (common grid). Per-file uses native sr.
-    "fft_neutral_band_low_hz": 10000.0,           # Neutral band low (Hz) for S2→S1 alignment (force same level in this band).
-    "fft_neutral_band_high_hz": 14000.0,          # Neutral band high (Hz) for S2→S1 alignment.
-    "fft_separation_low_hz": 10.0,                # Low bound (Hz) for S1 vs S2 frequency separation vector (algorithm use).
-    "fft_separation_high_hz": 15000.0,            # High bound (Hz) for S1 vs S2 frequency separation vector.
+    "contractility_average_window_sec": 1.0, # Time to average S1/S2 contractility (the contractility trace): long-term (contractility vs BPM), short-term (S1 vs inhale/exhale)
 
     # =================================================================================
     # 8. Pass 4 — Viterbi Holistic Decoder  (pass3_emissions generation removed; restore from pass3 archived logic.md if needed)
@@ -334,7 +309,7 @@ DEFAULT_PARAMS = {
     # the native pipeline and Springer mode. Flags a run as likely-failed (tracking
     # lost lock, double-counted/missed beats) without needing ground truth. See
     # hrv.detect_bpm_failure(). When auto_switch_algorithm is False (default) this is
-    # flag-only; when True, pipeline.py retries the other algorithm on a flagged run
+    # flag-only; when True, the engine retries the other algorithm on a flagged run
     # and keeps whichever result passes (or fails less badly).
     "bpm_min_physiological": 30.0,       # BPM below this is flagged as implausible.
     "bpm_max_physiological": 220.0,      # BPM above this is flagged as implausible.
@@ -376,7 +351,7 @@ def validate_params(params: dict) -> None:
 
     Catches typos and stale keys that would otherwise silently fall back to
     their hardcoded defaults in params.get("key", default) calls.
-    Call this at the start of analyze_wav_file.
+    Called at the start of run_analysis.
     """
     known = set(DEFAULT_PARAMS)
     new_unknown = set(params) - known - _warned_unknown_param_keys

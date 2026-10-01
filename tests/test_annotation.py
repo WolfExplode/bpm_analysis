@@ -194,3 +194,13 @@ def test_disagreements_match_brute_force():
                               [rng.choice(["S1", "S2", "systole"]) for _ in starts])
         got = {(d.kind, d.start) for d in an.disagreements(ann, algo)}
         assert got == _disagreements_reference(ann, algo)
+
+
+def test_derived_states():
+    spans = ()
+    for t, k in ((1.0, S1), (1.3, S2), (2.0, S1), (2.6, S1), (3.0, S2)):
+        spans = an.place_sound(spans, k, t, 0.1, DUR)
+    spans = an.paint_noisy(spans, 3.3, 3.6, DUR)
+    spans = an.place_sound(spans, S1, 3.9, 0.1, DUR)
+    names = [n for _, _, n in an.derived_states(spans)]
+    assert names == [S1, "systole", S2, "diastole", S1, "cycle", S1, "systole", S2, NOISY, S1]

@@ -1,44 +1,13 @@
-"""audio_preprocessing numeric rolling-window helpers + audio_io channel-mode validation."""
+"""audio_preprocessing numeric rolling-window helpers."""
 import numpy as np
 import pandas as pd
 import pytest
 
-from audio_io import (
-    CHANNEL_MODE_ALL,
-    CHANNEL_MODE_LEFT,
-    CHANNEL_MODE_MIXED,
-    CHANNEL_MODE_RIGHT,
-    normalize_channel_mode,
-)
 from pcg.engine.audio_preprocessing import (
     _centered_moving_average,
     _dense_troughs_linear_interpolate,
     _rolling_quantile_center_bfill_ffill,
 )
-
-
-# --- normalize_channel_mode ---------------------------------------------------
-
-def test_normalize_channel_mode_defaults_to_mixed_for_none():
-    assert normalize_channel_mode(None) == CHANNEL_MODE_MIXED
-
-
-def test_normalize_channel_mode_defaults_to_mixed_for_empty_string():
-    assert normalize_channel_mode("") == CHANNEL_MODE_MIXED
-
-
-def test_normalize_channel_mode_lowercases_and_strips():
-    assert normalize_channel_mode("  LEFT  ") == CHANNEL_MODE_LEFT
-
-
-@pytest.mark.parametrize("mode", [CHANNEL_MODE_MIXED, CHANNEL_MODE_LEFT, CHANNEL_MODE_RIGHT, CHANNEL_MODE_ALL])
-def test_normalize_channel_mode_accepts_all_known_modes(mode):
-    assert normalize_channel_mode(mode) == mode
-
-
-def test_normalize_channel_mode_rejects_unknown_value():
-    with pytest.raises(ValueError):
-        normalize_channel_mode("surround")
 
 
 # --- _centered_moving_average --------------------------------------------------
