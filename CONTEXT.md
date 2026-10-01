@@ -95,6 +95,34 @@ _Avoid_: instant BPM, current BPM, live BPM
 A strong, clean S1-S2 pair kept by the first pass at high confidence. Anchor beats are the sparse, reliable points from which the initial [[#BPM/time belief]] and rhythm context are built.
 _Avoid_: seed beat, reference beat
 
+### Results & ground truth
+
+**Recording**:
+One [[#Phonocardiogram (PCG)|PCG]] audio file, identified by a fingerprint of its audio samples — never by its filename, which changes when BPM tags are written into it. Re-encoding, resampling or trimming the audio makes it a different recording.
+_Avoid_: file, input, track
+
+**Analysis**:
+The saved result of running the algorithm on one recording with one set of parameters — envelopes, peaks, labels, states, and the [[#BPM/time belief]] — together with the parameters that produced it. It goes **stale** when the parameters or algorithm change, and is then re-run only on request.
+_Avoid_: result, output, report, cache
+
+**Annotation**:
+A complete, human-verified [[#State]] sequence for one recording — the project's only ground truth. It may start as a copy of the algorithm's states, but once saved it is trusted in full and frozen: re-running the algorithm never changes it. Distinct from a [[#Classification outcomes|label]], which is always the algorithm's guess.
+_Avoid_: manual labels, manual state sequence, ground-truth labels
+
+An Annotation records only heart sounds ([[#S1]] and [[#S2]] spans) and [[#Noisy span|noisy spans]], never overlapping. [[#Systole]] and [[#Diastole]] are the gaps between sounds, not recorded; an S1 followed by another S1 is a cycle whose S2 was inaudible (see [[#Lone S1]]).
+
+**Defect**:
+A place where an [[#Analysis]] violates one of the algorithm's own invariants — e.g. overlapping [[#State|states]], an S1 peak under an S2 state, an impossible state sequence. Detected without any ground truth; always the algorithm's fault.
+_Avoid_: error, bug, issue, finding
+
+**Disagreement**:
+A place where an Analysis's states and an [[#Annotation]] differ (a mismatched or missing S1/S2). Not necessarily the algorithm's fault — the Annotation is trusted, but it was made by a person.
+_Avoid_: mismatch, error, diff
+
+**Noisy span**:
+A stretch of an Annotation where the heart sounds cannot be identified. Excluded from BPM and from scoring. Distinct from [[#Noise]], which is the classifier's verdict on a single peak.
+_Avoid_: noisy label, noise region, bad section
+
 ### Spectral discrimination
 
 **Spectral fingerprint**:
