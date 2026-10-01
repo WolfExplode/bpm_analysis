@@ -255,6 +255,7 @@
     _applyCmd(undo);
     if (!manualStateUndoStack.length) manualStripEdited = false;
     scheduleDrawPass3StateStrip();
+    scheduleManualBpmUpdate();
     console.log(`Undo: ${undo.type}`);
   }
 
@@ -266,6 +267,7 @@
     _applyCmd(redo);
     manualStripEdited = true;
     scheduleDrawPass3StateStrip();
+    scheduleManualBpmUpdate();
     console.log(`Redo: ${redo.type}`);
   }
 
@@ -1112,7 +1114,13 @@
     plotlyGraphDiv.addEventListener(
       "mousedown",
       function (e) {
-        if (!e.shiftKey || e.button !== 0) return;
+        if (!e.shiftKey) return;
+        if (e.button !== 0) {
+          // Shift + middle/right drag: Plotly would flip pan→zoom and box-zoom. Swallow it.
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         const sec = clientXToSec(e.clientX);
         if (sec === null) return;
         e.preventDefault();
@@ -1834,6 +1842,7 @@
       }
     }
     scheduleDrawPass3StateStrip();
+    scheduleManualBpmUpdate();
     if (logMsg) console.log(logMsg);
   }
 
@@ -1864,11 +1873,9 @@
     console.log(`Regenerated ${result.fillCount} gap segment(s) between ${result.anchorCount} anchors.`);
   }
 
-  function downloadStateCsv() {
-    if (!manualStateSegments.length) {
-      alert("No manual states to export.");
-      return;
-    }
+  // Returns the manual state sequence as CSV text, or null when there is nothing to export.
+  function buildStateCsv() {
+    if (!manualStateSegments.length) return null;
 
     // Pre-build a sorted BPM lookup so CSV export is O(N log N) not O(N*M).
     const bpmLookup = (() => {
@@ -1932,7 +1939,15 @@
         ].join(",");
       });
 
-    const csvContent = header + stateRows.join("\n");
+    return header + stateRows.join("\n");
+  }
+
+  function downloadStateCsv() {
+    const csvContent = buildStateCsv();
+    if (csvContent === null) {
+      alert("No manual states to export.");
+      return;
+    }
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url  = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -1975,70 +1990,134 @@
     });
   }
 
+  // Max S1→S1 interval treated as a single beat (30 BPM); longer spans break the line.
+  const MANUAL_BPM_MAX_RR_SEC = 2.0;
+  // Once the user rebuilds the BPM graph, it follows further label edits live.
+  let manualBpmActive = false;
+  let manualBpmUpdateScheduled = false;
+
+  // Beat-to-beat BPM from annotated S1 centers. Intervals that are implausibly long
+  // or span a "noisy" label are dropped and split the curve into independent runs,
+  // each smoothed separately so the kernel never bridges a gap.
   function computeBpmFromManualSegs() {
     const s1s = manualStateSegments
       .filter((s) => s.state === "S1")
       .sort((a, b) => a.start_sec - b.start_sec);
     if (s1s.length < 2) return null;
+    const noisy = manualStateSegments.filter((s) => s.state === "noisy");
 
-    const tData = [], bpmRaw = [];
+    const runs = [];
+    let run = null;
     for (let i = 0; i < s1s.length - 1; i++) {
       const t0 = (s1s[i].start_sec + s1s[i].end_sec) / 2;
       const t1 = (s1s[i + 1].start_sec + s1s[i + 1].end_sec) / 2;
       const interval = t1 - t0;
-      if (interval <= 0) continue;
-      tData.push(t1); // BPM timestamped at second beat — matches Python convention
-      bpmRaw.push(60 / interval);
+      const valid = interval > 0 && interval <= MANUAL_BPM_MAX_RR_SEC &&
+        !noisy.some((n) => n.end_sec > t0 && n.start_sec < t1);
+      if (!valid) { run = null; continue; }
+      if (!run) { run = { t: [], bpm: [] }; runs.push(run); }
+      run.t.push(t1); // BPM timestamped at second beat — matches Python convention
+      run.bpm.push(60 / interval);
     }
-    if (!tData.length) return null;
+    if (!runs.length) return null;
 
     const smoothingWindowSec = BPM_INTERVAL_PARAMS.output_smoothing_window_sec ?? 3;
     const sigma = Math.max(0.05, smoothingWindowSec / 3.0);
-    const smoothed = _gaussianKernelSmooth(tData, tData, bpmRaw, sigma);
-
     const epochMs = EPOCH.getTime();
-    return {
-      x: tData.map((t) => new Date(epochMs + t * 1000)),
-      y: smoothed,
-    };
+    const x = [], y = [], raw = [];
+    let beatCount = 0;
+    for (const r of runs) {
+      if (x.length) { x.push(null); y.push(null); raw.push(null); } // line break between runs
+      const smoothed = _gaussianKernelSmooth(r.t, r.t, r.bpm, sigma);
+      for (let i = 0; i < r.t.length; i++) {
+        x.push(new Date(epochMs + r.t[i] * 1000));
+        y.push(smoothed[i]);
+        raw.push(r.bpm[i]);
+      }
+      beatCount += r.t.length;
+    }
+    return { x, y, raw, beatCount, runCount: runs.length };
+  }
+
+  function scheduleManualBpmUpdate() {
+    if (!manualBpmActive || manualBpmUpdateScheduled) return;
+    manualBpmUpdateScheduled = true;
+    requestAnimationFrame(() => {
+      manualBpmUpdateScheduled = false;
+      if (manualBpmActive) updateManualBpmTrace();
+    });
   }
 
   function updateManualBpmTrace() {
-    if (!plotlyGraphDiv) return;
+    if (!plotlyGraphDiv) return null;
     const bpmData = computeBpmFromManualSegs();
     const existingIdx = findTraceIndexByName(MANUAL_BPM_TRACE_NAME);
     if (!bpmData) {
       if (existingIdx !== null) Plotly.deleteTraces(plotlyGraphDiv, existingIdx);
-      return;
+      return null;
     }
     if (existingIdx !== null) {
-      Plotly.restyle(plotlyGraphDiv, { x: [bpmData.x], y: [bpmData.y] }, existingIdx);
+      Plotly.restyle(
+        plotlyGraphDiv,
+        { x: [bpmData.x], y: [bpmData.y], customdata: [bpmData.raw], visible: true },
+        existingIdx
+      );
     } else {
       TRACE_AUDIENCE[MANUAL_BPM_TRACE_NAME] = "both";
       Plotly.addTraces(plotlyGraphDiv, {
         x: bpmData.x,
         y: bpmData.y,
+        customdata: bpmData.raw,
         name: MANUAL_BPM_TRACE_NAME,
         type: "scatter",
         mode: "lines+markers",
+        connectgaps: false,
         line: { color: "#00e5a0", width: 2 },
         marker: { color: "#00e5a0", size: 5 },
         yaxis: "y2",
-        hovertemplate: "%{y:.1f} BPM<extra>BPM (Manual)</extra>",
+        hovertemplate: "%{y:.1f} BPM (beat: %{customdata:.1f})<extra>BPM (Manual)</extra>",
       });
     }
+    return bpmData;
+  }
+
+  function setRebuildBpmButtonState() {
+    const btn = document.getElementById("rebuild-bpm-btn");
+    if (btn) btn.classList.toggle("active", manualBpmActive);
+  }
+
+  // Rebuild button: build the manual BPM trace from current labels and keep it live.
+  // Clicking while active hides the trace and stops live updates.
+  function toggleManualBpmRebuild() {
+    if (!plotlyGraphDiv) return;
+    if (manualBpmActive) {
+      manualBpmActive = false;
+      const idx = findTraceIndexByName(MANUAL_BPM_TRACE_NAME);
+      if (idx !== null) Plotly.deleteTraces(plotlyGraphDiv, idx);
+      setRebuildBpmButtonState();
+      console.log("Manual BPM trace hidden.");
+      return;
+    }
+    const bpmData = updateManualBpmTrace();
+    if (!bpmData) {
+      alert(`Need at least 2 consecutive S1 labels (≤${MANUAL_BPM_MAX_RR_SEC}s apart, no noisy label between) to rebuild BPM.`);
+      return;
+    }
+    manualBpmActive = true;
+    setRebuildBpmButtonState();
+    console.log(`Rebuilt BPM from ${bpmData.beatCount} manual beat interval(s) in ${bpmData.runCount} run(s).`);
   }
 
   // Import replaces the entire manual state timeline.
   function importStateCsv(csvText) {
     if (!csvText) {
       alert("No CSV content to import.");
-      return;
+      return false;
     }
     const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (lines.length <= 1) {
       alert("CSV appears to be empty or missing data rows.");
-      return;
+      return false;
     }
     const headerCells = lines[0].split(",");
     const lower = headerCells.map((h) => h.trim().toLowerCase());
@@ -2050,7 +2129,7 @@
 
     if (iStart === -1 || iEnd === -1 || iState === -1) {
       alert('CSV must contain "start_sec", "end_sec", and "state" columns.');
-      return;
+      return false;
     }
 
     const validStates = new Set(["S1", "S2", "systole", "diastole", "noisy"]);
@@ -2072,19 +2151,190 @@
 
     if (!imported.length) {
       alert("No valid state rows found in CSV.");
-      return;
+      return false;
     }
 
     const snapshotBefore = _snapshotManualEdits();
     manualStateSegments = imported.sort((a, b) => a.start_sec - b.start_sec);
     finishManualStateEdit(`Imported ${manualStateSegments.length} state segment(s) from CSV.`, false);
-    updateManualBpmTrace();
+    if (updateManualBpmTrace()) manualBpmActive = true;
+    setRebuildBpmButtonState();
     const snapshotAfter = _snapshotManualEdits();
     _recordEdit(
       { type: "snapshot", snapshot: snapshotBefore },
       { type: "snapshot", snapshot: snapshotAfter }
     );
+    return true;
   }
+
+  // --- Working CSV file (File System Access API: Chrome/Edge) ---
+  // Importing via the picker makes that file the working file; Ctrl+S writes back to it.
+  // The handle is persisted in IndexedDB per report page, so it survives reloads
+  // (the browser re-asks for write permission on the first save after a reload).
+  const FS_ACCESS_SUPPORTED = typeof window.showOpenFilePicker === "function";
+  const CSV_PICKER_TYPES = [{ description: "CSV", accept: { "text/csv": [".csv"] } }];
+  const WORKING_FILE_DB = "bpm-analyzer-working-file";
+  const WORKING_FILE_KEY = location.pathname;
+  const workingFileNameEl = document.getElementById("working-file-name");
+  let workingFileHandle = null;
+
+  function _withHandleStore(mode, fn) {
+    return new Promise((resolve, reject) => {
+      let req;
+      try {
+        req = indexedDB.open(WORKING_FILE_DB, 1);
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      req.onupgradeneeded = () => req.result.createObjectStore("handles");
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction("handles", mode);
+        const r = fn(tx.objectStore("handles"));
+        tx.oncomplete = () => { db.close(); resolve(r && r.result); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      };
+    });
+  }
+
+  function showWorkingFileName(handle) {
+    if (!workingFileNameEl) return;
+    workingFileNameEl.textContent = handle ? handle.name : "";
+    workingFileNameEl.title = handle ? `Working file (Ctrl+S saves here): ${handle.name}` : "";
+  }
+
+  function setWorkingFile(handle) {
+    workingFileHandle = handle;
+    showWorkingFileName(handle);
+    if (!handle) return;
+    _withHandleStore("readwrite", (store) => {
+      store.put(handle, WORKING_FILE_KEY);
+      store.put(handle, "__last__"); // start directory for pickers on other reports
+    }).catch((err) => console.warn("Could not persist working file handle:", err));
+  }
+
+  // Restores only the save target; labels are not re-imported automatically on reload.
+  async function restoreWorkingFile() {
+    if (!FS_ACCESS_SUPPORTED || typeof indexedDB === "undefined") return;
+    try {
+      const handle = await _withHandleStore("readonly", (store) => store.get(WORKING_FILE_KEY));
+      if (handle) {
+        workingFileHandle = handle;
+        showWorkingFileName(handle);
+      }
+    } catch (err) {
+      console.warn("Could not restore working file handle:", err);
+    }
+  }
+
+  async function _pickerStartIn() {
+    if (workingFileHandle) return workingFileHandle;
+    try {
+      return (await _withHandleStore("readonly", (store) => store.get("__last__"))) || undefined;
+    } catch (err) {
+      return undefined;
+    }
+  }
+
+  async function _ensureWritePermission(handle) {
+    const opts = { mode: "readwrite" };
+    if ((await handle.queryPermission(opts)) === "granted") return true;
+    return (await handle.requestPermission(opts)) === "granted";
+  }
+
+  // Double-clicking a file in the OS dialog lets the second click fall through to the page,
+  // which toggles whatever legend entry sits under the cursor. Ignore legend clicks while
+  // the dialog is open and briefly after it closes.
+  const FILE_DIALOG_CLICK_GUARD_MS = 700;
+  let fileDialogOpen = false;
+  let fileDialogClosedAt = 0;
+
+  function beginFileDialog() {
+    fileDialogOpen = true;
+  }
+
+  function endFileDialog() {
+    fileDialogOpen = false;
+    fileDialogClosedAt = performance.now();
+  }
+
+  function isFileDialogClickThrough() {
+    return fileDialogOpen || performance.now() - fileDialogClosedAt < FILE_DIALOG_CLICK_GUARD_MS;
+  }
+
+  // Fallback for browsers that don't fire "cancel" on the file input.
+  window.addEventListener("focus", () => {
+    if (fileDialogOpen) endFileDialog();
+  });
+
+  async function importStateCsvViaPicker() {
+    let handle;
+    try {
+      [handle] = await window.showOpenFilePicker({
+        id: "bpm-state-csv",
+        types: CSV_PICKER_TYPES,
+        startIn: await _pickerStartIn(),
+      });
+    } catch (err) {
+      if (err && err.name !== "AbortError") console.warn("Open picker failed:", err);
+      return;
+    } finally {
+      endFileDialog();
+    }
+    const file = await handle.getFile();
+    if (importStateCsv(await file.text())) setWorkingFile(handle);
+  }
+
+  // Show a short message in the working-file label, then restore the file name.
+  function flashWorkingFileStatus(text, cls) {
+    if (!workingFileNameEl) {
+      console.warn(text);
+      return;
+    }
+    workingFileNameEl.textContent = text;
+    workingFileNameEl.classList.add(cls);
+    clearTimeout(flashWorkingFileStatus._timer);
+    flashWorkingFileStatus._timer = setTimeout(() => {
+      workingFileNameEl.classList.remove(cls);
+      showWorkingFileName(workingFileHandle);
+    }, 1500);
+  }
+
+  // Ctrl+S: write straight to the working file. Never opens a file dialog;
+  // with no working file (none imported, or unsupported browser) it only reports that.
+  async function saveWorkingFile() {
+    const csvContent = buildStateCsv();
+    if (csvContent === null) {
+      flashWorkingFileStatus("Nothing to save", "error");
+      return;
+    }
+    const handle = workingFileHandle;
+    if (!FS_ACCESS_SUPPORTED || !handle) {
+      flashWorkingFileStatus(
+        FS_ACCESS_SUPPORTED ? "No working file: Import CSV first" : "Ctrl+S needs Chrome/Edge",
+        "error"
+      );
+      return;
+    }
+    try {
+      if (!(await _ensureWritePermission(handle))) {
+        flashWorkingFileStatus("Write permission denied", "error");
+        return;
+      }
+      const writable = await handle.createWritable();
+      await writable.write(csvContent);
+      await writable.close();
+      console.log(`Saved ${manualStateSegments.length} state segment(s) to ${handle.name}`);
+      flashWorkingFileStatus(`Saved ${handle.name}`, "saved");
+    } catch (err) {
+      console.error("Save failed:", err);
+      flashWorkingFileStatus(`Save failed: ${err && err.message ? err.message : err}`, "error");
+    }
+  }
+
+  restoreWorkingFile();
 
   function downloadBpmCsv() {
     const s1s = manualStateSegments
@@ -2177,16 +2427,27 @@
   if (downloadLabelsBtn) {
     downloadLabelsBtn.addEventListener("click", downloadStateCsv);
   }
+  const rebuildBpmBtn = document.getElementById("rebuild-bpm-btn");
+  if (rebuildBpmBtn) {
+    rebuildBpmBtn.addEventListener("click", toggleManualBpmRebuild);
+  }
   const downloadBpmBtn = document.getElementById("download-bpm-btn");
   if (downloadBpmBtn) {
     downloadBpmBtn.addEventListener("click", downloadBpmCsv);
   }
   if (importLabelsBtn && importLabelsInput) {
     importLabelsBtn.addEventListener("click", () => {
+      beginFileDialog();
+      if (FS_ACCESS_SUPPORTED) {
+        importStateCsvViaPicker();
+        return;
+      }
       importLabelsInput.value = "";
       importLabelsInput.click();
     });
+    importLabelsInput.addEventListener("cancel", endFileDialog);
     importLabelsInput.addEventListener("change", (event) => {
+      endFileDialog();
       const file = event && event.target && event.target.files && event.target.files[0];
       if (!file) return;
       const reader = new FileReader();
@@ -2278,6 +2539,13 @@
 
   // Keyboard shortcuts
   document.addEventListener("keydown", (e) => {
+    // Ctrl+S saves even with a form control focused (otherwise the browser's Save Page opens).
+    if ((e.ctrlKey || e.metaKey) && e.code === "KeyS" && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      saveWorkingFile();
+      return;
+    }
+
     // Don't trigger if typing in a form control
     if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT")) return;
 
@@ -2377,6 +2645,8 @@
     const graphDivs = document.querySelectorAll(".plotly-graph-div");
     if (graphDivs.length > 0) {
       plotlyGraphDiv = graphDivs[0];
+      // Keep zoom on double-click (also covers reports generated before config doubleClick=false).
+      if (plotlyGraphDiv._context) plotlyGraphDiv._context.doubleClick = false;
       refreshAxisGridButtons();
       flushPendingAxisGridUpdates();
 
@@ -2438,6 +2708,10 @@
         Plotly.Plots.resize(plotlyGraphDiv);
         positionLoopRegion();
       });
+
+      // Returning false cancels Plotly's legend toggle.
+      plotlyGraphDiv.on("plotly_legendclick", () => !isFileDialogClickThrough());
+      plotlyGraphDiv.on("plotly_legenddoubleclick", () => !isFileDialogClickThrough());
 
       plotlyGraphDiv.on("plotly_click", function (data) {
         if (data.points && data.points.length > 0) {

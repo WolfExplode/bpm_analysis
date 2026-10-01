@@ -413,6 +413,14 @@ class Plotter:
             # Load audio at a reasonable sample rate for spectrogram
             audio_data, sr = librosa.load(audio_path, sr=22050, mono=True)
 
+            # Drop the skipped lead-in so the spectrogram lines up with the (trimmed) plot time axis.
+            analysis_start_sec = max(0.0, float(param(self.params, "analysis_start_sec")))
+            if analysis_start_sec > 0.0 and audio_data is not None and audio_data.size > 0:
+                skip_n = int(round(analysis_start_sec * sr))
+                skip_n = min(skip_n, max(0, audio_data.size - 1))
+                if skip_n > 0:
+                    audio_data = audio_data[skip_n:]
+
             if audio_data is None or len(audio_data) == 0:
                 logging.warning("Could not load audio for spectrogram generation")
                 return None
@@ -579,6 +587,8 @@ class Plotter:
             "scrollZoom": True,
             "toImageButtonOptions": {"filename": plot_title, "format": "png", "scale": 2},
             "showTips": False,
+            # Double-click would autoscale back to the full view; keep the user's zoom.
+            "doubleClick": False,
         }
 
         html_requested = True if output_options is None else output_options.get("html", True)
@@ -875,6 +885,8 @@ class Plotter:
             "scrollZoom": True,
             "toImageButtonOptions": {"filename": plot_title, "format": "png", "scale": 2},
             "showTips": False,
+            # Double-click would autoscale back to the full view; keep the user's zoom.
+            "doubleClick": False,
         }
         plotly_html = self.fig.to_html(config=plot_config, full_html=False, include_plotlyjs="cdn")
         # If CDN is unavailable, fall back to a local plotly.min.js beside the HTML (if present).

@@ -110,7 +110,7 @@ class BPMApp:
         )
         self.file_label = ttk.Label(file_frame, text=hint, wraplength=450)
         self.file_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        browse_btn = ttk.Button(file_frame, text="Browse", command=self.select_file, bootstyle=INFO)
+        browse_btn = ttkb.Button(file_frame, text="Browse", command=self.select_file, bootstyle=INFO)
         browse_btn.pack(side=tk.RIGHT, padx=5)
         if self._dnd_available:
             self._register_file_drop_target(file_frame)
@@ -154,6 +154,16 @@ class BPMApp:
         )
         channel_combo.grid(row=3, column=1, sticky=tk.W, pady=(4, 0), padx=(6, 0))
         channel_combo.bind("<<ComboboxSelected>>", lambda e: self.save_ui_settings())
+
+        # Skip a noisy lead-in: analysis starts this many seconds into the recording.
+        ttk.Label(param_frame, text="Skip first N seconds (noisy start):").grid(
+            row=4, column=0, sticky=tk.W, pady=(4, 0)
+        )
+        self.analysis_start_sec_entry = ttk.Entry(param_frame, width=10)
+        self.analysis_start_sec_entry.insert(0, "0")
+        self.analysis_start_sec_entry.grid(row=4, column=1, sticky=tk.W, padx=5, pady=(4, 0))
+        self.analysis_start_sec_entry.bind('<KeyRelease>', lambda e: self.save_ui_settings())
+        self.analysis_start_sec_entry.bind('<FocusOut>', lambda e: self.save_ui_settings())
 
         # Output file options (defaults from config only)
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
@@ -214,9 +224,9 @@ class BPMApp:
         # Select All/None buttons
         btn_frame_output = ttk.Frame(output_frame)
         btn_frame_output.grid(row=half + 3, column=0, columnspan=2, pady=(10, 0))
-        ttk.Button(btn_frame_output, text="Select All", command=self.select_all_outputs,
+        ttkb.Button(btn_frame_output, text="Select All", command=self.select_all_outputs,
                   bootstyle=SECONDARY).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(btn_frame_output, text="Select None", command=self.select_none_outputs,
+        ttkb.Button(btn_frame_output, text="Select None", command=self.select_none_outputs,
                   bootstyle=SECONDARY).grid(row=0, column=1)
 
         # Debugging options
@@ -291,9 +301,9 @@ class BPMApp:
         # Action Buttons
         btn_frame = ttk.Frame(main_frame)
         btn_frame.grid(row=4, column=0, sticky="ew", pady=20)
-        self.analyze_btn = ttk.Button(btn_frame, text="Analyze", command=self.start_analysis_thread, bootstyle=SUCCESS, state=tk.DISABLED)
+        self.analyze_btn = ttkb.Button(btn_frame, text="Analyze", command=self.start_analysis_thread, bootstyle=SUCCESS, state=tk.DISABLED)
         self.analyze_btn.pack(side=tk.RIGHT, padx=5)
-        self.open_html_btn = ttk.Button(btn_frame, text="Open Last HTML Report", command=self.open_last_html, bootstyle=INFO)
+        self.open_html_btn = ttkb.Button(btn_frame, text="Open Last HTML Report", command=self.open_last_html, bootstyle=INFO)
         self.open_html_btn.pack(side=tk.RIGHT, padx=5)
 
         # Status Bar
@@ -534,6 +544,7 @@ class BPMApp:
             label = self.channel_mode.get()
             settings["channel_mode"] = _CHANNEL_MODE_VALUE_BY_LABEL.get(label, CHANNEL_MODE_MIXED)
             settings['starting_bpm'] = self.bpm_entry.get().strip()
+            settings['analysis_start_sec'] = self.analysis_start_sec_entry.get().strip()
             settings['last_files'] = self.current_files if self.current_files else []
             with open(self.settings_file, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)
@@ -551,6 +562,9 @@ class BPMApp:
             if settings.get('starting_bpm'):
                 self.bpm_entry.delete(0, tk.END)
                 self.bpm_entry.insert(0, settings['starting_bpm'])
+            if settings.get('analysis_start_sec'):
+                self.analysis_start_sec_entry.delete(0, tk.END)
+                self.analysis_start_sec_entry.insert(0, str(settings['analysis_start_sec']))
             if "channel_mode" in settings:
                 mode = normalize_channel_mode(settings["channel_mode"])
                 self.channel_mode.set(_CHANNEL_MODE_LABEL_BY_VALUE.get(mode, _CHANNEL_MODE_LABEL_BY_VALUE[CHANNEL_MODE_MIXED]))
@@ -759,6 +773,12 @@ class BPMApp:
             self.params["general_console_logging"] = bool(general_console_logging)
             self.params["use_springer_algorithm"] = bool(self.use_springer_algorithm.get())
             self.params["auto_switch_algorithm"] = bool(self.auto_switch_algorithm.get())
+            try:
+                start_sec_input = self.analysis_start_sec_entry.get().strip()
+                analysis_start_sec = float(start_sec_input) if start_sec_input else 0.0
+            except (tk.TclError, ValueError, TypeError):
+                analysis_start_sec = 0.0
+            self.params["analysis_start_sec"] = max(0.0, analysis_start_sec)
 
             output_options = self.get_output_options()
 

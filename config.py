@@ -35,6 +35,7 @@ DEFAULT_PARAMS = {
 
     "downsample_factor": 300,     # Factor to reduce sample rate. Higher = faster processing, less detail.
     "save_filtered_wav": True,    # If True, saves *_filtered_debug.wav and *_filtered_inverse_debug.wav when output_options.filtered_wav is True.
+    "analysis_start_sec": 0.0,    # Discard this many seconds from the start of the recording before any processing (e.g. skip a noisy lead-in). 0 = use the full file.
 
     # Main preprocessing: target sample rate and bandpass (single wide band before envelope); typical PCG range for S1/S2.
     "preprocess_target_sample_rate": 600,   # Resample to this Hz for analysis; lower = faster, less detail.
@@ -403,6 +404,7 @@ DEFAULT_UI_SETTINGS = {
     "optimize_long_plots": False,
     "cli_batch_jobs": 1,
     "auto_close_when_done": False,
+    "analysis_start_sec": 0.0,
 }
 
 def param(params: dict, key: str):

@@ -115,4 +115,7 @@ def batch_cli_defaults_from_ui_settings(settings: Optional[Dict[str, Any]]) -> D
         "auto_switch_algorithm": bool(
             s.get("auto_switch_algorithm", DEFAULT_PARAMS["auto_switch_algorithm"])
         ),
+        "analysis_start_sec": float(
+            s.get("analysis_start_sec") or DEFAULT_PARAMS["analysis_start_sec"]
+        ),
     }

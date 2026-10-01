@@ -474,6 +474,7 @@ def preprocess_audio(
 
     save_debug_file = params["save_filtered_wav"] and output_options.get("filtered_wav", True)
     target_sample_rate = int(param(params, "preprocess_target_sample_rate"))
+    analysis_start_sec = max(0.0, float(param(params, "analysis_start_sec")))
 
     t_preprocess = time.perf_counter()
     t_step = time.perf_counter()
@@ -483,6 +484,16 @@ def preprocess_audio(
     except Exception as e:
         logging.error("Librosa failed to load file: %s", e)
         raise
+
+    if analysis_start_sec > 0.0:
+        skip_n = int(round(analysis_start_sec * new_sample_rate))
+        skip_n = min(skip_n, max(0, audio_downsampled.size - 1))
+        if skip_n > 0:
+            audio_downsampled = audio_downsampled[skip_n:]
+            logging.info(
+                "Skipping first %.2f s of recording (analysis_start_sec): dropped %d samples @ %d Hz.",
+                analysis_start_sec, skip_n, new_sample_rate,
+            )
     _dur_min = (float(audio_downsampled.size) / float(new_sample_rate)) / 60.0 if new_sample_rate else 0.0
     t_step = _log_preprocess_elapsed(
         f"librosa.load @ analysis rate ({new_sample_rate} Hz), {audio_downsampled.size} samples (~{_dur_min:.1f} min)",
@@ -530,6 +541,11 @@ def preprocess_audio(
                 native_sr_int = int(round(float(native_sr)))
                 load_label = f"inverse-band working ({native_sr_int} Hz, min {min_inv_sr})"
             audio_native = np.asarray(audio_native, dtype=np.float64)
+            if analysis_start_sec > 0.0 and native_sr_int:
+                skip_n_native = int(round(analysis_start_sec * native_sr_int))
+                skip_n_native = min(skip_n_native, max(0, audio_native.size - 1))
+                if skip_n_native > 0:
+                    audio_native = audio_native[skip_n_native:]
             _nat_min = (float(audio_native.size) / float(native_sr_int)) / 60.0 if native_sr_int else 0.0
             _log_preprocess_elapsed(
                 f"inverse-band: librosa.load @ {load_label}, {audio_native.size} samples (~{_nat_min:.1f} min)",

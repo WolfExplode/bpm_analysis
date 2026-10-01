@@ -195,6 +195,14 @@ def compute_fft_profiles(
         audio_raw, full_sr = librosa.load(audio_path, sr=target_sr, mono=True)
     else:
         audio_raw, full_sr = librosa.load(audio_path, sr=None, mono=True)
+
+    analysis_start_sec = max(0.0, float(param(params, "analysis_start_sec")))
+    if analysis_start_sec > 0.0 and audio_raw.size > 0:
+        skip_n = int(round(analysis_start_sec * full_sr))
+        skip_n = min(skip_n, max(0, audio_raw.size - 1))
+        if skip_n > 0:
+            audio_raw = audio_raw[skip_n:]
+
     if audio_raw.size == 0:
         logging.warning("Empty audio file for FFT profiles.")
         empty = np.array([])

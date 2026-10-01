@@ -190,6 +190,30 @@
             border-color: #00d4ff;
         }
 
+        #working-file-name {
+            color: #8a8aa0;
+            font-size: 11px;
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            transition: color 0.3s;
+        }
+
+        #working-file-name.saved {
+            color: #00e5a0;
+        }
+
+        #working-file-name.error {
+            color: #ff6b6b;
+        }
+
+        #labeling-controls button.active {
+            background: #00e5a033;
+            border-color: #00e5a0;
+            color: #00e5a0;
+        }
+
         /* Timeline scrubber bar */
         #timeline-scrubber {
             position: relative;
@@ -562,10 +586,12 @@
                     <button id="apply-label-btn" title="Place selected state centered on playhead">Apply</button>
                     <button id="flip-labels-right-btn" title="Flip S1↔S2 states to the right of the playhead">Flip Right</button>
                     <button id="regenerate-states-btn" title="Show auto labels unchanged until first edit; then fill gaps between S1/S2 anchors with systole/diastole">Regenerate</button>
+                    <button id="rebuild-bpm-btn" title="Rebuild the heart rate graph from the manually annotated S1 labels (updates live after further edits; click again while active to hide)">Rebuild BPM</button>
                     <button id="download-labels-btn" title="Export manual state sequence as CSV">Download CSV</button>
                     <button id="download-bpm-btn" title="Export S1-based BPM/time as CSV (uses manual BPM if available)">Download BPM CSV</button>
                     <button id="import-labels-btn" title="Import manual state sequence CSV (replaces current)">Import CSV</button>
                     <input type="file" id="import-labels-input" accept=".csv" style="display:none" />
+                    <span id="working-file-name"></span>
                 </div>
                 <span id="total-time">%%TOTAL_TIME%%</span>
             </div>
@@ -625,7 +651,8 @@
         <kbd>1</kbd>/<kbd>2</kbd> Apply S1/S2 &nbsp;
         <kbd>X</kbd>/<kbd>Del</kbd> Remove state &nbsp;
         <kbd>Ctrl+Z</kbd> Undo &nbsp;
-        <kbd>Ctrl+Shift+Z</kbd> Redo
+        <kbd>Ctrl+Shift+Z</kbd> Redo &nbsp;
+        <kbd>Ctrl+S</kbd> Save CSV
     </div>
 
 %%HTML_INTERACTIVE_SCRIPTS%%

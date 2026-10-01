@@ -105,6 +105,13 @@ def _run_springer_mode(
     audio_raw, native_fs = sf.read(wav_file_path, always_2d=False)
     audio_raw = np.asarray(audio_raw, dtype=np.float64).flatten()
 
+    analysis_start_sec = max(0.0, float(param(params, "analysis_start_sec")))
+    if analysis_start_sec > 0.0:
+        skip_n = int(round(analysis_start_sec * native_fs))
+        skip_n = min(skip_n, max(0, audio_raw.size - 1))
+        if skip_n > 0:
+            audio_raw = audio_raw[skip_n:]
+
     model = load_springer_model(model_path)
     opts = default_springer_hsmm_options()
     assigned_states_native, _ = run_springer_segmentation_algorithm(

@@ -195,6 +195,14 @@ def main(argv: List[str] | None = None) -> int:
         help="Never retry with the other algorithm (default behavior).",
     )
     parser.add_argument(
+        "--start-sec",
+        dest="analysis_start_sec",
+        type=float,
+        default=_SUP,
+        help="Skip this many seconds from the start of each recording before analysis "
+        "(e.g. for a noisy lead-in); default: ui_settings.json analysis_start_sec.",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Root log level WARNING (ignores ui_settings.json general_console_logging).",
@@ -405,6 +413,10 @@ def main(argv: List[str] | None = None) -> int:
     if hasattr(ns, "auto_switch_algorithm"):
         auto_switch_algorithm = bool(ns.auto_switch_algorithm)
 
+    analysis_start_sec = float(merged["analysis_start_sec"])
+    if hasattr(ns, "analysis_start_sec"):
+        analysis_start_sec = float(ns.analysis_start_sec)
+
     opts = dict(merged["output_options"])
     overrides = [
         ("html", "html_ex"),
@@ -443,6 +455,7 @@ def main(argv: List[str] | None = None) -> int:
     params["use_springer_algorithm"] = use_springer_algorithm
     params["springer_model"] = springer_model
     params["auto_switch_algorithm"] = auto_switch_algorithm
+    params["analysis_start_sec"] = max(0.0, analysis_start_sec)
 
     summary = run_batch_parallel(
         inputs,
