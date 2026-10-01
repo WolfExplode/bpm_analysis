@@ -21,7 +21,8 @@ _This script includes a spectrogram view for debugging but it is very slow to ge
 ![brave_ykQQ36DQv](https://github.com/user-attachments/assets/7a10acc5-0208-455a-9a3a-0300e5a4d722)
 
 ## Configuration
-All tunable parameters for the `pipeline.py` engine are located in `config.py`
+All tunable parameters for the analysis engine (`engine.py`) are located in `config.py`; output toggles and GUI defaults are in `app_settings.py`.
+The engine is pure computation (WAV in, beats/states/metrics out); `pipeline.py` wraps it to write plots and reports, and `gui.py` / `batch_cli.py` sit on top of that. `tests/test_engine_boundary.py` keeps UI/output code out of the engine.
 The parameters are organized into logical categories for easier navigation and tuning.
 - Multi-Format Audio Support: Accepts most common media files such as WAV, MP3, M4A, MOV, by converting them to .wav format for analysis.
 

@@ -1,6 +1,7 @@
 """Config sanity + validate_params behavior."""
 import logging
 
+import app_settings
 import config
 
 
@@ -12,8 +13,8 @@ def test_default_params_is_dict_of_known_keys():
 
 
 def test_default_output_options_are_booleans():
-    assert isinstance(config.DEFAULT_OUTPUT_OPTIONS, dict)
-    assert all(isinstance(v, bool) for v in config.DEFAULT_OUTPUT_OPTIONS.values())
+    assert isinstance(app_settings.DEFAULT_OUTPUT_OPTIONS, dict)
+    assert all(isinstance(v, bool) for v in app_settings.DEFAULT_OUTPUT_OPTIONS.values())
 
 
 def test_bpm_bounds_are_ordered():

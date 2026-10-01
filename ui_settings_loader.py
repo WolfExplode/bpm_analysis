@@ -10,8 +10,9 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from config import DEFAULT_OUTPUT_OPTIONS, DEFAULT_PARAMS
-from audio_preprocessing import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
+from app_settings import DEFAULT_OUTPUT_OPTIONS
+from config import DEFAULT_PARAMS
+from audio_io import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
 
 # Must match gui.OUTPUT_FILE_OPTIONS (first element of each tuple).
 UI_SETTINGS_OUTPUT_OPTION_KEYS = (

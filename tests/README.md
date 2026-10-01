@@ -15,7 +15,9 @@ python -m pytest tests/ -q
 
 | File | Module under test | What it pins down |
 |------|-------------------|-------------------|
-| `test_config.py`            | `config`            | param/output schema, `validate_params` warns-once-per-unknown-key |
+| `test_config.py`            | `config`, `app_settings` | param/output schema, `validate_params` warns-once-per-unknown-key |
+| `test_engine.py`            | `engine`            | auto-switch-algorithm decision (switch on pass / fewer reasons, keep on tie) |
+| `test_engine_boundary.py`   | engine modules      | engine modules import only engine modules (AST, incl. local imports) and importing `engine` loads no UI/output module or package |
 | `test_time_utils.py`        | `time_utils`        | fixed-epoch datetime, dense grid edge cases, linear raster interp/extrap |
 | `test_peak_utils.py`        | `peak_utils`        | `PeakType` classification, prominence math, **scalar vs vectorized cache parity** |
 | `test_peak_label_scores.py` | `peak_label_scores` | label-mass clipping, S2-hint logic, final-confidence extraction |
@@ -26,7 +28,7 @@ python -m pytest tests/ -q
 | `test_ui_settings_loader.py`| `ui_settings_loader`  | legacy-key migration, `ui_settings.json` load (missing/malformed/non-dict), starting-BPM parsing, CLI defaulting from UI settings |
 | `test_console_logging.py`   | `console_logging`     | Kaleido/choreographer root-noise filter branches, unicode-safe stream reconfigure (missing attr / raises) |
 | `test_fft_profiles.py`      | `fft_profiles`        | pairing-confidence lookup, S1/S2 index collection & top-N selection, envelope->full-rate index scaling, neutral-band alignment, frequency-separation guards, weighted aggregation across files |
-| `test_audio_preprocessing.py` | `audio_preprocessing` | channel-mode validation, centered moving average (bit-exact parity vs pandas rolling), sparse-trough interpolation, rolling-quantile helper |
+| `test_audio_preprocessing.py` | `audio_preprocessing`, `audio_io` | channel-mode validation, centered moving average (bit-exact parity vs pandas rolling), sparse-trough interpolation, rolling-quantile helper |
 | `test_batch_runner.py`      | `batch_runner`        | filename BPM-tag parsing (tier priority + rightmost match), WAV-preferring dedupe, working-WAV resolution (reuse/copy/convert branches) |
 | `test_plotting_helpers.py`  | `plotting`            | epoch-seconds->datetime64 mapping, `</script>` JSON escaping, measured/expected systole & diastole curve extraction, systolic-shift alignment |
 
@@ -44,5 +46,5 @@ labelled recordings.
 Deliberately not covered: `gui.py` and `main.py` (no independently testable
 logic — event wiring / thin entry point), and anything that only becomes
 meaningful with real or synthetic audio, Plotly figure objects, or a full
-`AnalysisState` (most of `classifier.py`, `pipeline.py`, and the Plotly/HTML
+`AnalysisState` (most of `classifier.py`, `engine.py`, `pipeline.py`, and the Plotly/HTML
 figure-building methods on `plotting.Plotter`).

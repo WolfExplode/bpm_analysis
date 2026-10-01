@@ -1,17 +1,19 @@
-"""audio_preprocessing: channel-mode validation and the numeric rolling-window helpers."""
+"""audio_preprocessing numeric rolling-window helpers + audio_io channel-mode validation."""
 import numpy as np
 import pandas as pd
 import pytest
 
-from audio_preprocessing import (
+from audio_io import (
     CHANNEL_MODE_ALL,
     CHANNEL_MODE_LEFT,
     CHANNEL_MODE_MIXED,
     CHANNEL_MODE_RIGHT,
+    normalize_channel_mode,
+)
+from audio_preprocessing import (
     _centered_moving_average,
     _dense_troughs_linear_interpolate,
     _rolling_quantile_center_bfill_ffill,
-    normalize_channel_mode,
 )
 
 

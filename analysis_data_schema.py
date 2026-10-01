@@ -103,7 +103,7 @@ class AnalysisData(TypedDict, total=False):
 
     algorithm_used: str
     """Which algorithm actually produced this result: "native" or "springer". Set by
-    pipeline._run_algorithm_pass; may differ from the "use_springer_algorithm" param if
+    engine._run_algorithm_pass; may differ from the "use_springer_algorithm" param if
     auto_switch_algorithm retried with the other algorithm."""
 
     algorithm_switch_reason: Optional[str]

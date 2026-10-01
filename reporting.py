@@ -148,7 +148,7 @@ class ReportGenerator:
         f.write(f"*Generated on: {timestamp_str()}*\n\n")
 
     def _write_algorithm_switch_note(self, f, algorithm_switch_reason):
-        """Writes a note if auto_switch_algorithm retried with the other algorithm (see pipeline._run_algorithm_pass)."""
+        """Writes a note if auto_switch_algorithm retried with the other algorithm (see engine._run_algorithm_pass)."""
         if not algorithm_switch_reason:
             return
         f.write(f"## 🔁 Auto-Switch\n\n{algorithm_switch_reason}\n\n")

@@ -1,47 +1,35 @@
+"""Output layer: runs the analysis engine on one WAV and writes the requested artifacts.
+
+The algorithm itself lives in engine.py (pure computation, no file output). This
+module decides what to render and where — Plotly HTML/PNG/CSV per pass, Markdown
+summary/debug reports, FFT profile HTML, and debug WAVs — driven by output_options.
+"""
 import os
 import logging
 import time
+from typing import Dict, Optional, Callable
+
 import numpy as np
-import pandas as pd
-from typing import Dict, Optional, Tuple, Any, Callable
 
-from scipy.interpolate import interp1d
-
-from audio_preprocessing import preprocess_audio
-from noise_segments import compute_noise_event_segments
-from config import DEFAULT_OUTPUT_OPTIONS, validate_params
+from app_settings import DEFAULT_OUTPUT_OPTIONS
+from audio_io import write_peak_normalized_debug_wav, write_peak_normalized_wav_native_rate
+from config import param
+from engine import STAGE_PASS1, STAGE_PASS2, STAGE_PREPROCESSED, run_analysis
 from file_io import output_stem_from_path
-from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
 from plotting import Plotter, prewarm_kaleido_png_export
 from reporting import ReportGenerator
-from classifier import PeakClassifier
-from hrv import (
-    calculate_bpm_series,
-    calculate_bpm_series_from_s1_state_labels,
-    compute_pass1_bpm_curve,
-    filter_instant_bpm_mad,
-    find_recovery_phase,
-    smooth_bpm_series_from_instant,
-    find_major_hr_inclines,
-    find_major_hr_declines,
-    calculate_hrr,
-    find_peak_recovery_rate,
-    find_peak_exertion_rate,
-    calculate_windowed_hrv,
-    calculate_global_hrv_frequency,
-    detect_bpm_failure,
-)
 from fft_profiles import (
     compute_fft_profiles,
     compute_frequency_separation,
     save_fft_profiles_html,
 )
-from correction import run_pass3_correction
-from config import param
 
 # Recordings longer than this skip PNG export (Kaleido), but still allow HTML/CSV/etc.
 # Independent of optimize_long_plots (that flag only trims heavy traces in Plotter when plots are produced).
 LONG_RECORDING_DISABLE_PNG_SEC = 3600.0
+
+# Sample rate of the bandpass debug WAV embedded for HTML playback.
+DEBUG_WAV_SAMPLE_RATE = 10000
 
 
 class _NoisyAlgorithmLogFilter(logging.Filter):
@@ -67,559 +55,31 @@ class _NoisyAlgorithmLogFilter(logging.Filter):
         return not any(s in msg for s in self._NOISY_SUBSTRINGS)
 
 
-def _run_springer_mode(
-    wav_file_path: str,
-    algorithm_envelope: np.ndarray,
-    sample_rate: int,
-    params: Dict,
-) -> Tuple[np.ndarray, np.ndarray, Dict]:
-    """
-    Replace native passes 1-3 with the Springer 2015 pretrained HSMM segmenter.
-    Loads raw audio, resamples to sample_rate, runs the HSMM, converts per-sample
-    state assignments (1=S1,2=systole,3=S2,4=diastole) to pass3_state_boundaries and
-    a peak list, then returns (s1_peaks, all_raw_peaks, analysis_data).
-    """
-    import sys
-    import soundfile as sf
+def _debug_wav_writer(original_file_path: str, output_directory: str):
+    """Build an engine debug_audio_sink that writes the filtered debug WAVs next to the outputs."""
+    base_name = output_stem_from_path(original_file_path)
 
-    _SPRINGER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "springer2015")
-    if _SPRINGER_DIR not in sys.path:
-        sys.path.insert(0, _SPRINGER_DIR)
-
-    from springer_hsmm.run import run_springer_segmentation_algorithm  # noqa: PLC0415
-    from springer_hsmm.model_io import load_springer_model              # noqa: PLC0415
-    from springer_hsmm.options import default_springer_hsmm_options     # noqa: PLC0415
-
-    model_file = param(params, "springer_model") or "cristhian_potes_model.npz"
-    model_path = os.path.join(_SPRINGER_DIR, model_file)
-    if not os.path.isfile(model_path):
-        raise FileNotFoundError(
-            f"Springer model not found: {model_path}. "
-            f"Set springer_model in config.py to a .npz file in springer2015/."
-        )
-
-    # Run springer at native sample rate — it does a 25-400 Hz bandpass internally,
-    # so the audio must be at ≥800 Hz to avoid Nyquist truncation of that filter.
-    # After decoding, nearest-neighbor resample the integer state labels to the
-    # pipeline's sample_rate (600 Hz) so all downstream sample indices match.
-    audio_raw, native_fs = sf.read(wav_file_path, always_2d=False)
-    audio_raw = np.asarray(audio_raw, dtype=np.float64).flatten()
-
-    analysis_start_sec = max(0.0, float(param(params, "analysis_start_sec")))
-    if analysis_start_sec > 0.0:
-        skip_n = int(round(analysis_start_sec * native_fs))
-        skip_n = min(skip_n, max(0, audio_raw.size - 1))
-        if skip_n > 0:
-            audio_raw = audio_raw[skip_n:]
-
-    model = load_springer_model(model_path)
-    opts = default_springer_hsmm_options()
-    assigned_states_native, _ = run_springer_segmentation_algorithm(
-        audio_raw, float(native_fs),
-        model["B_matrix"], model["pi_vector"], model["total_obs_distribution"],
-        opts,
-    )
-    assigned_states_native = np.asarray(assigned_states_native, dtype=np.int32)
-
-    # Nearest-neighbor resample integer state labels from native_fs to sample_rate.
-    env_len = len(algorithm_envelope)
-    if int(native_fs) == int(sample_rate):
-        assigned_states = assigned_states_native[:env_len] if len(assigned_states_native) > env_len else assigned_states_native
-    else:
-        src_indices = np.arange(len(assigned_states_native), dtype=np.float64)
-        tgt_indices = np.linspace(0, len(assigned_states_native) - 1, env_len)
-        nn_idx = np.clip(np.round(tgt_indices).astype(np.int64), 0, len(assigned_states_native) - 1)
-        assigned_states = assigned_states_native[nn_idx]
-    assigned_states = np.asarray(assigned_states, dtype=np.int32)
-
-    # Final length guard.
-    if len(assigned_states) != env_len:
-        pad = int(assigned_states[-1]) if len(assigned_states) > 0 else 4
-        if len(assigned_states) < env_len:
-            assigned_states = np.concatenate(
-                [assigned_states, np.full(env_len - len(assigned_states), pad, dtype=np.int32)]
-            )
-        else:
-            assigned_states = assigned_states[:env_len]
-
-    _CODE_TO_NAME = {1: "S1", 2: "systole", 3: "S2", 4: "diastole"}
-    _STATE_ENCODING = {"S1": 1, "systole": 2, "S2": 3, "diastole": 4}
-
-    state_boundaries = []
-    s1_peaks_list = []
-    i = 0
-    while i < len(assigned_states):
-        code = int(assigned_states[i])
-        j = i
-        while j < len(assigned_states) and int(assigned_states[j]) == code:
-            j += 1
-        name = _CODE_TO_NAME.get(code)
-        if name is not None:
-            mid = (i + j) // 2
-            meta: Dict = {"s1": mid} if name == "S1" else {}
-            state_boundaries.append((i, j, name, meta))
-            if name == "S1":
-                s1_peaks_list.append(mid)
-        i = j
-
-    s1_peaks = np.asarray(s1_peaks_list, dtype=np.int64)
-    logging.info(
-        "Springer: %d S1 peaks, %d boundary segments, %.1f s at %d Hz",
-        len(s1_peaks), len(state_boundaries),
-        len(assigned_states) / float(sample_rate), sample_rate,
-    )
-    analysis_data: Dict = {
-        "pass3_state_labels": assigned_states,
-        "pass3_state_labels_encoding": _STATE_ENCODING,
-        "pass3_state_boundaries": state_boundaries,
-        "pass3_state_boundaries_before": state_boundaries,
-    }
-    return s1_peaks, np.array([], dtype=np.int64), analysis_data
-
-
-def _run_pass1(audio_envelope: np.ndarray, sample_rate: int, params: Dict,
-               noise_floor: pd.Series, troughs: np.ndarray,
-               start_bpm_hint: Optional[float],
-               ) -> Tuple[float, Optional[float], Optional[float], np.ndarray, Optional[Dict], Dict]:
-    """
-    Runs pass 1 (high-confidence anchor-finding) to estimate global BPM and find the recovery phase.
-    Returns (start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, pass1_bpm, pass1_analysis_data).
-    pass1_bpm is the canonical curve (outlier-filtered + light Gaussian smoothing) used for prior and all plots, or None if insufficient data.
-    """
-    logging.info("--- STAGE 2: Pass 1 — high-confidence anchor beats ---")
-    params_pass1 = params.copy()
-    params_pass1["pairing_confidence_threshold"] = param(params, "pass1_pairing_confidence_threshold")
-
-    classifier = PeakClassifier(audio_envelope, sample_rate, params_pass1, start_bpm_hint,
-                               noise_floor, troughs, None, None)
-    anchor_beats, _, pass1_analysis_data = classifier.classify_peaks()
-
-    global_bpm_estimate = None
-    if len(anchor_beats) >= 10:
-        median_rr_sec = np.median(np.diff(anchor_beats) / sample_rate)
-        if median_rr_sec > 0:
-            global_bpm_estimate = 60.0 / median_rr_sec
-            logging.info("Automatically determined Global BPM Estimate: %.1f BPM", global_bpm_estimate)
-
-    start_bpm = start_bpm_hint or global_bpm_estimate or 80.0
-
-    # Canonical pass 1 BPM curve (outlier filter + light Gaussian smoothing) — same data used for prior and all plots
-    pass1_bpm = compute_pass1_bpm_curve(anchor_beats, sample_rate, params)
-    if pass1_bpm is not None:
-        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(
-            np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
-            np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
-            params,
-        )
-    else:
-        pass1_fallback_series, pass1_fallback_times, _ = calculate_bpm_series(anchor_beats, sample_rate, params)
-        peak_bpm_time_sec, recovery_end_time_sec = find_recovery_phase(
-            np.asarray(pass1_fallback_series.values, dtype=np.float64),
-            np.asarray(pass1_fallback_times, dtype=np.float64),
-            params,
-        )
-
-    return start_bpm, peak_bpm_time_sec, recovery_end_time_sec, anchor_beats, pass1_bpm, pass1_analysis_data
-
-
-def _build_pass1_bpm_prior(
-    pass1_bpm_times: np.ndarray,
-    pass1_bpm_values: np.ndarray,
-) -> Optional[Callable[[float], float]]:
-    """Build a time -> BPM callable from the pass 1 BPM curve for use as a time-varying prior. Returns None if insufficient data."""
-    if pass1_bpm_times is None or pass1_bpm_values is None or len(pass1_bpm_times) < 2 or len(pass1_bpm_values) < 2:
-        return None
-    times = np.asarray(pass1_bpm_times, dtype=float)
-    values = np.asarray(pass1_bpm_values, dtype=float)
-    if len(times) != len(values) or len(times) < 2:
-        return None
-    try:
-        interp = interp1d(
-            times,
-            values,
-            kind="linear",
-            bounds_error=False,
-            fill_value=(float(values[0]), float(values[-1])),
-        )
-        return lambda t_sec: float(interp(t_sec))
-    except Exception:
-        return None
-
-
-def _refine_and_correct_peaks(
-    s1_peaks: np.ndarray,
-    all_raw_peaks: np.ndarray,
-    analysis_data: Dict,
-    audio_envelope: np.ndarray,
-    sample_rate: int,
-    params: Dict,
-    wav_file_path: Optional[str] = None,
-) -> Tuple[np.ndarray, Dict]:
-    """Pass 3: thin wrapper — delegates to correction.run_pass3_correction."""
-    return run_pass3_correction(
-        s1_peaks, all_raw_peaks, analysis_data,
-        audio_envelope, sample_rate, params, wav_file_path,
-    )
-
-
-def _calculate_metrics_from_peaks(peaks: np.ndarray, sample_rate: int, params: Dict) -> Dict:
-    """Calculates BPM, HRV, and slope metrics from a peak list. Used by any pass (pass 2, pass 3, etc.)."""
-    metrics = {}
-    smoothed_bpm, bpm_times, instant_bpm = calculate_bpm_series(peaks, sample_rate, params)
-    # Peak-derived raw series; overwritten by _apply_pass3_state_timeline_bpm below when
-    # pass3_state_labels is available (state-timeline BPM is the more accurate final source,
-    # used by both native and Springer paths). Kept here as the fallback / native-only case.
-    metrics['bpm_times_raw'] = bpm_times
-    metrics['instant_bpm_raw'] = instant_bpm
-    metrics['major_inclines'] = find_major_hr_inclines(smoothed_bpm)
-    metrics['major_declines'] = find_major_hr_declines(smoothed_bpm)
-    metrics['hrr_stats'] = calculate_hrr(smoothed_bpm)
-    metrics['peak_recovery_stats'] = find_peak_recovery_rate(smoothed_bpm)
-    metrics['peak_exertion_stats'] = find_peak_exertion_rate(smoothed_bpm)
-    metrics['windowed_hrv_df'] = calculate_windowed_hrv(peaks, sample_rate, params)
-    if param(params, "enable_hrv_frequency_domain"):
-        metrics['hrv_global_freq'] = calculate_global_hrv_frequency(peaks, sample_rate, params)
-    else:
-        metrics['hrv_global_freq'] = None
-
-    hrv_summary_stats = {}
-    if smoothed_bpm is not None and not getattr(smoothed_bpm, "empty", True):
-        hrv_summary_stats['avg_bpm'] = smoothed_bpm.mean()
-        hrv_summary_stats['min_bpm'] = smoothed_bpm.min()
-        hrv_summary_stats['max_bpm'] = smoothed_bpm.max()
-    if not metrics['windowed_hrv_df'].empty:
-        hrv_summary_stats['avg_rmssdc'] = metrics['windowed_hrv_df']['rmssdc'].mean()
-        hrv_summary_stats['avg_sdnn'] = metrics['windowed_hrv_df']['sdnn'].mean()
-        if param(params, "enable_hrv_frequency_domain") and "lf_hf_ratio" in metrics['windowed_hrv_df'].columns:
-            wdf = metrics['windowed_hrv_df']
-            hrv_summary_stats['avg_lf_power'] = wdf['lf_power'].mean()
-            hrv_summary_stats['avg_hf_power'] = wdf['hf_power'].mean()
-            avg_lf_hf = wdf['lf_hf_ratio'].mean()
-            hrv_summary_stats['avg_lf_hf_ratio'] = avg_lf_hf
-            if np.isnan(avg_lf_hf):
-                valid = wdf['lf_hf_ratio'].notna().sum()
-                logging.warning(
-                    "Avg. LF/HF (windowed) is NaN: %d/%d windows had valid lf_hf_ratio. See earlier logs for Lomb-Scargle failures.",
-                    int(valid), len(wdf),
+    def _sink(kind: str, signal: np.ndarray, sample_rate: int) -> None:
+        if kind == "filtered":
+            path = os.path.join(output_directory, f"{base_name}_filtered_debug.wav")
+            try:
+                write_peak_normalized_debug_wav(path, signal, sample_rate, DEBUG_WAV_SAMPLE_RATE)
+                logging.info(
+                    "Saved filtered audio WAV debug file (%s, %d Hz, int16) for HTML playback.",
+                    path,
+                    DEBUG_WAV_SAMPLE_RATE,
                 )
-    if metrics.get('hrv_global_freq') is not None:
-        hrv_summary_stats['global_freq'] = metrics['hrv_global_freq']
-    metrics['hrv_summary'] = hrv_summary_stats
+            except Exception as e:
+                logging.error("Failed to write filtered debug WAV file %s: %s", path, e)
+        elif kind == "filtered_inverse":
+            path = os.path.join(output_directory, f"{base_name}_filtered_inverse_debug.wav")
+            try:
+                write_peak_normalized_wav_native_rate(path, signal, sample_rate)
+                logging.info("Saved inverse-band debug WAV (%s, %d Hz, int16).", path, sample_rate)
+            except Exception as e:
+                logging.error("Failed to write inverse-band debug WAV file %s: %s", path, e)
 
-    # Canonical BPM representation for all downstream code: dense raster at STANDARD_DT_SEC.
-    # We keep peak-derived time axis (bpm_times, in seconds) but store only the raster.
-    if bpm_times is not None and smoothed_bpm is not None and not getattr(smoothed_bpm, "empty", True):
-        try:
-            dur = float(np.max(peaks) / sample_rate) if len(peaks) else float(bpm_times[-1])
-        except Exception:
-            dur = float(bpm_times[-1]) if bpm_times is not None and len(bpm_times) else 0.0
-        t_grid = dense_time_grid(dur, STANDARD_DT_SEC)
-        bpm_vals = np.asarray(smoothed_bpm.values, dtype=np.float64)
-        bpm_grid = rasterize_timeseries_linear(np.asarray(bpm_times, dtype=np.float64), bpm_vals, t_grid, fallback=float(bpm_vals[0]))
-        metrics["bpm_times"] = t_grid
-        metrics["smoothed_bpm"] = bpm_grid
-    else:
-        metrics["bpm_times"] = np.asarray([], dtype=np.float64)
-        metrics["smoothed_bpm"] = np.asarray([], dtype=np.float64)
-
-    return metrics
-
-
-def _write_hr_stats(metrics: Dict[str, Any], smoothed_bpm) -> None:
-    """Write all derived HR stats from a smoothed BPM series into metrics."""
-    metrics["major_inclines"] = find_major_hr_inclines(smoothed_bpm)
-    metrics["major_declines"] = find_major_hr_declines(smoothed_bpm)
-    metrics["hrr_stats"] = calculate_hrr(smoothed_bpm)
-    metrics["peak_recovery_stats"] = find_peak_recovery_rate(smoothed_bpm)
-    metrics["peak_exertion_stats"] = find_peak_exertion_rate(smoothed_bpm)
-    if not getattr(smoothed_bpm, "empty", True):
-        hrv_summary = dict(metrics.get("hrv_summary") or {})
-        hrv_summary["avg_bpm"] = float(smoothed_bpm.mean())
-        hrv_summary["min_bpm"] = float(smoothed_bpm.min())
-        hrv_summary["max_bpm"] = float(smoothed_bpm.max())
-        metrics["hrv_summary"] = hrv_summary
-
-
-def _apply_pass3_state_timeline_bpm(
-    metrics: Dict[str, Any],
-    analysis_data: Dict,
-    sample_rate: int,
-    params: Dict,
-) -> None:
-    """
-    Replace instant/smoothed BPM (and derived HR stats) using S1→S1 intervals from
-    pass3_state_labels (contiguous S1 run starts). Uses the same MAD + rolling smooth
-    params as peak-based BPM (pass2_instant_bpm_*, output_smoothing_window_sec).
-    HRV-on-peaks and other metrics are unchanged.
-    """
-    sl = analysis_data.get("pass3_state_labels")
-    if sl is None:
-        return
-    enc = analysis_data.get("pass3_state_labels_encoding") or {}
-    s1_code = int(enc.get("S1", 0))
-    _, bt, ib = calculate_bpm_series_from_s1_state_labels(
-        sl, sample_rate, params, state_s1_code=s1_code
-    )
-    if bt is None or ib is None or len(bt) < 2:
-        return
-    bt = np.asarray(bt, dtype=np.float64)
-    ib = np.asarray(ib, dtype=np.float64)
-    metrics["bpm_times_raw"] = bt.copy()
-    metrics["instant_bpm_raw"] = ib.copy()
-    t_filt, b_filt = filter_instant_bpm_mad(bt, ib, params)
-    if len(t_filt) == 0:
-        logging.warning(
-            "Pass 3: state-timeline BPM dropped all points after MAD; keeping peak-based BPM curve."
-        )
-        return
-    smoothed_bpm, bpm_times, instant_bpm = smooth_bpm_series_from_instant(t_filt, b_filt, params)
-    # Store canonical dense raster (dt=STANDARD_DT_SEC) instead of irregular points/Series.
-    try:
-        dur = float(len(sl) / float(sample_rate))
-    except Exception:
-        dur = float(bpm_times[-1]) if bpm_times is not None and len(bpm_times) else 0.0
-    t_grid = dense_time_grid(dur, STANDARD_DT_SEC)
-    bpm_vals = np.asarray(smoothed_bpm.values, dtype=np.float64)
-    bpm_grid = rasterize_timeseries_linear(np.asarray(bpm_times, dtype=np.float64), bpm_vals, t_grid, fallback=float(bpm_vals[0]))
-    metrics["smoothed_bpm"] = bpm_grid
-    metrics["bpm_times"] = t_grid
-    metrics.pop("instant_bpm", None)
-    _write_hr_stats(metrics, smoothed_bpm)
-    logging.info("Pass 3: BPM curve from state timeline (S1 run starts → same MAD/smooth as peaks).")
-
-
-def _should_switch_algorithm(alt_failed: bool, primary_reason_count: int, alt_reason_count: int) -> bool:
-    """Decide whether an auto-switch retry should replace the primary result.
-
-    Only called when the primary run has already failed the BPM plausibility gate
-    (auto_switch_algorithm's trigger condition), so this just compares the retry
-    against that known-failed primary: switch if the alternate passes outright, or
-    if both still fail but the alternate has strictly fewer failure reasons. Ties
-    keep the primary, so a file where both algorithms struggle equally doesn't
-    flip-flop between runs.
-    """
-    if not alt_failed:
-        return True
-    return alt_reason_count < primary_reason_count
-
-
-def _run_algorithm_pass(
-    use_springer: bool,
-    wav_file_path: str,
-    algorithm_envelope: np.ndarray,
-    sample_rate: int,
-    params: Dict,
-    noise_floor,
-    troughs,
-    start_bpm_hint,
-    bandpass_envelope,
-    inverse_band_envelope,
-    noise_removed_envelope,
-    noise_event_segments: list,
-    original_file_path: str,
-    output_directory: str,
-    output_options: Dict,
-    needs_plot_outputs: bool,
-    output_all_passes: bool,
-    duration_sec: float,
-    _ui: Callable[[str], None],
-) -> Dict[str, Any]:
-    """Run one full algorithm branch (native multi-pass or Springer 2015 HSMM) through
-    Pass 3/4, then compute metrics_after_pass3 and the BPM plausibility gate result.
-
-    Split out of analyze_wav_file so auto-switch (see 'auto_switch_algorithm' param) can
-    call this twice — once per algorithm — and compare results without duplicating the
-    STAGE 1 preprocessing that's shared regardless of which algorithm runs.
-
-    Returns a dict: peaks_after_pass4, all_raw_peaks, analysis_data, metrics_after_pass3
-    (None if too few peaks), metrics_pass2 (native only, else None), s1_peaks (native only,
-    else None), pass1_bpm, peak_time, recovery_time, algorithm_name, bpm_failure_report.
-    """
-    metrics_pass2 = None
-    s1_peaks = None
-
-    if use_springer:
-        # ── Springer 2015 HSMM path: replaces native passes 1/2/3/4 ─────────────
-        logging.info("--- STAGE 2-5: Springer 2015 HSMM (replaces native passes 1-3) ---")
-        _ui("Springer: running HSMM segmentation...")
-        peaks_after_pass4, all_raw_peaks, analysis_data = _run_springer_mode(
-            wav_file_path, algorithm_envelope, sample_rate, params
-        )
-        analysis_data["bandpass_envelope"] = bandpass_envelope
-        if inverse_band_envelope is not None:
-            analysis_data["inverse_band_envelope"] = inverse_band_envelope
-        if noise_removed_envelope is not None:
-            analysis_data["noise_removed_envelope"] = noise_removed_envelope
-        if noise_event_segments:
-            analysis_data["noise_event_segments"] = noise_event_segments
-        pass1_bpm = None
-        peak_time = None
-        recovery_time = None
-    else:
-        # ── Native multi-pass pipeline ────────────────────────────────────────────
-        _ui("Pass 1: detecting anchor beats...")
-        start_bpm, peak_time, recovery_time, anchor_beats, pass1_bpm, pass1_analysis_data = _run_pass1(
-            algorithm_envelope, sample_rate, params, noise_floor, troughs, start_bpm_hint
-        )
-        pass1_analysis_data["bandpass_envelope"] = bandpass_envelope
-        if inverse_band_envelope is not None:
-            pass1_analysis_data["inverse_band_envelope"] = inverse_band_envelope
-        if noise_removed_envelope is not None:
-            pass1_analysis_data["noise_removed_envelope"] = noise_removed_envelope
-        if noise_event_segments:
-            pass1_analysis_data["noise_event_segments"] = noise_event_segments
-
-        # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
-        _opts = output_options
-        if _opts.get("html", True) and _opts.get("output_all_passes", True):
-            _ui("Generating pass 1 HTML report...")
-            plotter_pass1 = Plotter(
-                original_file_path,
-                params,
-                sample_rate,
-                output_directory,
-                source_audio_path=wav_file_path,
-            )
-            base_name = output_stem_from_path(original_file_path)
-            pass1_html_path = os.path.join(output_directory, f"{base_name}_pass1.html")
-            plotter_pass1.plot_pass1_save(
-                algorithm_envelope,
-                anchor_beats,
-                _opts,
-                pass1_html_path,
-                pass1_analysis_data=pass1_analysis_data,
-                pass1_bpm_data=pass1_bpm,
-            )
-
-        # STAGE 3: Pass 2 — main analysis with time-varying BPM prior from pass 1 curve
-        logging.info("--- STAGE 3: Pass 2 — main analysis ---")
-        _ui("Pass 2: classifying peaks...")
-        pass1_bpm_prior = (
-            _build_pass1_bpm_prior(
-                np.asarray(pass1_bpm["curve_times"], dtype=np.float64),
-                np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64),
-            )
-            if pass1_bpm is not None
-            else None
-        )
-        classifier = PeakClassifier(
-            algorithm_envelope,
-            sample_rate,
-            params,
-            start_bpm,
-            noise_floor,
-            troughs,
-            peak_time,
-            recovery_time,
-            pass1_bpm_prior=pass1_bpm_prior,
-        )
-        s1_peaks, all_raw_peaks, analysis_data = classifier.classify_peaks()
-        analysis_data["bandpass_envelope"] = bandpass_envelope
-        if inverse_band_envelope is not None:
-            analysis_data["inverse_band_envelope"] = inverse_band_envelope
-        if noise_removed_envelope is not None:
-            analysis_data["noise_removed_envelope"] = noise_removed_envelope
-        if noise_event_segments:
-            analysis_data["noise_event_segments"] = noise_event_segments
-
-        # Compute pass 2 metrics when we might need them (pass 2 plot and/or pass 3 prior curve)
-        if needs_plot_outputs and len(s1_peaks) >= 2:
-            _ui("Pass 2: computing heart rate metrics...")
-            metrics_pass2 = _calculate_metrics_from_peaks(s1_peaks, sample_rate, params)
-            if output_all_passes:
-                _ui("Pass 2: saving HTML / PNG / CSV...")
-                plotter_pass2 = Plotter(
-                    original_file_path,
-                    params,
-                    sample_rate,
-                    output_directory,
-                    source_audio_path=wav_file_path,
-                )
-                plotter_pass2.plot_and_save(
-                    algorithm_envelope,
-                    all_raw_peaks,
-                    analysis_data,
-                    metrics_pass2,
-                    output_options,
-                    output_suffix="_pass2",
-                    pass1_bpm_series=np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64) if pass1_bpm is not None else None,
-                    pass1_bpm_times=np.asarray(pass1_bpm["curve_times"], dtype=np.float64) if pass1_bpm is not None else None,
-                    is_final_pass=False,
-                )
-
-        # Pass 3: takes pass 2 output (s1_peaks) as input; outputs refined peaks for reporting/plots
-        peaks_after_pass2 = s1_peaks
-        _ui("Pass 3: refining peaks...")
-        peaks_after_pass3, analysis_data = _refine_and_correct_peaks(
-            peaks_after_pass2,
-            all_raw_peaks,
-            analysis_data,
-            algorithm_envelope,
-            sample_rate,
-            params,
-            wav_file_path=wav_file_path,
-        )
-
-        # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
-        peaks_after_pass4 = peaks_after_pass3
-        if param(params, "enable_pass4"):
-            from viterbi import run_pass4_viterbi
-            _ui("Pass 4: Viterbi holistic decode...")
-            peaks_after_pass4, analysis_data = run_pass4_viterbi(
-                peaks_after_pass3, analysis_data, algorithm_envelope, sample_rate, params,
-            )
-
-    metrics_after_pass3 = None
-    if len(peaks_after_pass4) < 2:
-        bpm_failure_report = {
-            "failed": True,
-            "reasons": ["fewer than 2 S1 peaks detected"],
-            "metrics": {},
-        }
-    else:
-        reuse_pass2_metrics = (
-            metrics_pass2 is not None
-            and len(peaks_after_pass4) == len(s1_peaks)
-            and np.array_equal(np.asarray(peaks_after_pass4), np.asarray(s1_peaks))
-        )
-        if reuse_pass2_metrics:
-            # Shallow copy so Pass 3/4 BPM overrides do not mutate metrics_pass2 in place.
-            metrics_after_pass3 = dict(metrics_pass2)
-        else:
-            metrics_after_pass3 = _calculate_metrics_from_peaks(peaks_after_pass4, sample_rate, params)
-
-        _apply_pass3_state_timeline_bpm(metrics_after_pass3, analysis_data, sample_rate, params)
-
-        bpm_failure_report = detect_bpm_failure(
-            metrics_after_pass3.get("bpm_times_raw"),
-            metrics_after_pass3.get("instant_bpm_raw"),
-            duration_sec,
-            params,
-        )
-        metrics_after_pass3["bpm_failure_report"] = bpm_failure_report
-        # Also mirrored onto analysis_data: that's the dict callers/tools outside the plotter
-        # and reporter (debug_helpers, benchmarking) actually get back from analyze_wav_file.
-        analysis_data["bpm_failure_report"] = bpm_failure_report
-        if bpm_failure_report["failed"]:
-            logging.warning(
-                "BPM plausibility gate flagged the %s run as likely failed: %s",
-                "Springer" if use_springer else "native",
-                "; ".join(bpm_failure_report["reasons"]),
-            )
-
-    return {
-        "peaks_after_pass4": peaks_after_pass4,
-        "all_raw_peaks": all_raw_peaks,
-        "analysis_data": analysis_data,
-        "metrics_after_pass3": metrics_after_pass3,
-        "metrics_pass2": metrics_pass2,
-        "s1_peaks": s1_peaks,
-        "pass1_bpm": pass1_bpm,
-        "peak_time": peak_time,
-        "recovery_time": recovery_time,
-        "algorithm_name": "springer" if use_springer else "native",
-        "bpm_failure_report": bpm_failure_report,
-    }
+    return _sink
 
 
 def analyze_wav_file(
@@ -632,7 +92,7 @@ def analyze_wav_file(
     collect_fft_for_aggregate: bool = False,
     progress_callback: Optional[Callable[[str], None]] = None,
 ):
-    """Main analysis pipeline that orchestrates the refactored classes.
+    """Run the engine on one WAV and write the outputs selected in output_options.
 
     Returns (plotly_figure, fft_aggregate_data, bpm_rename_summary, analysis_data). On early exit
     or failure, returns (None, None, None, None). bpm_rename_summary is a dict with start_bpm,
@@ -647,8 +107,6 @@ def analyze_wav_file(
             except Exception:
                 pass
 
-    validate_params(params)
-
     # Honor optional verbose logging flag from params to control how noisy the console is.
     # When disabled, we keep stage-level INFO logs but suppress very chatty algorithm-detail INFO logs.
     verbose_logging = bool(param(params, "algorithm_console_logging"))
@@ -661,174 +119,166 @@ def analyze_wav_file(
             handler.addFilter(filt)
             active_filters.append((handler, filt))
 
+    try:
+        return _analyze_and_write(
+            wav_file_path,
+            params,
+            start_bpm_hint,
+            original_file_path,
+            output_directory,
+            output_options,
+            collect_fft_for_aggregate,
+            _ui,
+        )
+    finally:
+        # Remove filters so this setting is scoped to the analysis call.
+        for handler, filt in active_filters:
+            try:
+                handler.removeFilter(filt)
+            except Exception:
+                pass
+
+
+def _analyze_and_write(
+    wav_file_path: str,
+    params: Dict,
+    start_bpm_hint: Optional[float],
+    original_file_path: str,
+    output_directory: str,
+    requested_output_options: Optional[Dict],
+    collect_fft_for_aggregate: bool,
+    _ui: Callable[[str], None],
+):
     start_time = time.time()
     logging.info("--- Processing file: %s ---", os.path.basename(original_file_path))
 
-    # STAGE 1: Initialization
-    _ui("Preprocessing audio...")
-    (
-        bandpass_envelope,
-        sample_rate,
-        noise_floor,
-        troughs,
-        inverse_band_envelope,
-        noise_removed_envelope,
-    ) = preprocess_audio(wav_file_path, params, output_directory, output_options)
-
-    algorithm_envelope = (
-        noise_removed_envelope
-        if noise_removed_envelope is not None
-        else bandpass_envelope
-    )
-
-    output_options = {**DEFAULT_OUTPUT_OPTIONS, **(output_options or {})}
-    duration_sec = (
-        float(len(algorithm_envelope)) / float(sample_rate)
-        if sample_rate and len(algorithm_envelope) > 0
-        else 0.0
-    )
-    long_recording = duration_sec > LONG_RECORDING_DISABLE_PNG_SEC
-    if long_recording:
-        output_options = dict(output_options)
-        output_options["png"] = False
-        logging.info(
-            "Recording length %.1f min exceeds %.0f min — disabling PNG export (Kaleido).",
-            duration_sec / 60.0,
-            LONG_RECORDING_DISABLE_PNG_SEC / 60.0,
-        )
-
-    noise_event_segments: list = []
-    if inverse_band_envelope is not None:
-        try:
-            noise_event_segments = compute_noise_event_segments(
-                inverse_band_envelope, sample_rate, params
-            )
-        except Exception as e:
-            logging.warning("Noise event segmentation failed: %s", e)
-
-    # Pre-warm Kaleido so Chromium startup can overlap with analysis.
-    try:
-        if output_options.get("png", False):
-            prewarm_kaleido_png_export()
-    except Exception:
-        pass
-    needs_plot_outputs = any([
-        output_options.get('html', True),
-        output_options.get('png', False),
-        output_options.get('csv', True),
-    ])
-    output_all_passes = output_options.get("output_all_passes", True)
-    plotter = None
-
-    primary_use_springer = bool(param(params, "use_springer_algorithm"))
-    _pass_kwargs = dict(
-        wav_file_path=wav_file_path,
-        algorithm_envelope=algorithm_envelope,
-        sample_rate=sample_rate,
-        params=params,
-        noise_floor=noise_floor,
-        troughs=troughs,
-        start_bpm_hint=start_bpm_hint,
-        bandpass_envelope=bandpass_envelope,
-        inverse_band_envelope=inverse_band_envelope,
-        noise_removed_envelope=noise_removed_envelope,
-        noise_event_segments=noise_event_segments,
-        original_file_path=original_file_path,
-        output_directory=output_directory,
-        output_options=output_options,
-        needs_plot_outputs=needs_plot_outputs,
-        output_all_passes=output_all_passes,
-        duration_sec=duration_sec,
-        _ui=_ui,
-    )
-
-    result = _run_algorithm_pass(primary_use_springer, **_pass_kwargs)
-    algorithm_switch_reason = None
-
-    if bool(param(params, "auto_switch_algorithm")) and result["bpm_failure_report"]["failed"]:
-        alt_use_springer = not primary_use_springer
-        logging.info(
-            "Auto-switch: '%s' failed the BPM plausibility gate (%s); retrying with '%s'.",
-            result["algorithm_name"],
-            "; ".join(result["bpm_failure_report"]["reasons"]),
-            "springer" if alt_use_springer else "native",
-        )
-        _ui(f"Primary algorithm flagged; retrying with {'Springer' if alt_use_springer else 'native'}...")
-        alt_result = _run_algorithm_pass(alt_use_springer, **_pass_kwargs)
-
-        should_switch = _should_switch_algorithm(
-            alt_result["bpm_failure_report"]["failed"],
-            len(result["bpm_failure_report"]["reasons"]),
-            len(alt_result["bpm_failure_report"]["reasons"]),
-        )
-
-        if should_switch:
-            algorithm_switch_reason = (
-                f"switched from {result['algorithm_name']} to {alt_result['algorithm_name']} "
-                f"(gate flagged: {'; '.join(result['bpm_failure_report']['reasons'])})"
-            )
-            logging.warning("Auto-switch: %s", algorithm_switch_reason)
-            result = alt_result
+    # Debug WAVs: a caller-supplied dict without "filtered_wav" means "write them";
+    # only a missing dict falls back to DEFAULT_OUTPUT_OPTIONS.
+    wav_opts = requested_output_options if requested_output_options is not None else DEFAULT_OUTPUT_OPTIONS
+    debug_audio_sink = None
+    if param(params, "save_filtered_wav"):
+        if wav_opts.get("filtered_wav", True):
+            debug_audio_sink = _debug_wav_writer(original_file_path, output_directory)
         else:
-            logging.info(
-                "Auto-switch: kept '%s' (retry with '%s' did not improve).",
-                result["algorithm_name"],
-                alt_result["algorithm_name"],
-            )
+            logging.info("Skipping filtered audio WAV generation as requested.")
 
-    peaks_after_pass4 = result["peaks_after_pass4"]
-    all_raw_peaks = result["all_raw_peaks"]
-    analysis_data = result["analysis_data"]
-    metrics_after_pass3 = result["metrics_after_pass3"]
-    metrics_pass2 = result["metrics_pass2"]
-    s1_peaks = result["s1_peaks"]
-    pass1_bpm = result["pass1_bpm"]
-    peak_time = result["peak_time"]
-    recovery_time = result["recovery_time"]
-    analysis_data["algorithm_used"] = result["algorithm_name"]
-    analysis_data["algorithm_switch_reason"] = algorithm_switch_reason
-    if metrics_after_pass3 is not None:
-        metrics_after_pass3["algorithm_used"] = result["algorithm_name"]
-        metrics_after_pass3["algorithm_switch_reason"] = algorithm_switch_reason
+    output_options = {**DEFAULT_OUTPUT_OPTIONS, **(requested_output_options or {})}
+    output_all_passes = output_options.get("output_all_passes", True)
 
-    # STAGE 6: Metrics from latest pass (peaks_after_pass4 = pass3 when pass4 disabled).
-    if len(peaks_after_pass4) < 2:
+    def _wants_plots() -> bool:
+        # Evaluated at use: the long-recording guard may switch PNG off after preprocessing.
+        return any([
+            output_options.get('html', True),
+            output_options.get('png', False),
+            output_options.get('csv', True),
+        ])
+
+    preprocessed: Dict = {}  # sample_rate / algorithm_envelope, filled at STAGE_PREPROCESSED
+
+    def _new_plotter() -> Plotter:
+        return Plotter(
+            original_file_path,
+            params,
+            preprocessed["sample_rate"],
+            output_directory,
+            source_audio_path=wav_file_path,
+        )
+
+    def _on_stage(stage: str, data: Dict) -> None:
+        if stage == STAGE_PREPROCESSED:
+            preprocessed["sample_rate"] = data["sample_rate"]
+            preprocessed["algorithm_envelope"] = data["algorithm_envelope"]
+            duration_sec = data["duration_sec"]
+            if duration_sec > LONG_RECORDING_DISABLE_PNG_SEC:
+                output_options["png"] = False
+                logging.info(
+                    "Recording length %.1f min exceeds %.0f min — disabling PNG export (Kaleido).",
+                    duration_sec / 60.0,
+                    LONG_RECORDING_DISABLE_PNG_SEC / 60.0,
+                )
+            # Pre-warm Kaleido so Chromium startup can overlap with analysis.
+            try:
+                if output_options.get("png", False):
+                    prewarm_kaleido_png_export()
+            except Exception:
+                pass
+
+        elif stage == STAGE_PASS1:
+            # Pass 1 plot (envelope + anchor beats + BPM scatter/curve + BPM Trend (Belief)); skip when only last pass requested
+            if output_options.get("html", True) and output_options.get("output_all_passes", True):
+                _ui("Generating pass 1 HTML report...")
+                base_name = output_stem_from_path(original_file_path)
+                pass1_html_path = os.path.join(output_directory, f"{base_name}_pass1.html")
+                _new_plotter().plot_pass1_save(
+                    preprocessed["algorithm_envelope"],
+                    data["anchor_beats"],
+                    output_options,
+                    pass1_html_path,
+                    pass1_analysis_data=data["analysis_data"],
+                    pass1_bpm_data=data["pass1_bpm"],
+                )
+
+        elif stage == STAGE_PASS2:
+            if output_all_passes and _wants_plots():
+                _ui("Pass 2: saving HTML / PNG / CSV...")
+                pass1_bpm = data["pass1_bpm"]
+                _new_plotter().plot_and_save(
+                    preprocessed["algorithm_envelope"],
+                    data["all_raw_peaks"],
+                    data["analysis_data"],
+                    data["metrics"],
+                    output_options,
+                    output_suffix="_pass2",
+                    pass1_bpm_series=np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64) if pass1_bpm is not None else None,
+                    pass1_bpm_times=np.asarray(pass1_bpm["curve_times"], dtype=np.float64) if pass1_bpm is not None else None,
+                    is_final_pass=False,
+                )
+
+    result = run_analysis(
+        wav_file_path,
+        params,
+        start_bpm_hint,
+        progress_callback=_ui,
+        on_stage=_on_stage,
+        debug_audio_sink=debug_audio_sink,
+        # Pass 2 metrics feed the pass 2 plot and the prior curve on the final plot.
+        compute_pass2_metrics=_wants_plots(),
+    )
+
+    # STAGE 6: Metrics from latest pass (pass3, or pass4 when enabled).
+    if not result.ok:
         logging.warning("Not enough S1 peaks detected to generate full report.")
         _ui("Stopped: not enough detected heartbeat peaks.")
         return None, None, None, None
 
     logging.info("--- STAGE 6: Calculating Metrics and Generating Outputs ---")
 
+    analysis_data = result.analysis_data
+    metrics = result.metrics
+    algorithm_envelope = result.algorithm_envelope
+    sample_rate = result.sample_rate
     plotly_figure = None
 
-    # Pass 3/4 plot: after refinement (uses metrics_after_pass3; prior curve = BPM from pass 2)
-    if needs_plot_outputs and len(peaks_after_pass4) >= 2:
+    # Pass 3/4 plot: after refinement (prior curve = BPM from pass 2, else pass 1)
+    if _wants_plots():
         _ui("Pass 3: saving HTML / PNG / CSV...")
-        if plotter is None:
-            plotter = Plotter(
-                original_file_path,
-                params,
-                sample_rate,
-                output_directory,
-                source_audio_path=wav_file_path,
-            )
-        # Pass 3 plot: show BPM (Pass 2) as the prior curve, not BPM (Pass 1)
         prior_bpm_series = None
         prior_bpm_times = None
+        metrics_pass2 = result.metrics_pass2
         if metrics_pass2 is not None and metrics_pass2.get("smoothed_bpm") is not None and len(metrics_pass2["smoothed_bpm"]) > 0:
             prior_bpm_series = metrics_pass2["smoothed_bpm"]
             prior_bpm_times = metrics_pass2.get("bpm_times")
-        if prior_bpm_series is None and pass1_bpm is not None:
-            prior_bpm_series = np.asarray(pass1_bpm["curve_bpm"], dtype=np.float64)
-            prior_bpm_times = np.asarray(pass1_bpm["curve_times"], dtype=np.float64)
+        if prior_bpm_series is None and result.pass1_bpm is not None:
+            prior_bpm_series = np.asarray(result.pass1_bpm["curve_bpm"], dtype=np.float64)
+            prior_bpm_times = np.asarray(result.pass1_bpm["curve_times"], dtype=np.float64)
         # Pass 3 plot: include peak/recovery times for systolic shift (exertion vs all-time averaging)
-        metrics_after_pass3["peak_bpm_time_sec"] = peak_time
-        metrics_after_pass3["recovery_end_time_sec"] = recovery_time
-        plotly_figure = plotter.plot_and_save(
+        metrics["peak_bpm_time_sec"] = result.peak_bpm_time_sec
+        metrics["recovery_end_time_sec"] = result.recovery_end_time_sec
+        plotly_figure = _new_plotter().plot_and_save(
             algorithm_envelope,
-            all_raw_peaks,
+            result.all_raw_peaks,
             analysis_data,
-            metrics_after_pass3,
+            metrics,
             output_options,
             output_suffix="_pass3",
             filename_suffix="_pass3" if output_all_passes else "_bpm_plot",
@@ -836,7 +286,7 @@ def analyze_wav_file(
             pass1_bpm_times=prior_bpm_times,
             is_final_pass=True,
         )
-    elif not needs_plot_outputs:
+    else:
         logging.info("Skipping all plot outputs (HTML/PNG/CSV) as requested.")
 
     # Generate other outputs if requested
@@ -850,13 +300,13 @@ def analyze_wav_file(
 
         if output_options.get('summary', True):
             _ui("Writing summary report (Markdown)...")
-            reporter.save_analysis_summary(metrics_after_pass3)
+            reporter.save_analysis_summary(metrics)
         else:
             logging.info("Skipping summary generation as requested.")
 
         if output_options.get('debug', True):
             _ui("Writing debug log (Markdown)...")
-            reporter.create_chronological_log(algorithm_envelope, sample_rate, all_raw_peaks, analysis_data, metrics_after_pass3)
+            reporter.create_chronological_log(algorithm_envelope, sample_rate, result.all_raw_peaks, analysis_data, metrics)
         else:
             logging.info("Skipping debug log generation as requested.")
     else:
@@ -869,43 +319,27 @@ def analyze_wav_file(
         try:
             base_name = output_stem_from_path(original_file_path)
             fft_output_path = os.path.join(output_directory, f"{base_name}_fft_profiles.html")
+            peak_classifications = analysis_data.get("peak_classifications", {})
+            fft_kwargs = {"target_sr": int(param(params, "fft_aggregate_sr"))} if collect_fft_for_aggregate else {}
+            fft_result = compute_fft_profiles(
+                wav_file_path,
+                peak_classifications,
+                sample_rate,
+                algorithm_envelope,
+                params,
+                **fft_kwargs,
+            )
+            save_fft_profiles_html(
+                wav_file_path,
+                peak_classifications,
+                sample_rate,
+                fft_output_path,
+                algorithm_envelope,
+                params,
+                fft_result=fft_result,
+            )
             if collect_fft_for_aggregate:
-                target_sr = int(param(params, "fft_aggregate_sr"))
-                fft_result = compute_fft_profiles(
-                    wav_file_path,
-                    analysis_data.get("peak_classifications", {}),
-                    sample_rate,
-                    algorithm_envelope,
-                    params,
-                    target_sr=target_sr,
-                )
-                save_fft_profiles_html(
-                    wav_file_path,
-                    analysis_data.get("peak_classifications", {}),
-                    sample_rate,
-                    fft_output_path,
-                    algorithm_envelope,
-                    params,
-                    fft_result=fft_result,
-                )
                 fft_aggregate_data = fft_result
-            else:
-                fft_result = compute_fft_profiles(
-                    wav_file_path,
-                    analysis_data.get("peak_classifications", {}),
-                    sample_rate,
-                    algorithm_envelope,
-                    params,
-                )
-                save_fft_profiles_html(
-                    wav_file_path,
-                    analysis_data.get("peak_classifications", {}),
-                    sample_rate,
-                    fft_output_path,
-                    algorithm_envelope,
-                    params,
-                    fft_result=fft_result,
-                )
             # Store S1 vs S2 frequency separation (10–15000 Hz) for future use; not used by any logic yet.
             if fft_result is not None and len(fft_result[0]) > 0:
                 freqs, raw_s1_db, raw_s2_db = fft_result[0], fft_result[1], fft_result[2]
@@ -920,24 +354,4 @@ def analyze_wav_file(
     duration = time.time() - start_time
     logging.info("--- Analysis stage finished in %.2f seconds (post-conversion). ---", duration)
 
-    # Remove filters so this setting is scoped to the analysis call.
-    for handler, filt in active_filters:
-        try:
-            handler.removeFilter(filt)
-        except Exception:
-            pass
-
-    bpm_rename_summary = None
-    sb = metrics_after_pass3.get("smoothed_bpm")
-    if sb is not None and len(sb) > 0:
-        arr = np.asarray(sb, dtype=np.float64)
-        if np.any(np.isfinite(arr)):
-            # start_bpm: first finite sample (dense raster)
-            start_i = int(np.argmax(np.isfinite(arr)))
-            bpm_rename_summary = {
-                "start_bpm": float(arr[start_i]),
-                "min_bpm": float(np.nanmin(arr)),
-                "max_bpm": float(np.nanmax(arr)),
-            }
-
-    return plotly_figure, fft_aggregate_data, bpm_rename_summary, analysis_data
+    return plotly_figure, fft_aggregate_data, result.bpm_summary, analysis_data

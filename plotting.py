@@ -13,7 +13,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from config import DEFAULT_OUTPUT_OPTIONS
+from app_settings import DEFAULT_OUTPUT_OPTIONS
 from file_io import find_companion_wav, normalize_output_filename_stem, output_stem_from_path
 from confidence_engine import calculate_bpm_intervals
 

@@ -4,8 +4,9 @@ import json
 import pytest
 
 import ui_settings_loader as usl
-from audio_preprocessing import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED
-from config import DEFAULT_OUTPUT_OPTIONS, DEFAULT_PARAMS
+from app_settings import DEFAULT_OUTPUT_OPTIONS
+from audio_io import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED
+from config import DEFAULT_PARAMS
 
 
 # --- migrate_ui_settings_keys ------------------------------------------------

@@ -21,9 +21,10 @@ from typing import Any, Dict, List
 
 from batch_runner import run_batch_parallel
 from bpm_input_rename import rename_analysis_outputs_after_input_bpm_rename, try_rename_input_with_bpm_annotation
-from config import DEFAULT_PARAMS, ui_settings_path
+from app_settings import ui_settings_path
+from config import DEFAULT_PARAMS
 from console_logging import configure_analysis_console_logging
-from audio_preprocessing import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
+from audio_io import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED, normalize_channel_mode
 from ui_settings_loader import batch_cli_defaults_from_ui_settings, load_ui_settings_json
 
 

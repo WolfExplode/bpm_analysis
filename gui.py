@@ -11,13 +11,14 @@ import logging
 from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
-import config
-from config import DEFAULT_PARAMS, DEFAULT_OUTPUT_OPTIONS, DEFAULT_UI_SETTINGS
+import app_settings
+from app_settings import DEFAULT_OUTPUT_OPTIONS, DEFAULT_UI_SETTINGS
+from config import DEFAULT_PARAMS
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, List, Optional, Tuple
 from ui_settings_loader import migrate_ui_settings_keys
-from audio_preprocessing import (
+from audio_io import (
     CHANNEL_MODE_ALL,
     CHANNEL_MODE_LEFT,
     CHANNEL_MODE_MIXED,
@@ -37,8 +38,8 @@ class UIMessage:
     type: UIMessageType
     data: Any = None
 
-# Order and labels for output file checkboxes (keys must match DEFAULT_OUTPUT_OPTIONS in config).
-# Laid out in a 2-column grid. Default values come from config only.
+# Order and labels for output file checkboxes (keys must match DEFAULT_OUTPUT_OPTIONS in app_settings).
+# Laid out in a 2-column grid. Default values come from app_settings only.
 OUTPUT_FILE_OPTIONS = (
     ("html", "Heart Rate Graph (.html)"),
     ("fft_profiles", "S1/S2 FFT Profiles (.html)"),
@@ -73,7 +74,7 @@ class BPMApp:
         self.current_files = []
         self.params = DEFAULT_PARAMS.copy()
         self.log_queue = queue.Queue()
-        self.settings_file = config.ui_settings_path()
+        self.settings_file = app_settings.ui_settings_path()
         self._loading_settings = True  # Prevent saving during initialization
         self._analysis_running = False
         self._general_console_log_filters: list[tuple[logging.Handler, logging.Filter]] = []
@@ -165,7 +166,7 @@ class BPMApp:
         self.analysis_start_sec_entry.bind('<KeyRelease>', lambda e: self.save_ui_settings())
         self.analysis_start_sec_entry.bind('<FocusOut>', lambda e: self.save_ui_settings())
 
-        # Output file options (defaults from config only)
+        # Output file options (defaults from app_settings only)
         for opt_key, _ in OUTPUT_FILE_OPTIONS:
             setattr(self, "output_" + opt_key, tk.BooleanVar(value=DEFAULT_OUTPUT_OPTIONS.get(opt_key, False)))
         self.optimize_long_plots = tk.BooleanVar(value=DEFAULT_UI_SETTINGS["optimize_long_plots"])
@@ -675,7 +676,7 @@ class BPMApp:
         self.save_ui_settings()
 
     def get_output_options(self):
-        """Get the current output file selection as a dictionary (keys match config.DEFAULT_OUTPUT_OPTIONS)."""
+        """Get the current output file selection as a dictionary (keys match app_settings.DEFAULT_OUTPUT_OPTIONS)."""
         opts = {opt_key: getattr(self, "output_" + opt_key).get() for opt_key, _ in OUTPUT_FILE_OPTIONS}
         opts["output_all_passes"] = self.output_all_passes.get()
         opts["html_s1_s2_hover_on_by_default"] = self.html_s1_s2_hover_on_by_default.get()

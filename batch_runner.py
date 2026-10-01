@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from audio_preprocessing import (
+from audio_io import (
     CHANNEL_MODE_ALL,
     CHANNEL_MODE_MIXED,
     convert_to_wav,
