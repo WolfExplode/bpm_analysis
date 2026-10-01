@@ -252,6 +252,9 @@ class EnvelopeItem(pg.GraphicsObject):
     def _paint_dense(self, p, vb, i0, i1, px, sx, ox, sy, oy) -> None:
         """One column per pixel, filled from the bin's min to its max, rasterised with numpy."""
         edges, mins, maxs = self._minmax(i0, i1, px)
+        # Join each column to the previous bin's last sample so steep edges stay continuous.
+        prev = self._y[np.clip(edges[:-1] - 1, 0, len(self._y) - 1)]
+        mins, maxs = np.fmin(mins, prev), np.fmax(maxs, prev)
         (_, _), (yv0, yv1) = vb.viewRange()
         top_dev, bot_dev = sorted((yv1 * sy + oy, yv0 * sy + oy))
         h = int(min(4096, max(1, np.ceil(bot_dev - top_dev))))
@@ -268,6 +271,7 @@ class EnvelopeItem(pg.GraphicsObject):
         qimg = QtGui.QImage(buf, img.shape[1], h, QtGui.QImage.Format.Format_ARGB32)
         x_left = (self.t0 + edges[0] * self.dt) * sx + ox
         x_right = (self.t0 + edges[-1] * self.dt) * sx + ox
+        p.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)
         p.drawImage(QtCore.QRectF(x_left, top_dev, x_right - x_left, h), qimg)
 
     def paint(self, p: QtGui.QPainter, *_args) -> None:

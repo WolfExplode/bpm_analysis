@@ -97,6 +97,9 @@ class Player:
             self._sources = {}
             self.sample_rate = 0
 
+    def samples(self, source: str = SOURCE_ORIGINAL) -> Optional[np.ndarray]:
+        return self._sources.get(source)
+
     @property
     def loaded(self) -> bool:
         return bool(self._sources)
@@ -176,3 +179,26 @@ class Player:
                 outdata[written:written + n, 0] = src[self._pos:self._pos + n] * self.gain
                 self._pos += n
                 written += n
+
+
+def spectrogram(signal: np.ndarray, sample_rate: int, fmax: float = 1000.0, hop_sec: float = 0.032,
+                n_fft: int = 1024) -> Tuple[float, float, float, np.ndarray]:
+    """Log-power spectrogram up to fmax: (t0, dt, f_top, dB array shaped (frames, bins)).
+
+    Computed in chunks so an hour of audio needs ~30 MB, not a full STFT in memory.
+    """
+    hop = max(1, int(round(hop_sec * sample_rate)))
+    n_fft = int(min(n_fft, max(64, len(signal))))
+    n_bins = max(1, int(fmax / (sample_rate / n_fft)) + 1)
+    n_frames = max(0, 1 + (len(signal) - n_fft) // hop)
+    window = np.hanning(n_fft).astype(np.float32)
+    out = np.empty((n_frames, n_bins), dtype=np.float32)
+    x = np.ascontiguousarray(signal, dtype=np.float32)
+    chunk = 4096
+    for c0 in range(0, n_frames, chunk):
+        c1 = min(n_frames, c0 + chunk)
+        idx = (np.arange(c0, c1) * hop)[:, None] + np.arange(n_fft)[None, :]
+        spec = np.abs(np.fft.rfft(x[idx] * window, axis=1)[:, :n_bins]) ** 2
+        out[c0:c1] = 10.0 * np.log10(spec + 1e-12)
+    f_top = n_bins * sample_rate / n_fft
+    return (n_fft / 2) / sample_rate, hop / sample_rate, f_top, out

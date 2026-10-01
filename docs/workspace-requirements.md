@@ -9,7 +9,7 @@ and [ADR 0005](adr/0005-native-python-workspace-replaces-html-reports.md).
 "band" is called `spans`; `fft_profiles.py` was deleted whole (nothing used its non-HTML
 parts once the HTML and cross-file aggregation went); `BPM_Analyzer.spec` (PyInstaller) was
 deleted — a frozen exe can't re-run fresh engine code, which is the point of Ctrl+R.
-Not yet built: the optional spectrum/spectrogram lane.
+The spectrogram lane is computed from the playback audio (0–1 kHz) when first shown.
 
 The tool is first an instrument for debugging the algorithm, second a tool for
 producing **Annotations**. No backwards compatibility with the old GUI, HTML

@@ -15,14 +15,15 @@ from pcg import annotation as an
 from pcg import context, recording
 from pcg.engine.traces import KIND_LINE, KIND_POINTS, KIND_SPANS, Trace
 
-from .audio import SOURCE_FILTERED, Player, load_playback_audio
+from .audio import SOURCE_FILTERED, Player, load_playback_audio, spectrogram
 from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, palette_row, qcolor
 from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir
 
-LANE_ORDER = ["states", "signal", "bpm", "intervals", "scores", "hrv", "contractility"]
+LANE_ORDER = ["states", "signal", "bpm", "intervals", "scores", "hrv", "contractility", "spectrogram"]
 LANE_TITLES = {
     "states": "States", "signal": "Signal", "bpm": "Heart rate (BPM)", "intervals": "Intervals (s)",
     "scores": "Classifier scores (%)", "hrv": "HRV", "contractility": "Contractility",
+    "spectrogram": "Spectrogram (Hz)",
 }
 DEFAULT_LANES = {"states", "signal", "bpm"}
 
@@ -113,6 +114,7 @@ class Workspace(QtWidgets.QWidget):
     # Background audio loading reports back through queued signals.
     _audio_loaded = QtCore.Signal(int, object)
     _filtered_loaded = QtCore.Signal(int, object)
+    _spectrogram_loaded = QtCore.Signal(int, object)
     _audio_error = QtCore.Signal(str)
 
     def __init__(self, settings: Settings, library: A.Library, parent=None):
@@ -141,6 +143,8 @@ class Workspace(QtWidgets.QWidget):
         self._peak_kinds = np.array([], dtype=object)
         self._audio_loaded.connect(self._audio_ready)
         self._filtered_loaded.connect(self._filtered_ready)
+        self._spectrogram_loaded.connect(self._spectrogram_ready)
+        self._spec = None  # (t0, dt, f_top, dB) of the open recording, computed when its lane is shown
         self._audio_error.connect(self._audio_failed)
         self._build_ui()
         self._build_shortcuts()
@@ -253,7 +257,9 @@ class Workspace(QtWidgets.QWidget):
         plot.getAxis("left").enableAutoSIPrefix(False)
         plot.setLabel("left", LANE_TITLES.get(name, name))
         plot.showGrid(x=True, y=False, alpha=0.15)
-        if name == "states":
+        if name == "spectrogram":
+            plot.setYRange(0, 1000, padding=0)
+        elif name == "states":
             plot.setYRange(ROW_ANN[0] - 0.05, ROW_DEF[1] + 0.05, padding=0)
             plot.getAxis("left").setTicks([[(0.5, "Annotation"), (1.65, "Analysis"), (-0.55, "Before repair")]])
             plot.setLabel("left", "")
@@ -433,6 +439,9 @@ class Workspace(QtWidgets.QWidget):
             return
         sig, sr, params = payload
         self.player.set_audio(sig, sr)
+        self._spec = None
+        if self._lane_visible("spectrogram"):
+            self._compute_spectrogram()
         self.source_label.setText("Audio: original (T: filtered loading…)")
 
         def work():
@@ -444,6 +453,37 @@ class Workspace(QtWidgets.QWidget):
         if token == self._audio_token:
             self.player.set_filtered(filt)
             self.source_label.setText(f"Audio: {self.player.source}")
+
+    def _compute_spectrogram(self) -> None:
+        src = self.player.samples()
+        if src is None:
+            return
+        token, sr = self._audio_token, self.player.sample_rate
+
+        def work():
+            self._spectrogram_loaded.emit(token, spectrogram(src, sr))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _spectrogram_ready(self, token: int, payload) -> None:
+        if token != self._audio_token:
+            return
+        self._spec = payload
+        self._draw_spectrogram()
+
+    def _draw_spectrogram(self) -> None:
+        lane = self.lanes["spectrogram"]
+        if self._spec is None:
+            self._set_internal(lane, "_spec", None)
+            return
+        t0, dt, f_top, db = self._spec
+        img = pg.ImageItem(db, autoDownsample=True)
+        img.setColorMap(pg.colormap.get("inferno"))
+        lo, hi = np.percentile(db[:: max(1, len(db) // 2000)], [5, 99.5]) if len(db) else (0.0, 1.0)
+        img.setLevels((float(lo), float(hi)))
+        img.setRect(QtCore.QRectF(t0 - dt / 2, 0, len(db) * dt, f_top))
+        img.setZValue(-20)
+        self._set_internal(lane, "_spec", img)
 
     def _audio_failed(self, msg: str) -> None:
         self.source_label.setText("Audio: unavailable")
@@ -477,6 +517,8 @@ class Workspace(QtWidgets.QWidget):
         for name in (PEAKS_S1, PEAKS_S2, PEAKS_NOISE):
             self._set_peaks_shown(name, self._trace_visible(name, name != PEAKS_NOISE))
         self._set_ann_bpm_shown(self._trace_visible(ANN_BPM, True))
+        if self._lane_visible("spectrogram"):
+            self._draw_spectrogram()
         self._draw_states()
         self._draw_overview()
         self._fill_tree()
@@ -657,7 +699,7 @@ class Workspace(QtWidgets.QWidget):
             groups["signal"].insert(0, (name, "Pass 2", self._trace_visible(name, name != PEAKS_NOISE)))
         groups["bpm"].insert(0, (ANN_BPM, "Annotation", self._trace_visible(ANN_BPM, True)))
         for lane_name, entries in groups.items():
-            if not entries and lane_name != "states":
+            if not entries and lane_name not in ("states", "spectrogram"):
                 continue
             top = QtWidgets.QTreeWidgetItem([LANE_TITLES.get(lane_name, lane_name)])
             top.setData(0, QtCore.Qt.ItemDataRole.UserRole, ("lane", lane_name))
@@ -709,6 +751,11 @@ class Workspace(QtWidgets.QWidget):
             self._draw_states()
         if lane_name in ("bpm", "states"):
             self._on_doc_changed()
+        if lane_name == "spectrogram":
+            if self._spec is None:
+                self._compute_spectrogram()
+            else:
+                self._draw_spectrogram()
 
     def visible_trace_names(self) -> List[str]:
         out = []
