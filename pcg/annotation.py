@@ -190,22 +190,27 @@ def from_states(starts: Sequence[float], ends: Sequence[float], states: Sequence
     )
     out: List[Span] = []
     for a, b, kind in raw:
-        if out:
+        clipped = False
+        merged = False
+        while out:
             last = out[-1]
             if kind == last.kind and a <= last.end + _EPS:
-                out[-1] = replace(last, end=max(last.end, b))
+                out[-1] = replace(last, end=max(last.end, b), clipped=last.clipped or clipped)
+                merged = True
+                break
+            if a >= last.end - _EPS:
+                break
+            # Overlaps a different sound: cut both at the midpoint of the overlap.
+            mid = 0.5 * (max(a, last.start) + min(last.end, b))
+            clipped = True
+            if mid - last.start < _MIN_SPAN:
+                out.pop()  # swallowed; keep resolving against the span before it
                 continue
-            if a < last.end - _EPS:
-                mid = 0.5 * (a + min(last.end, b))
-                out[-1] = replace(last, end=mid, clipped=True)
-                if out[-1].end - out[-1].start < _MIN_SPAN:
-                    out.pop()
-                a = mid
-                if b - a < _MIN_SPAN:
-                    continue
-                out.append(Span(kind, a, b, origin, clipped=True))
-                continue
-        out.append(Span(kind, a, b, origin))
+            out[-1] = replace(last, end=mid, clipped=True)
+            a = max(a, mid)
+            break
+        if not merged and b - a >= _MIN_SPAN:
+            out.append(Span(kind, a, b, origin, clipped))
     return _normalize(out)
 
 
@@ -259,41 +264,51 @@ class Disagreement:
 DISAGREEMENT_KINDS = ("missed", "swapped", "extra")
 
 
+def _overlap_ranges(starts: np.ndarray, ends: np.ndarray, a: np.ndarray, b: np.ndarray):
+    """For sorted non-overlapping spans (starts, ends): index range [lo, hi) overlapping each [a, b]."""
+    lo = np.searchsorted(ends, a + _EPS, side="right")
+    hi = np.searchsorted(starts, b - _EPS, side="left")
+    return lo, np.maximum(hi, lo)
+
+
 def disagreements(annotation: Spans, algorithm: Spans) -> List[Disagreement]:
-    """Where the Analysis's sounds differ from the Annotation (Noisy spans excluded)."""
+    """Where the Analysis's sounds differ from the Annotation (Noisy spans excluded). Vectorised:
+    it runs on every edit, over thousands of spans."""
     ann = [s for s in annotation if s.kind in SOUNDS]
     alg = [s for s in algorithm if s.kind in SOUNDS]
     noisy = [s for s in annotation if s.kind == NOISY]
-    alg_start = np.array([s.start for s in alg])
-    alg_end = np.array([s.end for s in alg])
-    ann_start = np.array([s.start for s in ann])
-    ann_end = np.array([s.end for s in ann])
-    noisy_start = np.array([s.start for s in noisy])
-    noisy_end = np.array([s.end for s in noisy])
+    a_start = np.array([s.start for s in ann], dtype=np.float64)
+    a_end = np.array([s.end for s in ann], dtype=np.float64)
+    g_start = np.array([s.start for s in alg], dtype=np.float64)
+    g_end = np.array([s.end for s in alg], dtype=np.float64)
+    a_s1 = np.array([s.kind == S1 for s in ann], dtype=bool)
+    g_s1 = np.array([s.kind == S1 for s in alg], dtype=bool)
 
-    def overlapping(starts, ends, a, b):
-        if len(starts) == 0:
-            return range(0)
-        hi = int(np.searchsorted(starts, b - _EPS, side="left"))
-        lo = int(np.searchsorted(ends, a + _EPS, side="right"))
-        return range(lo, hi)
+    lo, hi = _overlap_ranges(g_start, g_end, a_start, a_end)
+    n_over = hi - lo
+    s1_cum = np.concatenate([[0], np.cumsum(g_s1)])
+    n_s1 = s1_cum[hi] - s1_cum[lo]
+    n_same = np.where(a_s1, n_s1, n_over - n_s1)
 
     out: List[Disagreement] = []
-    matched_alg = np.zeros(len(alg), dtype=bool)
-    for s in ann:
-        idx = [i for i in overlapping(alg_start, alg_end, s.start, s.end) if alg[i].overlaps(s.start, s.end)]
-        for i in idx:
-            matched_alg[i] = True
-        if not idx:
-            out.append(Disagreement("missed", s.start, s.end, f"algorithm has no sound at the annotated {s.kind}"))
-        elif not any(alg[i].kind == s.kind for i in idx):
-            other = alg[idx[0]].kind
-            out.append(Disagreement("swapped", s.start, s.end, f"annotated {s.kind}, algorithm says {other}"))
-    for i, s in enumerate(alg):
-        if matched_alg[i]:
-            continue
-        if any(noisy[j].overlaps(s.start, s.end) for j in overlapping(noisy_start, noisy_end, s.start, s.end)):
-            continue
+    for i in np.nonzero(n_over == 0)[0]:
+        s = ann[i]
+        out.append(Disagreement("missed", s.start, s.end, f"algorithm has no sound at the annotated {s.kind}"))
+    for i in np.nonzero((n_over > 0) & (n_same == 0))[0]:
+        s = ann[i]
+        out.append(Disagreement("swapped", s.start, s.end, f"annotated {s.kind}, algorithm says {alg[lo[i]].kind}"))
+
+    # Algorithm sounds touched by no annotated sound and outside every Noisy span.
+    cover = np.zeros(len(alg) + 1, dtype=np.int64)
+    np.add.at(cover, lo[n_over > 0], 1)
+    np.add.at(cover, hi[n_over > 0], -1)
+    matched = np.cumsum(cover[:-1]) > 0
+    if noisy:
+        n_lo, n_hi = _overlap_ranges(np.array([s.start for s in noisy]), np.array([s.end for s in noisy]),
+                                     g_start, g_end)
+        matched |= n_hi > n_lo
+    for i in np.nonzero(~matched)[0]:
+        s = alg[i]
         out.append(Disagreement("extra", s.start, s.end, f"algorithm {s.kind} where the annotation has none"))
     out.sort(key=lambda d: d.start)
     return out

@@ -158,3 +158,39 @@ def test_find_for_recording_matches_by_fingerprint(tmp_path):
     an.save(an.Annotation("other", DUR, "x.wav", ()), tmp_path / "x.annotation.json")
     assert an.find_for_recording(rec, "fp1") == tmp_path / "old name.annotation.json"
     assert an.find_for_recording(rec, "nope") is None
+
+
+def _disagreements_reference(ann_spans, algo_spans):
+    ann = [s for s in ann_spans if s.kind in an.SOUNDS]
+    alg = [s for s in algo_spans if s.kind in an.SOUNDS]
+    noisy = [s for s in ann_spans if s.kind == NOISY]
+    out = set()
+    hit = set()
+    for s in ann:
+        over = [g for g in alg if g.overlaps(s.start, s.end)]
+        hit.update(over)
+        if not over:
+            out.add(("missed", s.start))
+        elif not any(g.kind == s.kind for g in over):
+            out.add(("swapped", s.start))
+    for g in alg:
+        if g not in hit and not any(n.overlaps(g.start, g.end) for n in noisy):
+            out.add(("extra", g.start))
+    return out
+
+
+def test_disagreements_match_brute_force():
+    rng = random.Random(3)
+    for _ in range(50):
+        ann = ()
+        for _ in range(60):
+            t = rng.uniform(0, 30)
+            if rng.random() < 0.1:
+                ann = an.paint_noisy(ann, t, t + rng.uniform(0.1, 1.5), DUR)
+            else:
+                ann = an.place_sound(ann, rng.choice([S1, S2]), t, rng.uniform(0.03, 0.2), DUR)
+        starts = sorted(rng.uniform(0, 30) for _ in range(60))
+        algo = an.from_states(starts, [s + rng.uniform(0.03, 0.2) for s in starts],
+                              [rng.choice(["S1", "S2", "systole"]) for _ in starts])
+        got = {(d.kind, d.start) for d in an.disagreements(ann, algo)}
+        assert got == _disagreements_reference(ann, algo)
