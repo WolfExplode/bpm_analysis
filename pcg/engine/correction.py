@@ -24,6 +24,7 @@ Section map (Ctrl+F the section title to jump)
   MAIN ENTRY POINT                         line ~2276
 """
 
+import bisect
 import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
@@ -982,122 +983,54 @@ def _pass3_clear_states_in_hf_noise(
     state_boundaries: List[Tuple],
     noise_ivs: List[Tuple[int, int]],
     n_samples: int,
-    s1_peaks: np.ndarray,
 ) -> Tuple[np.ndarray, List[Tuple]]:
     """
-    HF noise repair (merged preprocessing windows):
+    HF noise repair (merged preprocessing windows), per beat on the timeline. A beat is
+    an S1 segment plus the segments after it up to the next S1; the last beat (no next
+    S1) is never cleared.
 
-    - If the **S1** phase of a beat intersects noise, clear dense labels from painted S1 start
-      through the next S1 peak and drop all four boundary segments for that beat.
+    - If the beat's **S1** intersects noise, drop the whole beat and clear its dense
+      labels ``[S1 start, next S1 start)``.
 
-    - If **diastole** intersects noise **and S1 does not**, clear only **after** that beat's
-      own S1 phase through the next S1 peak ``[s1_end, s1_next)``, keep the **S1** segment,
-      and drop systole / S2 / diastole segments for that beat only (anchor = this beat's S1).
+    - If only its **diastole** intersects noise, keep the S1, drop the rest of the beat
+      and clear ``[S1 end, next S1 start)``.
+
+    Exactly the dropped samples are cleared, so the rebuild never paints over a
+    segment that was kept (the overlap bug). Beats are read from the timeline, not
+    from the ``s1`` meta keys, which the phase decision does not keep consistent.
 
     The **first merged** HF-noise interval **starting at sample 0** is ignored for this
     repair only: clearing there would remove early S1 runs and Pass 3 state-timeline BPM would
     have no points for the start of the file. Later noise windows still trigger clearing.
     """
     merged = _merge_sorted_intervals(noise_ivs)
-    if not merged:
-        return state_labels, state_boundaries
-    if int(merged[0][0]) == 0:
+    if merged and int(merged[0][0]) == 0:
         merged = merged[1:]
     if not merged:
         return state_labels, state_boundaries
 
-    peaks = np.asarray(s1_peaks, dtype=np.int64)
-    n_cyc = max(0, len(peaks) - 1)
-
-    # One pass over boundaries: O(n) maps for cycle lookups (avoids re-scanning per beat).
-    s1_span: Dict[int, Tuple[int, int]] = {}
-    dia_span: Dict[int, Tuple[int, int]] = {}
-    for seg in state_boundaries:
-        st = seg[2]
-        if st not in ("S1", "diastole"):
-            continue
-        bm = seg[3] if isinstance(seg[3], dict) else {}
-        pk = bm.get("s1")
-        if pk is None:
-            continue
-        pk_i = int(pk)
-        a0 = max(0, min(int(seg[0]), n_samples))
-        a1 = max(0, min(int(seg[1]), n_samples))
-        if a1 <= a0:
-            continue
-        if st == "S1":
-            s1_span[pk_i] = (a0, a1)
+    segs = sorted(state_boundaries, key=lambda s: (int(s[0]), int(s[1])))
+    s1_idx = [i for i, s in enumerate(segs) if s[2] == "S1"]
+    drop: set = set()
+    for k in range(len(s1_idx) - 1):
+        i, j = s1_idx[k], s1_idx[k + 1]
+        s1_lo, s1_hi = int(segs[i][0]), int(segs[i][1])
+        next_s1_lo = int(segs[j][0])
+        if _span_intersects_merged_noise(s1_lo, s1_hi, merged, n_samples):
+            lo, first = s1_lo, i
+        elif any(segs[m][2] == "diastole"
+                 and _span_intersects_merged_noise(int(segs[m][0]), int(segs[m][1]), merged, n_samples)
+                 for m in range(i + 1, j)):
+            lo, first = s1_hi, i + 1
         else:
-            dia_span[pk_i] = (a0, a1)
-
-    s1_touch: set = set()
-    dia_touch: set = set()
-    for i in range(n_cyc):
-        pk = int(peaks[i])
-        s1_next = int(peaks[i + 1])
-        if s1_next <= pk:
             continue
-        se = s1_span.get(pk)
-        if se is None:
-            continue
-        s0, e0 = se
-        if _span_intersects_merged_noise(s0, e0, merged, n_samples):
-            s1_touch.add(pk)
-        de = dia_span.get(pk)
-        if de is not None:
-            d0, d1 = de
-            if _span_intersects_merged_noise(d0, d1, merged, n_samples):
-                dia_touch.add(pk)
-
-    # Full beat only when S1 touches noise; diastole-only → clear states after the S1 for that beat.
-    dia_only = dia_touch - s1_touch
-    if not s1_touch and not dia_only:
+        drop.update(range(first, j))
+        hi = min(n_samples, next_s1_lo)
+        if hi > lo:
+            state_labels[max(0, lo):hi] = STATE_UNKNOWN
+    if not drop:
         return state_labels, state_boundaries
-
-    # Dense: S1 noise → clear [S1 start .. next peak)
-    for i in range(n_cyc):
-        pk = int(peaks[i])
-        if pk not in s1_touch:
-            continue
-        s1_next = int(peaks[i + 1])
-        se = s1_span.get(pk)
-        if se is None or s1_next <= se[0]:
-            continue
-        lo_clr = max(0, se[0])
-        hi_clr = min(n_samples, s1_next)
-        if hi_clr > lo_clr:
-            state_labels[lo_clr:hi_clr] = STATE_UNKNOWN
-
-    # Dense: diastole noise only (S1 clean) → clear [s1_end .. next peak), keep S1 labels
-    for i in range(n_cyc):
-        pk = int(peaks[i])
-        if pk not in dia_only:
-            continue
-        s1_next = int(peaks[i + 1])
-        se = s1_span.get(pk)
-        if se is None:
-            continue
-        _, s1_end = se
-        if s1_next <= s1_end:
-            continue
-        lo_p = max(0, s1_end)
-        hi_p = min(n_samples, s1_next)
-        if hi_p > lo_p:
-            state_labels[lo_p:hi_p] = STATE_UNKNOWN
-
-    new_bd: List[Tuple] = []
-    for seg in state_boundaries:
-        st_name = seg[2]
-        meta = seg[3] if isinstance(seg[3], dict) else {}
-        s1_key = meta.get("s1")
-        if s1_key is not None:
-            sk = int(s1_key)
-            if sk in s1_touch:
-                continue
-            if sk in dia_only and st_name in ("systole", "S2", "diastole"):
-                continue
-        new_bd.append(seg)
-    return state_labels, new_bd
+    return state_labels, [s for i, s in enumerate(segs) if i not in drop]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1339,23 +1272,46 @@ def _interp_piecewise_linear(
     return val
 
 
-def _pass3_trim_diastole_ends_on_next_s1(state_boundaries: List[Tuple]) -> List[Tuple]:
-    """Shorten diastole segment ends so they do not overlap the next S1 segment (same as main Pass 3 trim)."""
-    _trimmed: List[Tuple] = []
-    for _bi, _seg in enumerate(state_boundaries):
-        if _seg[2] == "diastole":
-            _dia_start, _dia_end, _dia_name, _dia_meta = _seg
-            _next_s1_start = _dia_end
-            for _fwd in range(_bi + 1, len(state_boundaries)):
-                if state_boundaries[_fwd][2] == "S1":
-                    _next_s1_start = state_boundaries[_fwd][0]
-                    break
-            _new_end = min(_dia_end, _next_s1_start)
-            if _new_end > _dia_start:
-                _trimmed.append((_dia_start, _new_end, _dia_name, _dia_meta))
-        else:
-            _trimmed.append(_seg)
-    return _trimmed
+def _clamp_sequential(segs: List[Tuple]) -> List[Tuple]:
+    """Sort by start; end each segment no later than the next starts (later wins; of
+    two starting together the shorter, inner one wins). Empty segments are dropped."""
+    ordered = sorted(segs, key=lambda s: (int(s[0]), -int(s[1])))
+    out: List[Tuple] = []
+    for i, seg in enumerate(ordered):
+        a0, a1 = int(seg[0]), int(seg[1])
+        if i + 1 < len(ordered):
+            a1 = min(a1, int(ordered[i + 1][0]))
+        if a1 > a0:
+            out.append((a0, a1) + tuple(seg[2:]))
+    return out
+
+
+def _pass3_make_sequential(state_boundaries: List[Tuple]) -> List[Tuple]:
+    """Make the boundary list a partition of time: no two segments claim a sample.
+
+    Painting extends sounds around their peaks and runs diastole / S2 up to the next
+    S1 *peak*, so segments poke into the next one (whose start lies before that peak).
+    Sounds (S1/S2) are resolved first, the later one winning the shared samples —
+    matching the dense labels, which paint it last. Systole / diastole are the gaps
+    between sounds: each keeps only the free space after the sound it starts in (or
+    follows) and before the next sound, so one lying inside a sound vanishes (an S2
+    that ran into the next S1 leaves no diastole).
+    """
+    sounds = _clamp_sequential([s for s in state_boundaries if s[2] in ("S1", "S2")])
+    starts = [int(s[0]) for s in sounds]
+    gaps: List[Tuple] = []
+    for seg in state_boundaries:
+        if seg[2] in ("S1", "S2"):
+            continue
+        a0, a1 = int(seg[0]), int(seg[1])
+        k = bisect.bisect_right(starts, a0)  # sounds[k-1] is the last one starting <= a0
+        if k > 0:
+            a0 = max(a0, int(sounds[k - 1][1]))  # starts inside a sound: begin after it
+        if k < len(sounds):
+            a1 = min(a1, starts[k])
+        if a1 > a0:
+            gaps.append((a0, a1) + tuple(seg[2:]))
+    return _clamp_sequential(sounds + gaps)
 
 
 def _pass3_global_phase_correction(
@@ -2178,8 +2134,7 @@ def _pass3_apply_peaks_labeling_in_large_gaps(
                     if c0 is not None:
                         state_labels[a:min(b, n_samples)] = c0
         bd.extend(new_segs)
-        bd = sorted(bd, key=lambda s: s[0])
-        bd = _pass3_trim_diastole_ends_on_next_s1(bd)
+        bd = _pass3_make_sequential(bd)
 
     return state_labels, bd
 
@@ -2352,6 +2307,14 @@ def _pass3_rebuild_unknown_runs(
             elif name == "diastole":
                 state_labels[a0:a1] = STATE_DIASTOLE
 
+        # The scaled phases are rounded, so the last cycle can stop a few samples short of
+        # gap_hi; starting another cycle there would paint a sliver S1 (a phantom beat).
+        # Let a diastole that leaves less than half a cycle run to gap_hi instead.
+        def _diastole_end(nominal_end: int) -> int:
+            if end - nominal_end < (p_s1 + p_sys + p_s2 + p_dia) // 2:
+                return end
+            return min(end, nominal_end)
+
         # If we start after a kept S1, generate the remainder of that cycle:
         # systole → S2 → diastole, then continue with full cycles.
         current_s1_pk = anchor_s1_pk if anchor_s1_pk is not None else cursor
@@ -2360,7 +2323,7 @@ def _pass3_rebuild_unknown_runs(
             sys0 = cursor
             sys1 = min(end, sys0 + p_sys)
             s2_1 = min(end, sys1 + p_s2)
-            dia1 = min(end, s2_1 + p_dia)
+            dia1 = _diastole_end(s2_1 + p_dia)
             _emit(sys0, sys1, "systole", {
                 "s1": int(current_s1_pk),
                 "s2": int(sys1),
@@ -2389,7 +2352,7 @@ def _pass3_rebuild_unknown_runs(
             s1_end = min(end, cursor + p_s1)
             sys_end = min(end, s1_end + p_sys)
             s2_end = min(end, sys_end + p_s2)
-            dia_end = min(end, s2_end + p_dia)
+            dia_end = _diastole_end(s2_end + p_dia)
 
             _emit(cursor, s1_end, "S1", {
                 "s1": int(s1_pk),
@@ -2915,29 +2878,6 @@ def run_pass3_correction(
                 }),
             )
 
-    # ── Trim diastole ends so boundary list is a strict non-overlapping partition ──
-    # Each diastole was appended ending at s1_next (the next peak index), but the next
-    # cycle's S1 starts *before* that peak (edge-detection start < peak). That left a
-    # region claimed by both diastole and S1 in the boundary list, even though
-    # state_labels itself (last-write-wins) is correct. Fix: walk the list once and
-    # shorten any diastole whose end exceeds the start of the very next S1 segment.
-    _trimmed: List[Tuple] = []
-    for _bi, _seg in enumerate(state_boundaries):
-        if _seg[2] == "diastole":
-            _dia_start, _dia_end, _dia_name, _dia_meta = _seg
-            # Find the start of the immediately following S1 segment.
-            _next_s1_start = _dia_end  # default: no change
-            for _fwd in range(_bi + 1, len(state_boundaries)):
-                if state_boundaries[_fwd][2] == "S1":
-                    _next_s1_start = state_boundaries[_fwd][0]
-                    break
-            _new_end = min(_dia_end, _next_s1_start)
-            if _new_end > _dia_start:
-                _trimmed.append((_dia_start, _new_end, _dia_name, _dia_meta))
-        else:
-            _trimmed.append(_seg)
-    state_boundaries = _trimmed
-
     # ── Phase decision (ADR-0004): decide S1/S2 once, here, on the stable Beats ──
     # Runs early — before noise repair / gap fill / snap can move any geometry — so
     # the decision observes fixed evidence, not its own pipeline's mutated output.
@@ -2950,6 +2890,12 @@ def run_pass3_correction(
             corrections.append({"type": "phase_decision", "changed": int(_n_phase)})
     except Exception:
         logging.debug("Pass 3: phase decision failed", exc_info=True)
+
+    # Diastole and S2 were painted up to s1_next (the next peak), but the next S1
+    # starts before its peak; state_labels (last write wins) already gives those
+    # samples to the S1, so make the boundary list agree. Done after the phase
+    # decision, which reads the sounds as painted and itself drops duplicates.
+    state_boundaries = _pass3_make_sequential(state_boundaries)
 
     def _compute_and_store_measured_phase_curves(
         *,
@@ -3020,7 +2966,7 @@ def run_pass3_correction(
     if _did_noise_repair:
         # BPM prior raster was already computed unconditionally above; reuse it here.
         state_labels, state_boundaries = _pass3_clear_states_in_hf_noise(
-            state_labels, state_boundaries, noise_ivs_final, n_samples, peaks_out,
+            state_labels, state_boundaries, noise_ivs_final, n_samples,
         )
         logging.info(
             "Pass 3 noise repair: S1 noise → full beat clear; diastole-only noise → post-S1 clear "

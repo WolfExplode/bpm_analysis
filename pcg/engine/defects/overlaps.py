@@ -3,9 +3,9 @@ Detector for overlapping cardiac states.
 
 The Pass 3 state timeline (``analysis_data["pass3_state_boundaries"]``) is meant to
 be a *dense, non-overlapping* partition of time into S1 / systole / S2 / diastole
-spans. A known bug lets the gap-fill paths emit segments that overlap each other
-(two cardiac meanings claiming the same instant), most often inside gap regions
-where old boundaries were not removed before new ones were painted.
+spans. Pass 3 enforces that (correction._pass3_make_sequential and the beat-exact
+HF-noise clear); this detector guards it, so an overlap here means a stage painted
+over segments it should have removed or trimmed.
 
 This module is pure (no pipeline import) so it can be unit-tested and reused.
 

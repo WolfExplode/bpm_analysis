@@ -118,22 +118,87 @@ def test_paint_state_boundaries_resolves_close_peaks():
 
 # --- state-boundary list transforms -----------------------------------------
 
-def test_trim_diastole_ends_on_next_s1():
+def test_make_sequential_later_segment_wins_shared_samples():
     boundaries = [
+        (45, 55, "S1", {}),
         (0, 10, "S1", {}),
         (10, 50, "diastole", {}),
-        (45, 55, "S1", {}),
+        (30, 48, "S2", {}),
     ]
-    out = corr._pass3_trim_diastole_ends_on_next_s1(boundaries)
-    dia = [b for b in out if b[2] == "diastole"][0]
-    assert dia[1] == 45        # trimmed to next S1 start
+    out = corr._pass3_make_sequential(boundaries)
+    assert [b[:3] for b in out] == [(0, 10, "S1"), (10, 30, "diastole"), (30, 45, "S2"), (45, 55, "S1")]
 
 
-def test_trim_diastole_drops_segment_that_would_invert():
-    # next S1 starts before the diastole even begins -> trimmed away entirely
-    boundaries = [(20, 50, "diastole", {}), (10, 15, "S1", {})]
-    out = corr._pass3_trim_diastole_ends_on_next_s1(boundaries)
-    assert all(b[2] != "diastole" for b in out)
+def test_make_sequential_sounds_win_over_gaps():
+    # A diastole that starts inside an S1 resumes after it; one lying wholly inside a
+    # sound (an S2 that ran into the next S1) vanishes instead of cutting the S1 short.
+    boundaries = [
+        (0, 40, "S2", {}),
+        (30, 60, "S1", {}),
+        (40, 50, "diastole", {}),
+        (55, 90, "systole", {"k": 1}),
+    ]
+    out = corr._pass3_make_sequential(boundaries)
+    assert out == [(0, 30, "S2", {}), (30, 60, "S1", {}), (60, 90, "systole", {"k": 1})]
+
+
+def _beat(s1, length=100):
+    """One beat starting at *s1*: S1 10, systole 30, S2 10, diastole rest (empty meta, as after the phase decision)."""
+    return [(s1, s1 + 10, "S1", {}), (s1 + 10, s1 + 40, "systole", {}),
+            (s1 + 40, s1 + 50, "S2", {}), (s1 + 50, s1 + length, "diastole", {})]
+
+
+def _labels_for(boundaries, n):
+    code = {"S1": corr.STATE_S1, "systole": corr.STATE_SYSTOLE, "S2": corr.STATE_S2, "diastole": corr.STATE_DIASTOLE}
+    labels = np.full(n, corr.STATE_DIASTOLE, dtype=np.int8)
+    for a, b, name, _m in boundaries:
+        labels[a:b] = code[name]
+    return labels
+
+
+def test_clear_hf_noise_on_s1_drops_whole_beat_and_clears_exactly_it():
+    bd = _beat(0) + _beat(100) + _beat(200)
+    labels, out = corr._pass3_clear_states_in_hf_noise(_labels_for(bd, 300), bd, [(105, 108)], 300)
+    assert [b[0] for b in out] == [0, 10, 40, 50, 200, 210, 240, 250]
+    assert (labels[100:200] == corr.STATE_UNKNOWN).all()
+    assert not (labels[:100] == corr.STATE_UNKNOWN).any() and not (labels[200:] == corr.STATE_UNKNOWN).any()
+
+
+def test_clear_hf_noise_in_diastole_keeps_s1():
+    bd = _beat(0) + _beat(100) + _beat(200)
+    labels, out = corr._pass3_clear_states_in_hf_noise(_labels_for(bd, 300), bd, [(170, 180)], 300)
+    assert [b[:3] for b in out if 100 <= b[0] < 200] == [(100, 110, "S1")]
+    assert (labels[110:200] == corr.STATE_UNKNOWN).all() and (labels[100:110] == corr.STATE_S1).all()
+
+
+def test_clear_hf_noise_ignores_last_beat_and_noise_at_file_start():
+    bd = _beat(0) + _beat(100)
+    labels0 = _labels_for(bd, 200)
+    labels, out = corr._pass3_clear_states_in_hf_noise(labels0.copy(), bd, [(0, 5), (150, 160)], 200)
+    assert out == bd and (labels == labels0).all()
+
+
+def test_rebuild_after_clear_never_overlaps_kept_segments():
+    from pcg.engine.config import DEFAULT_PARAMS
+    from pcg.engine.defects.overlaps import find_overlapping_states
+    bd = _beat(0, 300) + _beat(300, 300) + _beat(600, 300) + _beat(900, 300)
+    labels, out = corr._pass3_clear_states_in_hf_noise(_labels_for(bd, 1200), bd, [(305, 308), (850, 860)], 1200)
+    labels, out = corr._pass3_rebuild_unknown_runs(labels, out, 1200, None, 60.0, 300, dict(DEFAULT_PARAMS))
+    assert not (labels == corr.STATE_UNKNOWN).any()
+    assert find_overlapping_states(out) == []
+
+
+@pytest.mark.parametrize("width", [290, 300, 307, 311, 589, 604])
+def test_rebuild_fills_gap_without_sliver_s1(width):
+    from pcg.engine.config import DEFAULT_PARAMS
+    # A gap that is not a whole number of (rounded) cycles must not end in a sliver S1.
+    n = 100 + width + 50
+    labels = np.full(n, corr.STATE_DIASTOLE, dtype=np.int8)
+    labels[100:100 + width] = corr.STATE_UNKNOWN
+    labels, out = corr._pass3_rebuild_unknown_runs(labels, [], n, None, 60.0, 300, dict(DEFAULT_PARAMS))
+    s1 = [b for b in out if b[2] == "S1"]
+    assert s1 and min(b[1] - b[0] for b in s1) >= 5
+    assert out[-1][2] == "diastole" and out[-1][1] == 100 + width
 
 
 def test_remove_boundaries_overlapping_span():

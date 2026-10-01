@@ -138,8 +138,12 @@ adding a missing span.
 
 The Pass 3 state timeline (`analysis_data["pass3_state_boundaries"]`) is supposed
 to be a **dense, non-overlapping** partition of time into S1 / systole / S2 /
-diastole spans. A bug lets gap-fill paths emit spans that overlap — two cardiac
-meanings claiming the same samples.
+diastole spans. Overlaps (two cardiac meanings claiming the same samples) were
+fixed on 2026-10-01 — 1,317 across 108 files, now 0. Causes: the HF-noise clear
+found beats through stale `s1` meta keys and cleared to the next S1 *peak*, so the
+rebuild painted a second beat over kept segments; S2s were clipped at the next S1
+peak rather than its start. Pass 3 now keeps the list sequential
+(`_pass3_make_sequential`), and the detector stays as the guard.
 
 ### Files
 

@@ -1,22 +1,22 @@
 {
   "aggregate": {
     "totals": {
-      "overlaps_gap_rebuild": 555,
-      "overlaps_edge_paint": 144,
-      "coverage_desync_runs": 1763,
-      "seq_missing_s1": 48,
-      "seq_bad_transition": 99,
-      "swap_mismatches": 9843
+      "overlaps_gap_rebuild": 0,
+      "overlaps_edge_paint": 0,
+      "coverage_desync_runs": 1343,
+      "seq_missing_s1": 13,
+      "seq_bad_transition": 260,
+      "swap_mismatches": 105
     },
     "files_affected": {
-      "overlaps_gap_rebuild": 21,
-      "overlaps_edge_paint": 55,
-      "coverage_desync_runs": 892,
-      "seq_missing_s1": 26,
-      "seq_bad_transition": 57,
-      "swap_mismatches": 392
+      "overlaps_gap_rebuild": 0,
+      "overlaps_edge_paint": 0,
+      "coverage_desync_runs": 870,
+      "seq_missing_s1": 8,
+      "seq_bad_transition": 100,
+      "swap_mismatches": 40
     },
-    "n_files": 895
+    "n_files": 896
   },
-  "errors": 0
+  "errors": 22
 }
