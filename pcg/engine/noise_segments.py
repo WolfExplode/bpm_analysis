@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from config import param
+from .config import param
 
 def compute_noise_event_segments(
     inverse_band_envelope: np.ndarray,

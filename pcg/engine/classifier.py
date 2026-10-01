@@ -3,11 +3,11 @@ import pandas as pd
 from scipy.signal import find_peaks
 import logging
 from typing import List, Dict, Tuple, Optional, Any, Callable
-from analysis_data_schema import AnalysisData
+from .analysis_data_schema import AnalysisData
 
-from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
+from .time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
 
-from confidence_engine import (
+from .confidence_engine import (
     AnalysisState,
     PairingEngine,
     LookaheadSkipper,
@@ -18,14 +18,14 @@ from confidence_engine import (
     _append_s1_s2_contractility,
     record_s1_outcome,
 )
-from peak_utils import (
+from .peak_utils import (
     PeakType,
     _get_peak_type_from_debug,
     _is_s1_paired_debug,
     build_peak_prominence_detail_cache,
     calculate_peak_prominence,
 )
-from peak_label_scores import (
+from .peak_label_scores import (
     extract_pairing_final_confidence_from_steps,
     label_scores_lone_s1_last_peak,
     label_scores_lone_s1_validated,
@@ -34,7 +34,7 @@ from peak_label_scores import (
     label_scores_paired_s1,
     label_scores_paired_s2,
 )
-from config import param
+from .config import param
 
 
 class PeakClassifier:

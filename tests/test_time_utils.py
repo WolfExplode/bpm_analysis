@@ -3,7 +3,7 @@ import datetime
 
 import numpy as np
 
-import time_utils as tu
+from pcg.engine import time_utils as tu
 
 
 def test_seconds_to_datetime_uses_fixed_epoch():

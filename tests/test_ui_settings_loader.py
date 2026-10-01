@@ -6,7 +6,7 @@ import pytest
 import ui_settings_loader as usl
 from app_settings import DEFAULT_OUTPUT_OPTIONS
 from audio_io import CHANNEL_MODE_ALL, CHANNEL_MODE_MIXED
-from config import DEFAULT_PARAMS
+from pcg.engine.config import DEFAULT_PARAMS
 
 
 # --- migrate_ui_settings_keys ------------------------------------------------

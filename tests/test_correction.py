@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import correction as corr
+from pcg.engine import correction as corr
 
 
 # --- interval utilities -----------------------------------------------------

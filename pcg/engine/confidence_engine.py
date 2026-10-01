@@ -16,8 +16,8 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any, Callable
-from config import param
-from peak_utils import (
+from .config import param
+from .peak_utils import (
     PeakType,
     get_peak_prominence_details,
     calculate_peak_prominence,

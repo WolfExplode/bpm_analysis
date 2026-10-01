@@ -2,12 +2,12 @@ import os
 import logging
 import urllib.parse
 import re
-from time_utils import seconds_to_datetime
+from pcg.engine.time_utils import seconds_to_datetime
 import csv
 import shutil
 import json
 from typing import Dict, Optional, List, Any, Tuple
-from peak_utils import PeakType, _get_peak_type_from_debug, format_debug_entry, get_peak_prominence_details
+from pcg.engine.peak_utils import PeakType, _get_peak_type_from_debug, format_debug_entry, get_peak_prominence_details
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,7 +15,7 @@ from plotly.subplots import make_subplots
 
 from app_settings import DEFAULT_OUTPUT_OPTIONS
 from file_io import find_companion_wav, normalize_output_filename_stem, output_stem_from_path
-from confidence_engine import calculate_bpm_intervals
+from pcg.engine.confidence_engine import calculate_bpm_intervals
 
 import librosa
 import librosa.display
@@ -23,7 +23,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend for spectrogram generation
 import matplotlib.pyplot as plt
-from config import param
+from pcg.engine.config import param
 
 
 # --- Trace audience registry (single source of truth for the HTML "Show:" filter) ---

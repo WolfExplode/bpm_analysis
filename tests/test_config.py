@@ -2,7 +2,7 @@
 import logging
 
 import app_settings
-import config
+from pcg.engine import config
 
 
 def test_default_params_is_dict_of_known_keys():

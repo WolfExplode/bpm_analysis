@@ -3,7 +3,7 @@
 `run_analysis` is the single entry point. It is pure computation: it reads the WAV
 it is given and nothing else — no plots, reports, output directories, output
 toggles, GUI, or console configuration. Anything that renders or saves results
-(pipeline.py, debug_helpers, benchmarking) sits on top of it:
+(pcg.analysis, the app, debug_helpers, benchmarking) sits on top of it:
 
 - intermediate passes are exposed through `on_stage(name, data)` so a caller can
   render them at the moment they exist (see STAGE_* below);
@@ -21,12 +21,12 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 
-from audio_preprocessing import DebugAudioSink, preprocess_audio
-from noise_segments import compute_noise_event_segments
-from config import param, validate_params
-from time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
-from classifier import PeakClassifier
-from hrv import (
+from .audio_preprocessing import DebugAudioSink, preprocess_audio
+from .noise_segments import compute_noise_event_segments
+from .config import param, validate_params
+from .time_utils import dense_time_grid, rasterize_timeseries_linear, STANDARD_DT_SEC
+from .classifier import PeakClassifier
+from .hrv import (
     calculate_bpm_series,
     calculate_bpm_series_from_s1_state_labels,
     compute_pass1_bpm_curve,
@@ -42,7 +42,9 @@ from hrv import (
     calculate_global_hrv_frequency,
     detect_bpm_failure,
 )
-from correction import run_pass3_correction
+from .correction import run_pass3_correction
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # on_stage event names, in the order they fire. pass1/pass2 fire only on the native
 # path, and fire once per algorithm attempt when auto-switch retries.
@@ -94,7 +96,7 @@ def _run_springer_mode(
     import sys
     import soundfile as sf
 
-    _SPRINGER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "springer2015")
+    _SPRINGER_DIR = os.path.join(_REPO_ROOT, "springer2015")
     if _SPRINGER_DIR not in sys.path:
         sys.path.insert(0, _SPRINGER_DIR)
 
@@ -510,7 +512,7 @@ def _run_algorithm_pass(
         # Pass 4: holistic Viterbi decoder (guarded by config; off by default).
         peaks_after_pass4 = peaks_after_pass3
         if param(params, "enable_pass4"):
-            from viterbi import run_pass4_viterbi
+            from .viterbi import run_pass4_viterbi
             _ui("Pass 4: Viterbi holistic decode...")
             peaks_after_pass4, analysis_data = run_pass4_viterbi(
                 peaks_after_pass3, analysis_data, algorithm_envelope, sample_rate, params,

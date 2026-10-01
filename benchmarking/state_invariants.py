@@ -47,7 +47,7 @@ for _p in (_REPO, _SCRIPT_DIR):
 
 import soundfile as sf  # noqa: E402
 
-from config import DEFAULT_PARAMS  # noqa: E402
+from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
 from pipeline import analyze_wav_file  # noqa: E402
 from debug_helpers.overlap_detector import find_overlapping_states  # noqa: E402
 from debug_helpers.coverage_detector import find_label_boundary_desync  # noqa: E402

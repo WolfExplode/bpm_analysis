@@ -38,7 +38,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from scipy.signal import find_peaks, peak_prominences  # noqa: E402
 
-from config import param  # noqa: E402
+from pcg.engine.config import param  # noqa: E402
 from debug_helpers._common import (  # noqa: E402
     env_sample_rate, params, reconfigure_stdio, run_pipeline,
 )

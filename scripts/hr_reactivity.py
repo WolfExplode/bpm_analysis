@@ -70,7 +70,7 @@ from ttkbootstrap.constants import *
 
 from scipy.interpolate import interp1d
 
-from time_utils import timestamp_str, seconds_to_datetime
+from pcg.engine.time_utils import timestamp_str, seconds_to_datetime
 
 
 # ---------- Core analysis functions ----------

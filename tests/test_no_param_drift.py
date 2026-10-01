@@ -11,11 +11,13 @@ import ast
 import glob
 import os
 
-import config
+from pcg.engine import config
 
 # Receivers that are the canonical params dict (or `params or {}`). Other dicts
 # that happen to share a key name (e.g. the ui_settings dict `s`) are exempt.
 PARAMS_RECEIVERS = {"params", "self.params", "pc"}
+
+_SKIP_DIRS = {"springer2015", "venv", ".venv", "build", "dist", "tests"}
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,8 +25,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _offending_sites():
     keys = set(config.DEFAULT_PARAMS)
     hits = []
-    for path in glob.glob(os.path.join(_ROOT, "*.py")):
-        if os.path.basename(path) == "config.py":
+    for path in glob.glob(os.path.join(_ROOT, "**", "*.py"), recursive=True):
+        rel = os.path.relpath(path, _ROOT).replace(os.sep, "/")
+        if rel == "pcg/engine/config.py" or rel.split("/")[0] in _SKIP_DIRS:
             continue
         src = open(path, encoding="utf-8").read()
         tree = ast.parse(src, path)
@@ -43,7 +46,7 @@ def _offending_sites():
                     continue
                 recv = ast.get_source_segment(src, node.func.value)
                 if recv in PARAMS_RECEIVERS:
-                    hits.append(f"{os.path.basename(path)}:{node.lineno}  "
+                    hits.append(f"{rel}:{node.lineno}  "
                                 f"{recv}.get(\"{key_node.value}\", ...)  -> use param({recv}, \"{key_node.value}\")")
     return hits
 

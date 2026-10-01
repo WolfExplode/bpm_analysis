@@ -27,7 +27,7 @@ if _REPO not in sys.path:
 
 import soundfile as sf  # noqa: E402
 
-from config import DEFAULT_PARAMS  # noqa: E402
+from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
 from pipeline import analyze_wav_file  # noqa: E402
 
 # Suppress every output artifact: these tools only want analysis_data.

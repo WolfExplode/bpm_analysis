@@ -1,5 +1,5 @@
 """engine: pure helpers (auto-switch-algorithm decision logic)."""
-import engine
+from pcg.engine import run as engine
 
 
 def test_should_switch_when_alternate_passes():

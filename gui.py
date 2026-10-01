@@ -13,7 +13,7 @@ import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
 import app_settings
 from app_settings import DEFAULT_OUTPUT_OPTIONS, DEFAULT_UI_SETTINGS
-from config import DEFAULT_PARAMS
+from pcg.engine.config import DEFAULT_PARAMS
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, List, Optional, Tuple

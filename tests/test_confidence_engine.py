@@ -6,8 +6,8 @@ magic numbers, so they survive parameter retuning in config.py.
 import numpy as np
 import pytest
 
-import config
-import confidence_engine as ce
+from pcg.engine import config
+from pcg.engine import confidence_engine as ce
 
 PARAMS = dict(config.DEFAULT_PARAMS)
 

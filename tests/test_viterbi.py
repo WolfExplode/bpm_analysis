@@ -1,8 +1,8 @@
 """Viterbi decoder core + observation mapping (Pass 4 building blocks)."""
 import numpy as np
 
-import viterbi
-from viterbi import (
+from pcg.engine import viterbi
+from pcg.engine.viterbi import (
     N_STATES,
     STATE_S1,
     STATE_SYSTOLE,
@@ -60,7 +60,7 @@ def test_build_4state_log_obs_rows_normalized():
 
 
 def test_build_transition_matrix_topology():
-    params = dict(__import__("config").DEFAULT_PARAMS)
+    params = dict(__import__("pcg.engine.config", fromlist=["x"]).DEFAULT_PARAMS)
     T = viterbi.build_transition_matrix(bpm=80.0, sample_rate=600, params=params)
     assert T.shape == (N_STATES, N_STATES)
     # Allowed forward + self transitions are finite; everything else is -inf.

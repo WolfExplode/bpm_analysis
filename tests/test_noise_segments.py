@@ -1,9 +1,9 @@
 """HF-noise interval gating + merging."""
 import numpy as np
 
-import config
-import noise_segments as ns
-from noise_segments import _merge_intervals
+from pcg.engine import config
+from pcg.engine import noise_segments as ns
+from pcg.engine.noise_segments import _merge_intervals
 
 
 def test_merge_intervals_bridges_within_gap():

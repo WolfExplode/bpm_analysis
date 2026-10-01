@@ -1,7 +1,7 @@
 """HRV outlier masks, duration clamps, and windowed metrics."""
 import numpy as np
 
-import hrv
+from pcg.engine import hrv
 
 
 def test_global_mad_mask_flags_single_outlier():

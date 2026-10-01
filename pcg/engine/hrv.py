@@ -5,8 +5,8 @@ import pandas as pd
 from scipy.signal import find_peaks, lombscargle
 from typing import List, Dict, Tuple, Optional
 
-from time_utils import dense_time_grid, STANDARD_DT_SEC
-from config import param
+from .time_utils import dense_time_grid, STANDARD_DT_SEC
+from .config import param
 
 _LOMB_FREQS: Optional[np.ndarray] = None
 _LOMB_ANGULAR: Optional[np.ndarray] = None

@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 
 from file_io import output_stem_from_path
-from peak_utils import _get_peak_type_from_debug, format_debug_entry
-from time_utils import timestamp_str
+from pcg.engine.peak_utils import _get_peak_type_from_debug, format_debug_entry
+from pcg.engine.time_utils import timestamp_str
 
 
 class ReportGenerator:

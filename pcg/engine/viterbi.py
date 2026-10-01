@@ -36,8 +36,8 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from confidence_engine import calculate_bpm_intervals
-from config import param
+from .confidence_engine import calculate_bpm_intervals
+from .config import param
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ from audio_io import (
     CHANNEL_MODE_RIGHT,
     normalize_channel_mode,
 )
-from audio_preprocessing import (
+from pcg.engine.audio_preprocessing import (
     _centered_moving_average,
     _dense_troughs_linear_interpolate,
     _rolling_quantile_center_bfill_ffill,

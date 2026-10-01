@@ -34,9 +34,9 @@ if _REPO not in sys.path:
 
 import numpy as np  # noqa: E402
 
-from config import param  # noqa: E402
-from peak_utils import PeakType  # noqa: E402
-from correction import _detect_sensitive_peaks_in_large_gap_windows  # noqa: E402
+from pcg.engine.config import param  # noqa: E402
+from pcg.engine.peak_utils import PeakType  # noqa: E402
+from pcg.engine.correction import _detect_sensitive_peaks_in_large_gap_windows  # noqa: E402
 from debug_helpers._common import (  # noqa: E402
     env_sample_rate, params, reconfigure_stdio, run_pipeline,
 )

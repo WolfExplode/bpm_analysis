@@ -38,7 +38,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-s
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 import numpy as np
-from config import DEFAULT_PARAMS
+from pcg.engine.config import DEFAULT_PARAMS
 from pipeline import analyze_wav_file
 
 # ---------------------------------------------------------------------------

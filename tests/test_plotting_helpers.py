@@ -14,7 +14,7 @@ from plotting import (
     _elapsed_seconds_to_plot_datetimes,
     _json_for_html_inline_script,
 )
-from time_utils import seconds_to_datetime
+from pcg.engine.time_utils import seconds_to_datetime
 
 
 # --- _elapsed_seconds_to_plot_datetimes ---------------------------------------

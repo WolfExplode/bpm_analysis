@@ -55,7 +55,7 @@ from bench_scoring import (  # noqa: E402
     score_file,
     span_center,
 )
-from config import DEFAULT_PARAMS  # noqa: E402
+from pcg.engine.config import DEFAULT_PARAMS  # noqa: E402
 from pipeline import analyze_wav_file  # noqa: E402
 
 DEFAULT_ROOT = (

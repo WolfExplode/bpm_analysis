@@ -29,7 +29,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from peak_utils import PeakType  # noqa: E402
+from pcg.engine.peak_utils import PeakType  # noqa: E402
 from debug_helpers._common import (  # noqa: E402
     bpm_hint_from_name, env_sample_rate, params, reconfigure_stdio, run_pipeline,
 )

@@ -12,14 +12,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from phase_decision import (  # noqa: E402
+from pcg.engine.phase_decision import (  # noqa: E402
     PhaseContext,
     TimingLens,
     build_context,
     decode_phase,
     decide_phase,
 )
-from correction import _phase_subset_dp  # noqa: E402
+from pcg.engine.correction import _phase_subset_dp  # noqa: E402
 
 
 def _ctx(sys0=60.0, dia0=240.0, bpm=120.0, ceiling=200.0):

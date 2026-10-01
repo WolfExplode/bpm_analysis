@@ -1,5 +1,5 @@
 """Label-score helpers (path-dependent heuristic masses)."""
-import peak_label_scores as pls
+from pcg.engine import peak_label_scores as pls
 
 
 def test_clip01_bounds():

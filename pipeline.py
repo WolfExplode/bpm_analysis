@@ -13,8 +13,8 @@ import numpy as np
 
 from app_settings import DEFAULT_OUTPUT_OPTIONS
 from audio_io import write_peak_normalized_debug_wav, write_peak_normalized_wav_native_rate
-from config import param
-from engine import STAGE_PASS1, STAGE_PASS2, STAGE_PREPROCESSED, run_analysis
+from pcg.engine.config import param
+from pcg.engine.run import STAGE_PASS1, STAGE_PASS2, STAGE_PREPROCESSED, run_analysis
 from file_io import output_stem_from_path
 from plotting import Plotter, prewarm_kaleido_png_export
 from reporting import ReportGenerator

@@ -11,9 +11,9 @@ import numpy as np
 import plotly.graph_objects as go
 import librosa
 
-from audio_preprocessing import apply_bandpass_only
-from peak_utils import PeakType, _get_peak_type_from_debug
-from config import param
+from pcg.engine.audio_preprocessing import apply_bandpass_only
+from pcg.engine.peak_utils import PeakType, _get_peak_type_from_debug
+from pcg.engine.config import param
 
 
 def _get_pairing_confidence(entry) -> Optional[float]:

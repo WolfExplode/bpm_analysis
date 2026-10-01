@@ -25,7 +25,7 @@ from audio_io import (
 )
 from file_io import find_companion_wav, normalize_output_filename_stem
 from console_logging import configure_analysis_console_logging
-from config import param
+from pcg.engine.config import param
 
 _EXT_PREFERENCE = {
     ".wav": 2,

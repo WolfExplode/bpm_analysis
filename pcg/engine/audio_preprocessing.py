@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, firls, sosfiltfilt, welch, iirnotch, find_peaks, hilbert
 import librosa
-from config import param
+from .config import param
 
 # (kind, signal, sample_rate) -> None; see preprocess_audio.
 DebugAudioSink = Callable[[str, np.ndarray, int], None]

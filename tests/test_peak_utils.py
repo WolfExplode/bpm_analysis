@@ -1,8 +1,8 @@
 """Peak typing + prominence (scalar vs vectorized parity)."""
 import numpy as np
 
-import peak_utils as pu
-from peak_utils import PeakType
+from pcg.engine import peak_utils as pu
+from pcg.engine.peak_utils import PeakType
 
 
 def test_peaktype_is_s1_covers_paired_and_lone():
