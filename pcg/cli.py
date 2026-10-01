@@ -4,7 +4,7 @@
     inspect  RECORDING --from S --to S   text dump of a window (same as Ctrl+Shift+C)
     export   RECORDING ...      BPM CSV (from the Analysis or the Annotation), summary
     rename   PATHS...           write each recording's BPM into its filename
-    app      [PATHS...]         open the workspace (the default with no command)
+    app      [PATHS...] [--analyze]  open the workspace (the default with no command)
 
 For breakpoint debugging of the engine, run `analyze` under a debugger.
 """
@@ -170,7 +170,7 @@ def cmd_rename(args) -> int:
 def cmd_app(args) -> int:
     from pcg.app.main import main as app_main
 
-    return app_main(list(args.paths), library=args.library)
+    return app_main(list(args.paths), library=args.library, analyze=args.analyze)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("app", help="open the workspace")
     p.add_argument("paths", nargs="*")
+    p.add_argument("--analyze", action="store_true",
+                   help="start analysing the given recordings right away (one file: in the workspace)")
     p.set_defaults(func=cmd_app)
     return ap
 

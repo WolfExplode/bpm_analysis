@@ -189,7 +189,7 @@ def spectrogram(signal: np.ndarray, sample_rate: int, fmax: float = 1000.0, hop_
     """
     hop = max(1, int(round(hop_sec * sample_rate)))
     n_fft = int(min(n_fft, max(64, len(signal))))
-    n_bins = max(1, int(fmax / (sample_rate / n_fft)) + 1)
+    n_bins = min(n_fft // 2 + 1, max(1, int(fmax / (sample_rate / n_fft)) + 1))  # fmax may exceed Nyquist
     n_frames = max(0, 1 + (len(signal) - n_fft) // hop)
     window = np.hanning(n_fft).astype(np.float32)
     out = np.empty((n_frames, n_bins), dtype=np.float32)

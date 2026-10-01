@@ -124,7 +124,9 @@ class MainWindow(QtWidgets.QMainWindow):
         ev.accept()
 
 
-def main(paths: Optional[List[str]] = None, library: Optional[str] = None) -> int:
+def main(paths: Optional[List[str]] = None, library: Optional[str] = None, analyze: bool = False) -> int:
+    """Open the app. One file opens in the workspace; several go to the run queue. With
+    *analyze* the engine starts right away (the workspace re-runs even an existing Analysis)."""
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("PCG Workspace")
     app.setStyle("Fusion")
@@ -142,6 +144,12 @@ def main(paths: Optional[List[str]] = None, library: Optional[str] = None) -> in
     files = [p for p in paths if Path(p).is_file()]
     if len(files) == 1 and len(paths) == 1:
         win.open_in_workspace(files[0])
+        if analyze:
+            win.workspace.rerun()  # no-op when opening already started one (no Analysis yet)
     elif paths:
         win.run_screen.add_paths(paths)
+        if analyze:
+            win.run_screen.run()
+    win.raise_()
+    win.activateWindow()
     return app.exec()

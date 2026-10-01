@@ -204,7 +204,7 @@ class RunScreen(QtWidgets.QWidget):
             return
         r = self.rows[i]
         r.result, r.stale, r.bpm = result, stale, bpm
-        if result and r.status == "queued":
+        if result and r.status == "queued" and r not in self.pending:
             r.status = "analysed"
         self.table.blockSignals(True)
         self._fill_row(i, r)

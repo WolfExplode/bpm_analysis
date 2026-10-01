@@ -1,91 +1,92 @@
-// Directory Opus JScript button: analyze the selected recordings headless (python -m pcg analyze),
-// or open the workspace app (python -m pcg) when nothing is selected.
-// Paste into a Script Function (JScript) per DOPUS_SCRIPTING.md. ES3 — no let/const/=>.
+// PCG Workspace — launches the bpm_analysis app (python -m pcg app) from this repo.
+//
+// Click: open the app with the selection and start analysing right away. One recording opens
+// in the Workspace tab; several files (or folders) go to the Run queue and start.
+// No selection: just open the app.
+//
+// Paste into a Script Function (JScript) per DOpus_SCRIPTING.md. ES3 — no let/const/=>.
 
-function quoteWinArg(s) {
+/** Repo root (python -m pcg must run from here). */
+var REPO_ROOT = "C:\\Users\\WXP\\Documents\\GitHub\\bpm_analysis";
+/**
+ * pythonw.exe of the Python that has requirements.txt installed. pythonw (no console) with a
+ * normal window: a GUI started through a hidden console (python.exe + Run(..., 0)) inherits
+ * the hidden show state and never appears.
+ */
+var PYTHONW = "C:\\Users\\WXP\\.pyenv\\pyenv-win\\versions\\3.13.13\\pythonw.exe";
+
+// Must match pcg.recording.AUDIO_EXTENSIONS (audio/video inputs the analyzer accepts).
+var MEDIA_EXTS = [".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aiff", ".aif", ".mp4", ".mkv", ".mov"];
+
+function quoteArg(s) {
     return '"' + String(s).replace(/"/g, '""') + '"';
 }
 
-// Must match pcg.recording.AUDIO_EXTENSIONS (audio/video inputs the analyzer accepts).
-function getExtensionLower(pathStr) {
-    var s = String(pathStr);
-    var dot = s.lastIndexOf(".");
-    if (dot < 0) {
-        return "";
-    }
-    return s.substring(dot).toLowerCase();
+/** shell.Popup avoids DOpus.dlg.message 0x8000ffff in some contexts. flags: 16=critical, 48=warn, 64=info */
+function popup(shell, text, title, flags) {
+    shell.Popup(String(text), 0, String(title), flags == null ? 48 : flags);
 }
 
-function isSupportedMediaPath(pathStr) {
-    var ext = getExtensionLower(pathStr);
-    var allowed = [".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aiff", ".aif", ".mp4", ".mkv", ".mov"];
+function isMediaFile(path) {
+    var s = String(path).toLowerCase();
     var i;
-    for (i = 0; i < allowed.length; i++) {
-        if (ext === allowed[i]) {
+    for (i = 0; i < MEDIA_EXTS.length; i++) {
+        var ext = MEDIA_EXTS[i];
+        if (s.length > ext.length && s.substring(s.length - ext.length) === ext) {
             return true;
         }
     }
     return false;
 }
 
-function OnClick(clickData) {
-    // --- Edit REPO_ROOT if your clone lives elsewhere ---
-    var REPO_ROOT = "C:\\Users\\WXP\\Documents\\GitHub\\bpm_analysis";
-    // The Python that has PySide6 / pyqtgraph / sounddevice installed (see requirements.txt).
-    var PYTHON_LAUNCHER = "C:\\Users\\WXP\\.pyenv\\pyenv-win\\versions\\3.13.13\\python.exe";
-
-    // Extra args for `python -m pcg analyze` (leading space if non-empty). --rename writes the
-    // BPM tag into each filename; -j runs recordings in parallel (native engine only — Springer
-    // and auto-switch always run one at a time because the HSMM needs several GB per minute).
-    var EXTRA_ANALYZE_ARGS = " --rename -j 8";
-
+/** Selected media files and folders (folders are searched for recordings by the app). */
+function collectSelectedPaths(tab, fso) {
     var paths = [];
-    var tab = clickData.func.sourcetab;
-    var hadFileSelection = tab.selstats.selfiles > 0;
-    if (hadFileSelection) {
-        var en = new Enumerator(tab.selected_files);
-        for (; !en.atEnd(); en.moveNext()) {
-            var item = en.item();
-            var pathObj = item.realpath;
-            pathObj.Resolve();
-            var p = String(pathObj);
-            if (isSupportedMediaPath(p)) {
-                paths.push(p);
-            }
+    if (!tab || tab.selstats.selitems === 0) {
+        return paths;
+    }
+    var en = new Enumerator(tab.selected);
+    for (; !en.atEnd(); en.moveNext()) {
+        var item = en.item();
+        var pathObj = item.realpath;
+        pathObj.Resolve();
+        var p = String(pathObj);
+        if (fso.FolderExists(p) || (fso.FileExists(p) && isMediaFile(p))) {
+            paths.push(p);
         }
     }
+    return paths;
+}
 
-    if (hadFileSelection && paths.length === 0) {
-        var dlg = clickData.func.Dlg;
-        dlg.title = "PCG Workspace";
-        dlg.message = "No supported media file selected.\n\nUse: .wav .flac .mp3 .m4a .ogg .aiff .mp4 .mkv .mov";
-        dlg.buttons = "OK";
-        dlg.icon = "warn";
-        dlg.Show();
+function OnClick(clickData) {
+    var tab = clickData.func.sourcetab;
+    var shell = new ActiveXObject("WScript.Shell");
+    var fso = new ActiveXObject("Scripting.FileSystemObject");
+
+    if (!fso.FileExists(PYTHONW)) {
+        popup(shell, "pythonw.exe not found:\n" + PYTHONW + "\n\nSet PYTHONW in DOpus_bpm_analysis.js.", "PCG Workspace", 16);
+        return;
+    }
+    if (!fso.FolderExists(REPO_ROOT)) {
+        popup(shell, "Repo not found:\n" + REPO_ROOT + "\n\nSet REPO_ROOT in DOpus_bpm_analysis.js.", "PCG Workspace", 16);
         return;
     }
 
-    var shell = new ActiveXObject("WScript.Shell");
-    shell.CurrentDirectory = REPO_ROOT;
-
-    var cmd;
-    var windowStyle;
-
-    if (paths.length > 0) {
-        // Headless: Analyses go to the library (library/), results print to the console.
-        cmd = quoteWinArg(PYTHON_LAUNCHER) + " -m pcg analyze" + EXTRA_ANALYZE_ARGS;
-        var i;
-        for (i = 0; i < paths.length; i++) {
-            cmd += " " + quoteWinArg(paths[i]);
-        }
-        // 1 = show console so progress and errors are visible.
-        windowStyle = 1;
-    } else {
-        // No selection: open the workspace app.
-        cmd = quoteWinArg(PYTHON_LAUNCHER) + " -m pcg";
-        // 0 = hidden window (no console flash) for the app.
-        windowStyle = 0;
+    var paths = collectSelectedPaths(tab, fso);
+    if (tab && tab.selstats.selitems > 0 && paths.length === 0) {
+        popup(shell, "No recording or folder selected.\n\nUse: " + MEDIA_EXTS.join(" "), "PCG Workspace", 48);
+        return;
     }
 
-    shell.Run(cmd, windowStyle, false);
+    var cmd = quoteArg(PYTHONW) + " -m pcg app";
+    if (paths.length > 0) {
+        cmd += " --analyze";
+        var i;
+        for (i = 0; i < paths.length; i++) {
+            cmd += " " + quoteArg(paths[i]);
+        }
+    }
+    shell.CurrentDirectory = REPO_ROOT;
+    DOpus.Output("PCG Workspace: " + cmd);
+    shell.Run(cmd, 1, false);
 }
