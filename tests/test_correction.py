@@ -206,3 +206,37 @@ def test_remove_boundaries_overlapping_span():
     out = corr._pass3_remove_boundaries_overlapping_span(boundaries, lo=150, hi=250)
     # middle and last overlap [150,250); first does not
     assert out == [(0, 100, "S1", {})]
+
+
+def test_decide_phase_rekeys_meta_to_the_decided_cycles(monkeypatch):
+    from pcg.engine.config import DEFAULT_PARAMS
+    # Pass 2 painted: S1@10 S2@40 | S1@100 S2@130 | S1@190 (meta keyed by Pass 2's beats).
+    # The decision drops S1@100 as noise and calls S2@130 an S1.
+    bd = [
+        (5, 15, "S1", {"s1": 10, "reasoning": {"notes": []}}),
+        (15, 35, "systole", {"s1": 10, "s2": 40}),
+        (35, 45, "S2", {"s1": 10, "s2": 40, "reasoning": {"notes": []}}),
+        (45, 95, "diastole", {"s1": 10, "s2": 40, "s1_next": 100}),
+        (95, 105, "S1", {"s1": 100}),
+        (105, 125, "systole", {"s1": 100, "s2": 130}),
+        (125, 135, "S2", {"s1": 100, "s2": 130, "reasoning": {"notes": []}}),
+        (135, 185, "diastole", {"s1": 100, "s2": 130, "s1_next": 190}),
+        (185, 195, "S1", {"s1": 190}),
+    ]
+    monkeypatch.setattr(corr.phase_decision, "decide_phase",
+                        lambda *a, **k: [(0, "S1"), (1, "S2"), (3, "S1"), (4, "S2")])
+    _labels, out, n_changed = corr._pass3_decide_phase(
+        np.zeros(200, dtype=np.int8), bd, 100, dict(DEFAULT_PARAMS))
+    assert n_changed == 3
+    got = [(a, b, name, {k: v for k, v in m.items() if k in ("s1", "s2", "s1_next")}) for a, b, name, m in out]
+    assert got == [
+        (5, 15, "S1", {"s1": 10}),
+        (15, 35, "systole", {"s1": 10, "s2": 40}),
+        (35, 45, "S2", {"s1": 10, "s2": 40}),
+        (45, 125, "diastole", {"s1": 10, "s2": 40, "s1_next": 130}),
+        (125, 135, "S1", {"s1": 130}),
+        (135, 185, "systole", {"s1": 130, "s2": 190}),
+        (185, 195, "S2", {"s1": 130, "s2": 190}),
+    ]
+    relabelled = out[4][3]["reasoning"]["notes"]
+    assert relabelled == ["Phase decision relabelled S2 → S1."]

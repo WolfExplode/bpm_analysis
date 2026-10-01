@@ -1589,24 +1589,54 @@ def _pass3_decide_phase(
     if n_changed == 0:
         return state_labels, state_boundaries, 0
 
+    def own_peak(i: int) -> int:
+        """The sound's own peak: painted S1s carry it as meta "s1", S2s as "s2"."""
+        c, _s, _e, old, m = sounds[i]
+        pk = m.get("s1" if old == "S1" else "s2") if isinstance(m, dict) else None
+        return int(pk) if pk is not None else int(round(c))
+
+    # Re-key every segment to its decided cycle (the initial build's meta layout), so
+    # later stages and the final S1 peak list follow the decision: an S2 relabelled S1
+    # would otherwise still name the previous S1 as its "s1" and vanish from the peaks.
     nb: List[Tuple] = []
     chain_idx = [i for i, _ in chain]
+    cyc_s1: Optional[int] = None
+    cyc_s2: Optional[int] = None
     for k, i in enumerate(chain_idx):
-        _c, s, e, _old, m = sounds[i]
-        nb.append((s, e, new_state[i], m))
+        _c, s, e, old, m = sounds[i]
+        lbl = new_state[i]
+        pk = own_peak(i)
+        meta = {key: v for key, v in (m if isinstance(m, dict) else {}).items()
+                if key not in ("s1", "s2", "s1_next")}
+        if lbl == "S1":
+            cyc_s1, cyc_s2 = pk, None
+            meta["s1"] = pk
+        else:
+            cyc_s2 = pk
+            if cyc_s1 is not None:
+                meta["s1"] = cyc_s1
+            meta["s2"] = pk
+        if lbl != old and isinstance(meta.get("reasoning"), dict):
+            r = dict(meta["reasoning"])
+            r["notes"] = list(r.get("notes") or []) + [f"Phase decision relabelled {old} → {lbl}."]
+            meta["reasoning"] = r
+        nb.append((s, e, lbl, meta))
         if k < len(chain_idx) - 1:
             j = chain_idx[k + 1]
             gap_s, gap_e = e, sounds[j][1]
             if gap_e <= gap_s:
                 continue
-            a, b = new_state[i], new_state[j]
+            a, b = lbl, new_state[j]
             if a == "S1" and b == "S2":
                 btw = "systole"
             elif a == "S2" and b == "S1":
                 btw = "diastole"
             else:
                 btw = "systole" if (gap_e - gap_s) < med_gap else "diastole"
-            nb.append((gap_s, gap_e, btw, {}))
+            gap_meta = {"s1": cyc_s1, "s2": own_peak(j) if b == "S2" else cyc_s2}
+            if b == "S1":
+                gap_meta["s1_next"] = own_peak(j)
+            nb.append((gap_s, gap_e, btw, {key: v for key, v in gap_meta.items() if v is not None}))
 
     new_labels = np.full(len(state_labels), STATE_DIASTOLE, dtype=state_labels.dtype)
     name_to_code = {"S1": STATE_S1, "systole": STATE_SYSTOLE,
