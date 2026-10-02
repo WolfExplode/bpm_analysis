@@ -53,3 +53,8 @@ Archived
 # Analysis library (pcg.analysis.Library)
 library/
 debug_helpers/*_report.csv
+
+# Springer2015: generated compare reports and the vendored third-party MATLAB release
+# (only needed to re-run port_pretrained_model.py / train_on_springer_original.py; committed .npz models cover runtime)
+springer2015/compare_out/
+springer2015/Logistic Regression-HSMM-based Heart Sound Segmentation/
