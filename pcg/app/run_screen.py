@@ -11,7 +11,9 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from pcg import analysis as A
 from pcg import batch, recording
 
+from . import theme
 from .state import AnalyzeWorker, Settings
+from .widgets import PillDelegate
 
 COLS = ["Recording", "Start BPM", "Skip (s)", "Status", "Result", ""]
 C_NAME, C_BPM, C_START, C_STATUS, C_RESULT, C_STALE = range(len(COLS))
@@ -45,11 +47,15 @@ class RunScreen(QtWidgets.QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        bar = QtWidgets.QHBoxLayout()
+        header = QtWidgets.QFrame()
+        header.setObjectName("header")
+        bar = QtWidgets.QHBoxLayout(header)
+        bar.setContentsMargins(12, 6, 12, 6)
+        bar.setSpacing(6)
         for text, fn in (("Add files…", self.add_files_dialog), ("Add folder…", self.add_folder_dialog),
                          ("Remove", self.remove_selected), ("Clear", self.clear)):
             bar.addWidget(QtWidgets.QPushButton(text, clicked=fn))
-        bar.addSpacing(20)
+        bar.addWidget(_separator())
         self.algo = QtWidgets.QComboBox()
         self.algo.addItems(["Native", "Springer 2015"])
         self.auto_switch = QtWidgets.QCheckBox("Auto-switch on gate failure")
@@ -60,16 +66,22 @@ class RunScreen(QtWidgets.QWidget):
         self.algo.setCurrentIndex(1 if saved.get("springer") else 0)
         self.auto_switch.setChecked(bool(saved.get("auto_switch")))
         self.channel.setCurrentText(saved.get("channel", recording.CHANNEL_MIXED))
-        for label, w in (("Algorithm", self.algo), (None, self.auto_switch), ("Parallel jobs", self.jobs),
-                         ("Channel", self.channel)):
+        for label, w in (("Algorithm", self.algo), (None, self.auto_switch), ("Channel", self.channel),
+                         ("Jobs", self.jobs)):
             if label:
-                bar.addWidget(QtWidgets.QLabel(label))
+                lab = QtWidgets.QLabel(label)
+                lab.setProperty("tone", "muted")
+                bar.addWidget(lab)
             bar.addWidget(w)
+            bar.addSpacing(6)
         bar.addStretch(1)
-        self.run_btn = QtWidgets.QPushButton("Run", clicked=self.run)
-        self.stop_btn = QtWidgets.QPushButton("Stop", clicked=self.stop)
         self.rename_btn = QtWidgets.QPushButton("Write BPM into filenames", clicked=self.rename_selected)
-        for w in (self.run_btn, self.stop_btn, self.rename_btn):
+        self.stop_btn = QtWidgets.QPushButton("Stop", clicked=self.stop)
+        self.run_btn = QtWidgets.QPushButton("Run", clicked=self.run)
+        self.run_btn.setProperty("primary", True)
+        bar.addWidget(self.rename_btn)
+        bar.addWidget(_separator())
+        for w in (self.stop_btn, self.run_btn):
             bar.addWidget(w)
 
         self.table = QtWidgets.QTableWidget(0, len(COLS))
@@ -78,15 +90,24 @@ class RunScreen(QtWidgets.QWidget):
         self.table.horizontalHeader().setSectionResizeMode(C_RESULT, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table.setShowGrid(False)
+        self.table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignmentFlag.AlignLeft
+                                                          | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.table.setItemDelegateForColumn(C_STATUS, PillDelegate(_status_tone, self.table))
+        self.table.setItemDelegateForColumn(C_STALE, PillDelegate(lambda _t: "warning", self.table))
         self.table.cellDoubleClicked.connect(self._double_clicked)
         self.table.itemChanged.connect(self._item_changed)
 
         self.note = QtWidgets.QLabel(
             "Drop recordings or folders here. Start BPM blank = from the filename tag. "
             "Springer / auto-switch run one at a time (memory). Double-click a row to open it.")
-        self.note.setStyleSheet("color:#999;")
+        self.note.setProperty("tone", "muted")
+        self.note.setContentsMargins(12, 4, 12, 6)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.addLayout(bar)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(header)
         lay.addWidget(self.table, 1)
         lay.addWidget(self.note)
 
@@ -149,13 +170,16 @@ class RunScreen(QtWidgets.QWidget):
                         tip=f"from filename: {hint:g}" if hint else "no filename tag")
         if r.bpm_override is None and hint:
             bpm_item.setText(f"{hint:g}")
-            bpm_item.setForeground(QtGui.QColor("#888888"))
-        cell(C_START, f"{r.start_sec:g}", editable=True)
+            bpm_item.setForeground(theme.qcolor(theme.TEXT_3))
+        start = cell(C_START, f"{r.start_sec:g}", editable=True)
+        for it in (bpm_item, start):
+            it.setFont(theme.mono_font())
+            it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
         cell(C_STATUS, r.status)
-        cell(C_RESULT, r.result)
-        st = cell(C_STALE, r.stale)
-        if r.stale:
-            st.setBackground(QtGui.QColor("#8a5a00"))
+        res = cell(C_RESULT, r.result)
+        if "⚠" in r.result or r.status == "failed":
+            res.setForeground(theme.qcolor(theme.TONES["warning" if "⚠" in r.result else "danger"][0]))
+        cell(C_STALE, r.stale)
 
     def _row_index(self, path: str) -> int:
         return next((i for i, r in enumerate(self.rows) if r.path == path), -1)
@@ -304,6 +328,24 @@ class RunScreen(QtWidgets.QWidget):
 
     def busy(self) -> bool:
         return bool(self.workers)
+
+
+def _separator() -> QtWidgets.QFrame:
+    line = QtWidgets.QFrame()
+    line.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+    line.setFixedSize(9, 18)
+    line.setStyleSheet(f"color: {theme.BORDER};")
+    return line
+
+
+def _status_tone(status: str) -> str:
+    if status in ("done", "analysed"):
+        return "success"
+    if status == "failed":
+        return "danger"
+    if status in ("queued", "cancelled"):
+        return "muted"
+    return "info"  # starting / a progress message
 
 
 def _result_text(summary: dict) -> str:

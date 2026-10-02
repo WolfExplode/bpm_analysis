@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Settings:
-    """Per-user settings (QSettings): trace/lane visibility, protected folders, run settings."""
+    """Per-user settings (QSettings): trace/lane/stage visibility, protected folders, run settings."""
 
     def __init__(self) -> None:
         self.q = QtCore.QSettings("pcg", "workspace")
@@ -66,6 +66,19 @@ class Settings:
 
     def set_lane_heights(self, heights: dict) -> None:
         self.set_json("lane_heights", heights)
+
+    def stages(self) -> dict:
+        """Debug stages {group: on} whose traces the lane legends offer."""
+        return self.get_json("stages", {})
+
+    def set_stages(self, stages: dict) -> None:
+        self.set_json("stages", stages)
+
+    def lane_order(self) -> list:
+        return self.get_json("lane_order", [])
+
+    def set_lane_order(self, order: list) -> None:
+        self.set_json("lane_order", order)
 
     def lane_visibility(self) -> dict:
         return self.get_json("lane_visibility", {})

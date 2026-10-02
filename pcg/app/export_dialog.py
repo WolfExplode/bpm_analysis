@@ -6,6 +6,7 @@ from typing import Dict, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from . import theme
 from .state import Settings, downloads_dir
 
 # format key -> (label, extension, name filter)
@@ -63,7 +64,7 @@ class ExportDialog(QtWidgets.QDialog):
         self.source_box = self._combo(SOURCES)
         self.overview_box = QtWidgets.QCheckBox("Include the overview strip")
         self.empty_note = QtWidgets.QLabel("No options for this format.")
-        self.empty_note.setStyleSheet("color:#999999;")
+        self.empty_note.setProperty("tone", "muted")
 
         form = QtWidgets.QFormLayout()
         form.addRow("Format", self.format_box)
@@ -192,9 +193,9 @@ class ExportDialog(QtWidgets.QDialog):
             self.files.setDirectory(str(path.parent))
             self.files.selectFile(path.name)
         else:
-            self.folder_edit.setStyleSheet("color:#ff7070;")
+            theme.set_prop(self.folder_edit, "invalid", True)
             return
-        self.folder_edit.setStyleSheet("")
+        theme.set_prop(self.folder_edit, "invalid", False)
         self.folder_edit.setText(self.files.directory().absolutePath())
 
     def _accepted(self) -> None:

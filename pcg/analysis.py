@@ -369,7 +369,7 @@ def save(analysis: Analysis, path: os.PathLike | str) -> None:
             "traces": [
                 {
                     "name": t.name, "group": t.group, "lane": t.lane, "kind": t.kind, "unit": t.unit,
-                    "color": t.color, "visible": t.visible, "t0": t.t0, "dt": t.dt, "text": t.text,
+                    "role": t.role, "estimate": t.estimate, "visible": t.visible, "t0": t.t0, "dt": t.dt, "text": t.text,
                     "x": None if t.uniform else put(t.x, np.float64),
                     "y": put(t.y, np.float32 if t.uniform else np.float64),
                     "x_end": put(t.x_end, np.float64),
@@ -407,7 +407,7 @@ def load(path: os.PathLike | str) -> Analysis:
                         reasoning=s["reasoning"])
         traces = [
             Trace(name=t["name"], group=t["group"], lane=t["lane"], kind=t["kind"], unit=t["unit"],
-                  color=t["color"], visible=t["visible"], t0=t["t0"], dt=t["dt"], text=t["text"],
+                  role=t.get("role", ""), estimate=t.get("estimate", False), visible=t["visible"], t0=t["t0"], dt=t["dt"], text=t["text"],
                   x=arr(t["x"]) if t["x"] else [], y=arr(t["y"]), x_end=arr(t["x_end"]))
             for t in m["traces"]
         ]

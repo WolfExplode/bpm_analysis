@@ -10,6 +10,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from pcg import analysis as A
 from pcg import recording
 
+from . import theme
 from .run_screen import RunScreen
 from .state import Settings
 from .workspace import Workspace
@@ -23,8 +24,9 @@ HELP = """\
 <tr><td><b>Shift+drag / Shift+click</b></td><td>set loop region / clear it</td></tr>
 <tr><td><b>Drag, wheel</b></td><td>pan, zoom (time only)</td></tr>
 <tr><td><b>Wheel / drag on a y-axis, Ctrl+wheel</b></td><td>scale / slide that lane's y-axis (double-click the axis to auto-range again); remembered per recording</td></tr>
-<tr><td><b>L</b></td><td>follow playhead on/off</td></tr>
 <tr><td><b>G</b></td><td>spectrogram lane on/off (only computed while on)</td></tr>
+<tr><td><b>Legend entries</b></td><td>click: show / hide that trace; hover: fade the lane's other traces</td></tr>
+<tr><td><b>Debug chips</b></td><td>offer the traces a stage computed (Preprocessing, Pass 1–3) in the legends</td></tr>
 <tr><td><b>1 / 2</b></td><td>place S1 / S2 at the playhead (replaces what it overlaps)</td></tr>
 <tr><td><b>X / Del</b></td><td>delete selected span (else the one under the playhead)</td></tr>
 <tr><td><b>F</b></td><td>relabel S1 ↔ S2</td></tr>
@@ -48,6 +50,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_screen = RunScreen(self.settings, library)
         self.workspace = Workspace(self.settings, library)
         self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setDocumentMode(True)
         self.tabs.addTab(self.run_screen, "Run")
         self.tabs.addTab(self.workspace, "Workspace")
         self.setCentralWidget(self.tabs)
@@ -128,18 +131,10 @@ def main(paths: Optional[List[str]] = None, library: Optional[str] = None, analy
     *analyze* the engine starts right away (the workspace re-runs even an existing Analysis)."""
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("PCG Workspace")
-    app.setStyle("Fusion")
+    theme.apply(app)
     # Windows rolls tooltips open; the peak-reasoning tooltips are long, so show them at once.
     for effect in (QtCore.Qt.UIEffect.UI_AnimateTooltip, QtCore.Qt.UIEffect.UI_FadeTooltip):
         app.setEffectEnabled(effect, False)
-    pal = QtGui.QPalette()
-    for role, color in ((QtGui.QPalette.ColorRole.Window, "#1e1e1e"), (QtGui.QPalette.ColorRole.WindowText, "#dddddd"),
-                        (QtGui.QPalette.ColorRole.Base, "#151515"), (QtGui.QPalette.ColorRole.AlternateBase, "#222222"),
-                        (QtGui.QPalette.ColorRole.Text, "#dddddd"), (QtGui.QPalette.ColorRole.Button, "#2b2b2b"),
-                        (QtGui.QPalette.ColorRole.ButtonText, "#dddddd"), (QtGui.QPalette.ColorRole.Highlight, "#2f6db5"),
-                        (QtGui.QPalette.ColorRole.ToolTipBase, "#202020"), (QtGui.QPalette.ColorRole.ToolTipText, "#eeeeee")):
-        pal.setColor(role, QtGui.QColor(color))
-    app.setPalette(pal)
     win = MainWindow(A.Library(library))
     win.show()
     paths = paths or []

@@ -204,3 +204,26 @@ def test_derived_states():
     spans = an.place_sound(spans, S1, 3.9, 0.1, DUR)
     names = [n for _, _, n in an.derived_states(spans)]
     assert names == [S1, "systole", S2, "diastole", S1, "cycle", S1, "systole", S2, NOISY, S1]
+
+
+def test_smooth_series_matches_the_engine_smoothing():
+    from pcg.engine.hrv import _gaussian_kernel_smooth
+
+    rng = np.random.default_rng(0)
+    t = np.cumsum(rng.uniform(0.2, 0.6, 400))
+    y = 150 + 30 * rng.standard_normal(400)
+    np.testing.assert_allclose(an.smooth_series(t, y, 1.0), _gaussian_kernel_smooth(t, t, y, 1.0), rtol=1e-6)
+
+
+def test_smooth_series_damps_one_bad_interval_and_keeps_a_constant():
+    t = np.arange(0, 60, 0.4)
+    y = np.full(len(t), 150.0)
+    np.testing.assert_allclose(an.smooth_series(t, y, 1.0), y)
+    y[75] = 300.0  # a missed beat doubles one interval
+    smoothed = an.smooth_series(t, y, 1.0)
+    assert 150.0 < smoothed[75] < 200.0 and smoothed.max() < 200.0
+
+
+def test_smooth_series_handles_empty_and_single_point():
+    assert an.smooth_series(np.array([]), np.array([]), 1.0).size == 0
+    assert an.smooth_series(np.array([1.0]), np.array([120.0]), 1.0)[0] == 120.0

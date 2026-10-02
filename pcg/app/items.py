@@ -13,20 +13,8 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui
 
-STATE_COLORS = {
-    "S1": "#e36f6f",
-    "S2": "#f0a040",
-    "systole": "#5b4a75",
-    "diastole": "#2f5f4a",
-    "unknown": "#555555",
-    "noisy": "#8a8a8a",
-}
-
-
-def qcolor(c: str, alpha: int = 255) -> QtGui.QColor:
-    col = QtGui.QColor(c or "#cccccc")
-    col.setAlpha(alpha)
-    return col
+from . import theme
+from .theme import qcolor
 
 
 @dataclass
@@ -55,9 +43,9 @@ class SpanRow:
 
 def palette_row(starts, ends, labels: Sequence[str], y0: float, y1: float,
                 colors: Optional[dict] = None, alpha: int = 255, outline: Optional[str] = None) -> SpanRow:
-    colors = colors or STATE_COLORS
+    colors = colors or theme.STATE_FILLS
     names = sorted(set(labels)) or ["unknown"]
-    pal = [qcolor(colors.get(n, "#999999"), alpha) for n in names]
+    pal = [qcolor(colors.get(n, theme.STATE_FILLS["unknown"]), alpha) for n in names]
     lookup = {n: i for i, n in enumerate(names)}
     return SpanRow(np.asarray(starts), np.asarray(ends), pal, np.array([lookup[x] for x in labels], dtype=np.int32),
                    y0, y1, qcolor(outline) if outline else None)
@@ -190,17 +178,21 @@ class EnvelopeItem(pg.GraphicsObject):
     Stroking a long zig-zag path through the view transform is what makes zoomed-out
     envelopes slow in Qt's raster engine; per-pixel bars drawn in device space are not.
     A block min/max pyramid keeps the zoomed-out reduction cheap for hour-long data.
+
+    With a *fill* colour the area between the curve and zero is filled and only the upper contour
+    is stroked: zoomed out, a filled envelope reads as one shape instead of a forest of min/max bars.
     """
 
     _BLOCK = 256
 
-    def __init__(self, t0: float, dt: float, y: np.ndarray, color: str):
+    def __init__(self, t0: float, dt: float, y: np.ndarray, pen: QtGui.QPen, fill: Optional[QtGui.QColor] = None):
         # Attribute names must not shadow QGraphicsItem methods (x(), y(), ...): Qt calls those.
         super().__init__()
         self.t0, self.dt = float(t0), float(dt)
         self._y = np.ascontiguousarray(y, dtype=np.float32)
-        self.pen = pg.mkPen(color, width=1)
+        self.pen = QtGui.QPen(pen)
         self.pen.setCosmetic(True)
+        self.fill = fill
         n = len(self._y) // self._BLOCK
         blocks = self._y[: n * self._BLOCK].reshape(n, self._BLOCK) if n else np.zeros((0, self._BLOCK), np.float32)
         finite = np.where(np.isfinite(blocks), blocks, np.nan)
@@ -258,15 +250,29 @@ class EnvelopeItem(pg.GraphicsObject):
         (_, _), (yv0, yv1) = vb.viewRange()
         top_dev, bot_dev = sorted((yv1 * sy + oy, yv0 * sy + oy))
         h = int(min(4096, max(1, np.ceil(bot_dev - top_dev))))
-        a = mins * sy + oy - top_dev
-        b = maxs * sy + oy - top_dev
-        lo = np.floor(np.minimum(a, b))
-        hi = np.ceil(np.maximum(a, b))
-        lo = np.where(np.isfinite(lo), lo, h + 1)
-        hi = np.where(np.isfinite(hi), hi, -1)
         rows = np.arange(h, dtype=np.float64)[:, None]
-        mask = (rows >= lo[None, :] - 0.5) & (rows <= hi[None, :] + 0.5)
-        img = np.where(mask, np.uint32(self.pen.color().rgba()), np.uint32(0)).astype(np.uint32)
+        line = np.uint32(self.pen.color().rgba())
+        if self.fill is None:
+            a = mins * sy + oy - top_dev
+            b = maxs * sy + oy - top_dev
+            lo = np.floor(np.minimum(a, b))
+            hi = np.ceil(np.maximum(a, b))
+            lo = np.where(np.isfinite(lo), lo, h + 1)
+            hi = np.where(np.isfinite(hi), hi, -1)
+            mask = (rows >= lo[None, :] - 0.5) & (rows <= hi[None, :] + 0.5)
+            img = np.where(mask, line, np.uint32(0)).astype(np.uint32)
+        else:
+            # Body: from each column's max down to zero. Contour: each column's max, joined to the
+            # previous column's so the outline stays one connected line.
+            top = maxs * sy + oy - top_dev
+            prev_top = np.concatenate([top[:1], top[:-1]])
+            base = 0.0 * sy + oy - top_dev
+            ok = np.isfinite(top)
+            c_lo = np.where(ok, np.floor(np.fmin(top, prev_top)), h + 1)
+            c_hi = np.where(ok, np.ceil(np.fmax(top, prev_top)), -1)
+            body = ok[None, :] & (rows >= np.where(ok, top, h + 1)[None, :]) & (rows <= base)
+            contour = (rows >= c_lo[None, :] - 0.5) & (rows <= c_hi[None, :] + 0.5)
+            img = np.where(contour, line, np.where(body, np.uint32(self.fill.rgba()), np.uint32(0))).astype(np.uint32)
         buf = np.ascontiguousarray(img).tobytes()  # QImage does not copy: keep alive while drawing
         qimg = QtGui.QImage(buf, img.shape[1], h, QtGui.QImage.Format.Format_ARGB32)
         x_left = (self.t0 + edges[0] * self.dt) * sx + ox
@@ -293,6 +299,11 @@ class EnvelopeItem(pg.GraphicsObject):
             self._paint_dense(p, vb, i0, i1, px, sx, ox, sy, oy)
         else:
             t = self.t0 + np.arange(i0, i1) * self.dt
-            path = pg.arrayToQPath(t * sx + ox, self._y[i0:i1] * sy + oy, connect="finite")
-            p.drawPath(path)
+            xs, ys = t * sx + ox, self._y[i0:i1] * sy + oy
+            if self.fill is not None:
+                base = 0.0 * sy + oy
+                body = pg.arrayToQPath(np.concatenate([xs[:1], xs, xs[-1:]]),
+                                       np.concatenate([[base], np.where(np.isfinite(ys), ys, base), [base]]))
+                p.fillPath(body, self.fill)
+            p.drawPath(pg.arrayToQPath(xs, ys, connect="finite"))
         p.restore()

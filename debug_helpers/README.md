@@ -197,3 +197,14 @@ the dense `state_labels` array and the `state_boundaries` list.
 So: detect by scanning final `pass3_state_boundaries` for strict span overlap;
 fix (not done here) would trim boundaries overlapping each gap before the concat,
 mirroring what the labeling path already does.
+
+## App screenshots — `screenshot_app.py`
+
+Renders the app offscreen and saves `run.png` and `workspace.png`, for reviewing UI changes
+without opening a window. Uses its own QSettings scope, so your saved lanes, traces and
+y-ranges are untouched.
+
+```
+python debug_helpers/screenshot_app.py RECORDING OUT_DIR [--from 30 --to 150]
+    [--stages "Pass 2,Pass 3"] [--side issues|summary] [--lanes intervals,hrv]
+```

@@ -64,7 +64,8 @@ no parameter editor.
   states, **BPM/time belief**, instantaneous BPM, HRV and interval metrics, Pass 1 and
   Pass 2 data, all debug traces, Defects.
 - Debug traces are **self-describing**: name, group (pass), unit, suggested lane, kind
-  (line / points / band). The viewer has no per-trace code.
+  (line / points / band), and a semantic role / estimate flag (never a colour: the app's
+  theme, `pcg/app/theme.py`, owns every colour). The viewer has no per-trace code.
 - **Stale** when parameters or engine code fingerprint differ from current: shown as a
   badge, re-run only on request. Never re-run silently.
 - Only one Analysis per Recording is shown at a time (side-by-side comparison: not now).
@@ -99,14 +100,17 @@ Stacked lanes on one shared, linked time axis; each lane has its own y-axis.
 5. **Optional lanes** (hidden by default): HRV, systole/diastole intervals, classifier
    scores, spectrum/spectrogram, any debug trace group.
 
-Traces toggle individually; lane/trace visibility persists per user. Also: a summary
+Each lane has a legend column listing its traces in pipeline order; traces toggle
+individually there, and hovering an entry fades the lane's other traces. Debug-stage chips
+(Preprocessing, Pass 1–3) decide which stages' traces the legends offer; Result traces and
+default-visible ones are always offered. Lane/trace/stage visibility persists per user. Also: a summary
 panel (BPM range, HRV, plausibility-gate result, algorithm used / switch reason).
 
 ### Audio
 
 - Two sources: original and bandpass-filtered (computed on demand, not stored), toggled
   with one key. No speed control.
-- Playhead follows playback; auto-scroll can be unlocked.
+- The view always follows the playhead during playback.
 - **Shift+drag** sets the region (loops playback inside it); **shift+click** clears it.
 
 ### Annotation editing

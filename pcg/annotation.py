@@ -280,6 +280,22 @@ def bpm_series(spans: Spans, min_bpm: float = 25.0, max_bpm: float = 260.0) -> T
     return ((a + b) / 2.0)[keep], bpm[keep]
 
 
+def smooth_series(t: np.ndarray, y: np.ndarray, sigma_sec: float, reach: float = 6.0) -> np.ndarray:
+    """Gaussian kernel regression of (t, y) at the times t themselves: the same smoothing the engine
+    applies to its BPM curve, vectorised (each point sees its neighbours within *reach* sigmas)."""
+    t, y = np.asarray(t, dtype=np.float64), np.asarray(y, dtype=np.float64)
+    if len(t) == 0 or sigma_sec <= 1e-9:
+        return y.copy()
+    lo = np.searchsorted(t, t - reach * sigma_sec, side="left")
+    hi = np.searchsorted(t, t + reach * sigma_sec, side="right")
+    offsets = np.arange(int((hi - lo).max()))
+    idx = lo[:, None] + offsets[None, :]
+    inside = idx < hi[:, None]
+    idx = np.minimum(idx, len(t) - 1)
+    w = np.where(inside, np.exp(-0.5 * ((t[idx] - t[:, None]) / sigma_sec) ** 2), 0.0)
+    return (w * y[idx]).sum(axis=1) / w.sum(axis=1)
+
+
 @dataclass(frozen=True)
 class Disagreement:
     kind: str  # "missed" | "swapped" | "extra"

@@ -1,7 +1,9 @@
 """Self-describing debug traces: everything the engine computed, as named series.
 
-A Trace carries its own presentation metadata (group, lane, kind, unit, colour,
-default visibility), so the workspace draws any trace without per-trace code.
+A Trace carries its own presentation metadata (group, lane, kind, unit, role,
+default visibility), so the workspace draws any trace without per-trace code. It says
+what a series *is* (its role, whether it is an estimate), never how it looks: the
+workspace's theme turns that and the group (the stage that computed it) into colours.
 
 Adding a trace from inside the engine is one line wherever `analysis_data` is in
 scope:
@@ -41,6 +43,18 @@ KIND_SPANS = "spans"    # time ranges [x, x_end), optional per-span text
 
 KINDS = (KIND_LINE, KIND_POINTS, KIND_SPANS)
 
+# Roles: what a series is about, when that matters more than which stage computed it.
+# A trace without a role is drawn in its group's (stage's) colour.
+ROLE_ENVELOPE = "envelope"   # the signal the algorithm reads
+ROLE_S1 = "s1"
+ROLE_S2 = "s2"
+ROLE_NOISE = "noise"
+ROLE_SYSTOLE = "systole"     # S1 -> S2
+ROLE_DIASTOLE = "diastole"   # S2 -> S1
+ROLE_NEUTRAL = "neutral"     # a combined or reference series
+
+ROLES = (ROLE_ENVELOPE, ROLE_S1, ROLE_S2, ROLE_NOISE, ROLE_SYSTOLE, ROLE_DIASTOLE, ROLE_NEUTRAL)
+
 _DEBUG_TRACES_KEY = "debug_traces"
 
 
@@ -56,13 +70,16 @@ class Trace:
     t0: float = 0.0                    # uniform lines: time of y[0]
     dt: float = 0.0                    # uniform lines: sample spacing (0 = use x)
     unit: str = ""
-    color: str = ""
-    visible: bool = False              # shown by default
+    role: str = ""                     # one of ROLES, or "" (the group's colour)
+    estimate: bool = False             # a model's belief / prior / expectation, not a measurement
+    visible: bool = False              # shown by default (and always offered, whatever its stage)
     text: Optional[List[str]] = None   # per point / span hover text
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"trace {self.name!r}: unknown kind {self.kind!r}")
+        if self.role and self.role not in ROLES:
+            raise ValueError(f"trace {self.name!r}: unknown role {self.role!r}")
         self.x = np.asarray(self.x if self.x is not None else [], dtype=np.float64)
         if self.y is not None:
             self.y = np.asarray(self.y, dtype=np.float64)
@@ -293,17 +310,17 @@ def _contractility_traces(peak_classifications, envelope, troughs, sr, params) -
     }
     times = {k: np.array(sorted(v), dtype=np.float64) / float(sr) for k, v in groups.items()}
     out = []
-    for name, color, keys in (
-        ("Average S1 contractility", "#e36f6f", ("S1",)),
-        ("Average S2 contractility", "#f0a040", ("S2",)),
-        ("Average contractility", "#aaaaaa", ("S1", "S2")),
+    for name, role, keys in (
+        ("Average S1 contractility", ROLE_S1, ("S1",)),
+        ("Average S2 contractility", ROLE_S2, ("S2",)),
+        ("Average contractility", ROLE_NEUTRAL, ("S1", "S2")),
     ):
         t = np.concatenate([times[k] for k in keys])
         p = np.concatenate([proms[k] for k in keys])
         order = np.argsort(t)
         ct, cv = _segment_means(t[order], p[order], seg)
         if len(ct):
-            out.append(Trace(name, "Result", LANE_CONTRACTILITY, KIND_LINE, x=ct, y=cv, color=color))
+            out.append(Trace(name, "Result", LANE_CONTRACTILITY, KIND_LINE, x=ct, y=cv, role=role))
     return out
 
 
@@ -342,38 +359,37 @@ def collect_traces(
 
     # ── Preprocessing ────────────────────────────────────────────────────────
     nr = ad.get("noise_removed_envelope")
-    uniform("Algorithm envelope", "Preprocessing", env, color="#47a5c4", visible=True)
+    uniform("Algorithm envelope", "Preprocessing", env, role=ROLE_ENVELOPE, visible=True)
     if nr is not None:
-        uniform("Bandpass envelope", "Preprocessing", ad.get("bandpass_envelope"), color="#3498db")
-    uniform("Noise envelope", "Preprocessing", ad.get("inverse_band_envelope"), color="#b85c9e")
+        uniform("Bandpass envelope", "Preprocessing", ad.get("bandpass_envelope"))
+    uniform("Noise envelope", "Preprocessing", ad.get("inverse_band_envelope"), role=ROLE_NOISE)
     nf = ad.get("dynamic_noise_floor_series")
     if nf is not None and len(nf) == len(env):
-        uniform("Dynamic noise floor", "Preprocessing", nf, color="#3cb371")
-    add(_sample_points("Troughs", "Preprocessing", ad.get("trough_indices"), env, sr, color="#3cb371"))
+        uniform("Dynamic noise floor", "Preprocessing", nf, estimate=True)
+    add(_sample_points("Troughs", "Preprocessing", ad.get("trough_indices"), env, sr))
     nes = ad.get("noise_event_segments") or []
     if nes:
         add(Trace("HF noise events", "Preprocessing", LANE_SIGNAL, KIND_SPANS,
                   x=[s["start"] for s in nes], x_end=[s["end"] for s in nes],
                   text=[f"duration {s.get('duration_ms')} ms, peak {s.get('peak')}" for s in nes],
-                  color="#b85c9e"))
+                  role=ROLE_NOISE))
 
     # ── Pass 1 ───────────────────────────────────────────────────────────────
     if pass1:
-        add(_sample_points("Anchor beats", "Pass 1", pass1.get("anchor_beats"), env, sr, color="#ffd24d"))
+        add(_sample_points("Anchor beats", "Pass 1", pass1.get("anchor_beats"), env, sr))
         p1 = pass1.get("pass1_bpm") or {}
         points("Instant BPM (Pass 1)", "Pass 1", LANE_BPM, p1.get("raw_scatter_times"), p1.get("raw_scatter_bpm"),
-               unit="BPM", color="#e74c3c")
+               unit="BPM")
         points("Instant BPM (Pass 1, outliers removed)", "Pass 1", LANE_BPM, p1.get("scatter_times"),
-               p1.get("scatter_bpm"), unit="BPM", color="#9b59b6")
-        line("BPM (Pass 1)", "Pass 1", LANE_BPM, p1.get("curve_times"), p1.get("curve_bpm"), unit="BPM",
-             color="#f0a040")
+               p1.get("scatter_bpm"), unit="BPM")
+        line("BPM (Pass 1)", "Pass 1", LANE_BPM, p1.get("curve_times"), p1.get("curve_bpm"), unit="BPM")
         p1ad = pass1.get("analysis_data") or {}
         line("BPM belief (Pass 1)", "Pass 1", LANE_BPM, p1ad.get("pass2_lt_bpm_times"), p1ad.get("pass2_lt_bpm"),
-             unit="BPM", color="#ffb366")
+             unit="BPM", estimate=True)
 
     # ── Pass 2 ───────────────────────────────────────────────────────────────
     line("BPM belief (Pass 2)", "Pass 2", LANE_BPM, ad.get("pass2_lt_bpm_times"), ad.get("pass2_lt_bpm"),
-         unit="BPM", color="#ff8c1a", visible=True)
+         unit="BPM", estimate=True)
     pcs = ad.get("peak_classifications") or {}
     scored = sorted(
         (int(i), e["label_scores"]) for i, e in pcs.items()
@@ -381,68 +397,69 @@ def collect_traces(
     )
     if scored:
         t = np.array([i for i, _ in scored], dtype=np.float64) / sr
-        for key, name, color in (("S1", "S1 score", "#e36f6f"), ("S2", "S2 score", "#f0a040"),
-                                 ("noise", "Noise score", "#999999")):
+        for key, name, role in (("S1", "S1 score", ROLE_S1), ("S2", "S2 score", ROLE_S2),
+                                ("noise", "Noise score", ROLE_NOISE)):
             line(name, "Pass 2", LANE_SCORES, t, [100.0 * float(s.get(key, 0.0)) for _, s in scored],
-                 unit="%", color=color)
+                 unit="%", role=role)
     if metrics_pass2:
         line("BPM (Pass 2)", "Pass 2", LANE_BPM, metrics_pass2.get("bpm_times"), metrics_pass2.get("smoothed_bpm"),
-             unit="BPM", color="#c0c0c0")
+             unit="BPM")
         points("Instant BPM (Pass 2)", "Pass 2", LANE_BPM, metrics_pass2.get("bpm_times_raw"),
-               metrics_pass2.get("instant_bpm_raw"), unit="BPM", color="#e74c3c")
+               metrics_pass2.get("instant_bpm_raw"), unit="BPM")
     pairs = ad.get("s1_s2_pairs") or []
     if pairs:
         pt = np.array([(a + b) / 2.0 / sr for a, b in pairs])
         pd_ = np.array([(b - a) / sr for a, b in pairs])
-        points("Paired systole (Pass 2)", "Pass 2", LANE_INTERVALS, pt, pd_, unit="s", color="#d9a0ff")
+        points("Paired systole (Pass 2)", "Pass 2", LANE_INTERVALS, pt, pd_, unit="s")
 
     # ── Pass 3 ───────────────────────────────────────────────────────────────
     line("BPM prior (Pass 3)", "Pass 3", LANE_BPM, ad.get("pass3_bpm_prior_times"), ad.get("pass3_bpm_prior"),
-         unit="BPM", color="#66d9ff")
+         unit="BPM", estimate=True)
     before = state_segments(ad.get("pass3_state_boundaries_before"), int(sr))
     if before:
         add(Trace("States before repair", "Pass 3", LANE_STATES, KIND_SPANS,
                   x=[s["start"] for s in before], x_end=[s["end"] for s in before],
                   text=[s["state"] for s in before]))
     add(_sample_windows("Noise-unreliable windows", "Pass 3", ad.get("pass3_noise_unreliable_windows_samples"), sr,
-                        color="#b85c9e"))
+                        role=ROLE_NOISE))
     add(_sample_windows("Large-gap windows", "Pass 3", ad.get("pass3_large_gap_windows_samples"), sr,
                         text_keys=("gap_region_candidate_state", "source_state", "trigger", "bpm_at_mid",
-                                   "cycle0_samples", "segment_samples"),
-                        color="#ff5b5b"))
+                                   "cycle0_samples", "segment_samples")))
     add(_sample_windows("Gap quiet windows", "Pass 3", ad.get("pass3_gap_quiet_windows_samples"), sr,
-                        color="#67d1ff"))
-    for key, name, color in (
-        ("pass3_large_gap_recovered_peaks_insensitive", "Recovered gap peaks (insensitive)", "#b07cff"),
-        ("pass3_large_gap_recovered_peaks_sensitive", "Recovered gap peaks (sensitive)", "#67d1ff"),
-        ("pass3_gap_decision_peaks_sensitive", "Gap decision peaks (sensitive)", "#ff5b5b"),
+                        role=ROLE_NEUTRAL))
+    for key, name in (
+        ("pass3_large_gap_recovered_peaks_insensitive", "Recovered gap peaks (insensitive)"),
+        ("pass3_large_gap_recovered_peaks_sensitive", "Recovered gap peaks (sensitive)"),
+        ("pass3_gap_decision_peaks_sensitive", "Gap decision peaks (sensitive)"),
     ):
-        add(_sample_points(name, "Pass 3", ad.get(key), env, sr, color=color))
-    for phase, color in (("systole", "#b07cff"), ("diastole", "#55d68d")):
-        for snap, label in (("before_repair", "before repair"), ("final", "final")):
+        add(_sample_points(name, "Pass 3", ad.get(key), env, sr))
+    for phase, role in (("systole", ROLE_SYSTOLE), ("diastole", ROLE_DIASTOLE)):
+        for snap, label in (("final", "final"), ("before_repair", "before repair")):
             line(f"Measured {phase} curve ({label})", "Pass 3", LANE_INTERVALS,
                  ad.get(f"pass3_measured_phase_{snap}_{phase}_t"), ad.get(f"pass3_measured_phase_{snap}_{phase}_dur"),
-                 unit="s", color=color, visible=(snap == "final"))
+                 unit="s", role=role, visible=(snap == "final"))
 
     # ── Result ───────────────────────────────────────────────────────────────
     final_bounds = ad.get("pass3_state_boundaries") or ad.get("pass3_state_boundaries_before")
-    for phase, color in (("systole", "#b07cff"), ("diastole", "#55d68d")):
+    for phase, role in (("systole", ROLE_SYSTOLE), ("diastole", ROLE_DIASTOLE)):
         t, d = interval_series(final_bounds, int(sr), phase)
-        points(f"Measured {phase}", "Result", LANE_INTERVALS, t, d, unit="s", color=color)
+        points(f"Measured {phase}", "Result", LANE_INTERVALS, t, d, unit="s", role=role)
     if metrics:
         line("BPM", "Result", LANE_BPM, metrics.get("bpm_times"), metrics.get("smoothed_bpm"), unit="BPM",
-             color="#e0e0e0", visible=True)
+             visible=True)
         points("Instant BPM", "Result", LANE_BPM, metrics.get("bpm_times_raw"), metrics.get("instant_bpm_raw"),
-               unit="BPM", color="#e74c3c")
+               unit="BPM")
         et, esys, edia = expected_intervals_from_bpm(metrics.get("bpm_times"), metrics.get("smoothed_bpm"), params)
-        line("Expected systole from BPM", "Result", LANE_INTERVALS, et, esys, unit="s", color="#00bcd4")
-        line("Expected diastole from BPM", "Result", LANE_INTERVALS, et, edia, unit="s", color="#66d9ff")
+        line("Expected systole from BPM", "Result", LANE_INTERVALS, et, esys, unit="s", role=ROLE_SYSTOLE,
+             estimate=True)
+        line("Expected diastole from BPM", "Result", LANE_INTERVALS, et, edia, unit="s", role=ROLE_DIASTOLE,
+             estimate=True)
         hrv = metrics.get("windowed_hrv_df")
         if hrv is not None and not hrv.empty and "time" in hrv:
-            for col, name, color in (("rmssdc", "RMSSDc", "#00e5ff"), ("sdnn", "SDNN", "#ff4dff"),
-                                     ("lf_hf_ratio", "LF/HF (windowed)", "#ffeb3b")):
+            for col, name, role in (("rmssdc", "RMSSDc", ""), ("sdnn", "SDNN", ROLE_NEUTRAL),
+                                    ("lf_hf_ratio", "LF/HF (windowed)", "")):
                 if col in hrv:
-                    line(name, "Result", LANE_HRV, hrv["time"], hrv[col], color=color, visible=(col == "rmssdc"))
+                    line(name, "Result", LANE_HRV, hrv["time"], hrv[col], role=role, visible=(col == "rmssdc"))
     traces.extend(_contractility_traces(pcs, env, ad.get("trough_indices"), sr, params))
 
     traces.extend(ad.get(_DEBUG_TRACES_KEY) or [])
