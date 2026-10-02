@@ -178,6 +178,9 @@ def cmd_app(args) -> int:
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+COMMANDS = ("analyze", "inspect", "export", "rename", "app")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m pcg", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -227,9 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     _utf8_stdio()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    head = argv[:2] if argv[:1] == ["--library"] else []  # global option stays in front
+    rest = argv[len(head):]
+    if not rest or (rest[0] not in COMMANDS and rest[0] not in ("-h", "--help")):
+        argv = head + ["app"] + rest  # no command given: open the app
     args = build_parser().parse_args(argv)
-    if args.command is None:
-        args = build_parser().parse_args(["app"] + (argv or []))
     logging.basicConfig(level=logging.INFO if getattr(args, "verbose", False) else logging.WARNING,
                         format="%(levelname)s %(name)s: %(message)s")
     return args.func(args)

@@ -209,7 +209,7 @@ class Workspace(QtWidgets.QWidget):
     _audio_loaded = QtCore.Signal(int, object)
     _filtered_loaded = QtCore.Signal(int, object)
     _spectrogram_loaded = QtCore.Signal(int, object)
-    _audio_error = QtCore.Signal(str)
+    _audio_error = QtCore.Signal(int, str)
 
     def __init__(self, settings: Settings, library: A.Library, parent=None):
         super().__init__(parent)
@@ -740,7 +740,7 @@ class Workspace(QtWidgets.QWidget):
                 sig, sr = load_playback_audio(path, channel)
                 self._audio_loaded.emit(token, (sig, sr, params))
             except Exception as e:  # noqa: BLE001
-                self._audio_error.emit(str(e))
+                self._audio_error.emit(token, str(e))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -807,7 +807,9 @@ class Workspace(QtWidgets.QWidget):
         img.setZValue(-20)
         self._set_internal(lane, "_spec", img)
 
-    def _audio_failed(self, msg: str) -> None:
+    def _audio_failed(self, token: int, msg: str) -> None:
+        if token != self._audio_token:
+            return
         self._show_source("Audio: unavailable", enabled=False)
         self.status.setText(f"Could not load audio: {msg}")
 
@@ -1460,7 +1462,7 @@ class Workspace(QtWidgets.QWidget):
     def place(self, kind: str) -> None:
         if self.doc is None:
             return
-        length = float(self.analysis.params.get("s1_nominal_sec" if kind == an.S1 else "s2_nominal_sec", 0.08))
+        length = float(param(self.analysis.params, "s1_nominal_sec" if kind == an.S1 else "s2_nominal_sec"))
         t = self.player.position
         self.doc.apply(lambda s: an.place_sound(s, kind, t, length, self.analysis.duration_sec))
 

@@ -129,8 +129,11 @@ class Player:
                 self._loop = None
             else:
                 a, b = sorted(region)
-                self._loop = (int(a * self.sample_rate), int(b * self.sample_rate))
-                if not self._loop[0] <= self._pos < self._loop[1]:
+                n = len(self._sources[SOURCE_ORIGINAL])  # a dragged region may overshoot the audio
+                lo = int(np.clip(a * self.sample_rate, 0, n))
+                hi = int(np.clip(b * self.sample_rate, 0, n))
+                self._loop = (lo, hi) if hi > lo else None
+                if self._loop and not self._loop[0] <= self._pos < self._loop[1]:
                     self._pos = self._loop[0]
 
     def toggle_source(self) -> str:

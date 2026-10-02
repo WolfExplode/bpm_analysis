@@ -336,7 +336,7 @@ class _ArrayWriter:
 def save(analysis: Analysis, path: os.PathLike | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # per process: identical audio may save in parallel
     with zipfile.ZipFile(tmp, "w") as zf:
         put = _ArrayWriter(zf)
         p, s = analysis.peaks, analysis.states

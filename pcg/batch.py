@@ -231,7 +231,11 @@ def run(jobs: List[Job], settings: RunSettings, library: analysis.Library,
             for job in todo
         }
         for fut in as_completed(futures):
-            r = fut.result()
+            try:
+                r = fut.result()
+            except Exception as e:  # a worker that died (e.g. out of memory) must not stop the queue
+                log.exception("worker failed: %s", futures[fut].path)
+                r = JobResult(futures[fut].path, False, error=f"{type(e).__name__}: {e}")
             results.append(r)
             if on_done:
                 on_done(r)
@@ -257,8 +261,19 @@ def annotated_recordings(roots: Iterable[os.PathLike | str],
             if named:
                 out.append((named[0], ann_path))
                 continue
-            fp = annotation.load(ann_path).fingerprint
-            hit = next((p for p in audio if lib.fingerprints.get(p) == fp), None)
+            try:
+                fp = annotation.load(ann_path).fingerprint
+            except (OSError, ValueError, KeyError) as e:
+                log.warning("unreadable annotation %s: %s", ann_path, e)
+                continue
+            hit = None
+            for p in audio:
+                try:
+                    if lib.fingerprints.get(p) == fp:
+                        hit = p
+                        break
+                except Exception:  # an undecodable file next to the annotation
+                    continue
             if hit is not None:
                 out.append((hit, ann_path))
             else:

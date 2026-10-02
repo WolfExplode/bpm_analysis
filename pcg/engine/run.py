@@ -123,7 +123,10 @@ def _run_springer_mode(
     # After decoding, nearest-neighbor resample the integer state labels to the
     # pipeline's sample_rate (600 Hz) so all downstream sample indices match.
     audio_raw, native_fs = sf.read(wav_file_path, always_2d=False)
-    audio_raw = np.asarray(audio_raw, dtype=np.float64).flatten()
+    audio_raw = np.asarray(audio_raw, dtype=np.float64)
+    if audio_raw.ndim > 1:  # stereo WAV passed through untouched: mix down like the native path
+        audio_raw = audio_raw.mean(axis=1)
+    audio_raw = audio_raw.flatten()
 
     analysis_start_sec = max(0.0, float(param(params, "analysis_start_sec")))
     if analysis_start_sec > 0.0:
