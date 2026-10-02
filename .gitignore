@@ -29,9 +29,32 @@ inputs
 dist/
 build/
 
+# Test caches
+.pytest_cache/
+
 # Binary packages
 *.exe
 *.pkg
 
 # Other Files
 ui_settings.json
+BPM_Analyzer_ui_settings.json
+benchmark_result.json
+benchmark_summary.json
+benchmarking/circor_benchmark_result.json
+benchmarking/circor_full_timing.txt
+benchmarking/*.log
+# debug_helpers generated artifacts (scan --json dumps, run logs)
+debug_helpers/*.log
+debug_helpers/*_report.json
+debug_helpers/inv_off.json
+
+Archived
+# Analysis library (pcg.analysis.Library)
+library/
+debug_helpers/*_report.csv
+
+# Springer2015: generated compare reports and the vendored third-party MATLAB release
+# (only needed to re-run port_pretrained_model.py / train_on_springer_original.py; committed .npz models cover runtime)
+springer2015/compare_out/
+springer2015/Logistic Regression-HSMM-based Heart Sound Segmentation/

@@ -1,24 +1,20 @@
-# ── Direct dependencies ──────────────────────────────────────────────────────
-# Version ranges below support both Python 3.10 and 3.11+.
-
-librosa>=0.11.0
+# ── Engine ───────────────────────────────────────────────────────────────────
 numpy>=2.0
-pandas>=2.3.0
-plotly>=6.1.1
-pydub>=0.25.1
 scipy>=1.14
-bottleneck>=1.4.0
-ttkbootstrap>=1.19.2
-tkinterdnd2>=0.4.0
-matplotlib
+pandas>=2.3.0
+bottleneck>=1.4.0   # optional pandas accelerator for the rolling-window code
+librosa>=0.11.0
+soundfile>=0.12
+PyWavelets          # Springer HSMM features (springer2015/springer_hsmm)
 
-# Optional: only required when PNG export is enabled (Plotter.save_as_png /
-# fig.write_image). Can be omitted if you only need interactive HTML output.
-kaleido>=1.1.0
+# ── Recordings ───────────────────────────────────────────────────────────────
+pydub>=0.25.1       # fallback decoder (via FFmpeg) for formats libsndfile can't read
 
-# ── Indirect dependencies (librosa back-ends) ─────────────────────────────────
-# These are pulled in automatically by librosa, but are listed here so that pip
-# resolves a compatible version rather than whatever happens to be installed.
-# You do not need to import them directly in application code.
-PyWavelets   # librosa wavelet support (pywt)
-soxr         # high-quality resampling back-end used by librosa
+# ── Workspace app ────────────────────────────────────────────────────────────
+PySide6>=6.7
+pyqtgraph>=0.13.7
+sounddevice>=0.4
+
+# Not needed by the app: scripts/hr_reactivity.py (standalone smartwatch tool) also uses
+# plotly + ttkbootstrap, and springer2015/compare_circor.py uses plotly. Install those
+# separately if you run them.

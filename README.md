@@ -8,72 +8,104 @@
 This tool is a heuristic based algorithm for phonocardiogram (PCG) Analysis.
 It analyzes audio recordings of heart sounds to detect heartbeats and graphs the Beats Per Minute (BPM) over time.
 
-### **GUI Interface:**
-_You only need to generate the heart rate graph but there are other options in case you need more information_
+## Overview
 
-<img width="480" height="380" alt="image" src="https://github.com/user-attachments/assets/d1325e51-4c0c-4eab-bb1a-b2fcc6c17227" />
+```
+pcg/
+  engine/        the algorithm: PCG audio in, beats / states / BPM out (pure computation)
+  recording.py   Recording identity (fingerprint of the decoded audio), audio loading, channels
+  analysis.py    Analysis files: the saved result of one run, kept in the library folder
+  annotation.py  Annotations: hand-verified S1 / S2 / noisy spans (the ground truth)
+  batch.py       run queue, BPM filename tags
+  cli.py         python -m pcg analyze / inspect / export / rename
+  app/           the desktop app: run screen + workspace
+```
 
-### [🔗 Outputs Heart Rate Graph:](https://youtu.be/uzc9XESJmb8)
-[![Watch the video|857x482](https://github.com/user-attachments/assets/b35ccc4a-dd20-49f6-a21d-64da8c746a92)](https://youtu.be/uzc9XESJmb8)
+Terms (Recording, Analysis, Annotation, Defect, Disagreement, ...) are defined in
+[CONTEXT.md](CONTEXT.md); the design is in [docs/workspace-requirements.md](docs/workspace-requirements.md).
 
-### **Spectrogram View:**
-_This script includes a spectrogram view for debugging but it is very slow to generate_
-![brave_ykQQ36DQv](https://github.com/user-attachments/assets/7a10acc5-0208-455a-9a3a-0300e5a4d722)
+- **Analyses** are stored in `library/` (or `$PCG_LIBRARY`), keyed by a fingerprint of the
+  recording's audio samples, so renaming a file (including writing BPM into its name) never
+  loses its Analysis. Nothing is written next to your recordings except Annotations.
+- An Analysis shows a **stale** badge when `pcg/engine/config.py` or the engine code changed since
+  it was made. It is only re-run when you ask (Ctrl+R / Run).
+- **Annotations** are `<recording>.annotation.json` next to the recording. For recordings inside a
+  protected folder (default `inputs/`) saving opens Save As, starting in Downloads.
 
 ## Configuration
-All tunable parameters for the `bpm_analysis.py` engine are located in `config.py`
-The parameters are organized into logical categories for easier navigation and tuning.
-- Multi-Format Audio Support: Accepts most common media files such as WAV, MP3, M4A, MOV, by converting them to .wav format for analysis.
-
-## Dependencies
-To run this script, you will need Python and the following libraries:
-- **`numpy`**, **`pandas`**, **`scipy`**, **`plotly`**, **`ttkbootstrap`**, **`pydub`**
-- **`librosa`** (handles audio loading and resampling)
-- **`soxr`** (improves resampling quality when used with librosa)
-- **`matplotlib`** (used for spectrogram and plotting)
-- **`kaleido`** (required for exporting Plotly graphs to PNG)
-- **`PyWavelets`** (provides the `pywt` module used for wavelet denoising)
-
-You will also need **FFmpeg** installed and accessible in your system's PATH for `pydub` to function correctly. Follow the installation instructions for your operating system from the official [FFmpeg website](https://ffmpeg.org/download.html).
-
-On Windows, ensure you have [Microsoft Visual C++ Redistributable Latest supported v14](https://aka.ms/vc14/vc_redist.x64.exe) (for Visual Studio 2017–2026).
+All engine parameters live in `pcg/engine/config.py` — the only place they are tuned; the app has
+no parameter editor. Per-run settings (algorithm, auto-switch, channel, start offset, start-BPM
+hint) are chosen on the run screen or the CLI. `tests/test_engine_boundary.py` keeps UI and file
+code out of the engine.
 
 ## Installation
 
-**1. Clone or download this repository, then open a terminal in the project directory.**
-
-**2. (Recommended) Install all dependencies from the requirements file:**
 ```bash
 pip install -r requirements.txt
 ```
 
-Alternatively, install only the core dependencies manually:
-```bash
-pip install numpy pandas scipy plotly ttkbootstrap pydub librosa soxr matplotlib PyWavelets kaleido
-```
+FFmpeg on your PATH is only needed for formats libsndfile can't decode (e.g. m4a / video files).
 
 ## How to Run
 
-From the project directory in a terminal:
 ```bash
-python main.py
-```
-Or use the windowless launcher:
-```bash
-python main.pyw
-```
-Tip: You can double-click `main.pyw` to launch the app without opening a command prompt.
-
-## Build
-
-From the project directory, with the same Python environment and dependencies you use to run the app, install PyInstaller if needed, then run:
-
-```bash
-pip install pyinstaller
-pyinstaller BPM_Analyzer.spec
+python -m pcg                      # the app (run screen + workspace)
+python -m pcg app path/to/rec.wav  # open one recording in the workspace
 ```
 
-PyInstaller writes the standalone app under `dist/` (for example `dist/BPM_Analyzer.exe` on Windows).
+**Run screen:** drop recordings or folders, pick the algorithm / auto-switch / channel / parallel
+jobs, optionally set a start BPM or skip per row, then Run. Double-click a row to open it.
+"Write BPM into filenames" renames the selected recordings with their `[start,min-maxbpm]` tag.
+
+**Workspace:** stacked lanes on one time axis — states (Analysis vs Annotation, with
+Disagreements and Defects), signal (envelopes, peaks; hover a peak for its labels, scores and
+reasoning), heart rate, and optional lanes for every debug trace the engine emits (toggle them in
+the Traces panel; choices persist). Keys (also under Help → Keys):
+
+| Key | Action |
+|---|---|
+| Space / T | play-pause / toggle original vs filtered audio |
+| Click · Shift+drag · Shift+click | move playhead · loop region · clear it |
+| 1 / 2 | place S1 / S2 at the playhead |
+| X or Del / F | delete / relabel S1↔S2 |
+| N + drag, drag a noisy edge | paint / resize a Noisy span |
+| A | replace the loop region with the algorithm's output |
+| ] / [ | next / previous Defect or Disagreement |
+| Ctrl+Z / Ctrl+Shift+Z / Ctrl+S | undo / redo / save Annotation |
+| Ctrl+R | re-run the engine in a fresh process (picks up code edits) |
+| Ctrl+Shift+C | copy the visible window as text for an LLM |
+
+## Command Line
+
+```bash
+python -m pcg analyze inputs/ -j 8 --rename      # analyze, store in the library, tag filenames
+python -m pcg analyze rec.wav --springer --start 5
+python -m pcg inspect rec.wav --from 120 --to 126 # the same text as Ctrl+Shift+C
+python -m pcg export rec.wav --bpm-csv bpm.csv [--source annotation] --summary summary.txt
+python -m pcg rename inputs/                      # write BPM tags from existing Analyses
+```
+
+The start-BPM hint defaults to the filename tag. Springer and auto-switch runs always go one at a
+time: the Springer HSMM needs several GB of memory per minute of audio. For breakpoint debugging,
+run `python -m pcg analyze <file>` under a debugger.
+
+## Testing
+
+**Unit tests** — fast, deterministic, no audio fixtures:
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q
+```
+See [tests/README.md](tests/README.md) for the per-module coverage table.
+
+**Benchmark runner** — runs the engine on every annotated recording and compares predicted S1
+states against the Annotation, reporting `phase_flip` / `miss` / `extra` per file:
+```bash
+python benchmarking/run_benchmark.py [input_dir] -j 4   # default: inputs/
+```
+
+**Invariant gate** — `python benchmarking/state_invariants.py` (no ground truth needed; see
+[debug_helpers/README.md](debug_helpers/README.md)).
 
 ## Extra Features:
 Import the generated heart rate graph into Blender to easily calculate the change in bpm over time.
@@ -90,4 +122,5 @@ Select the Geometry Nodes object and enter edit mode. This will allow you to cal
 
 You can also make any BPM/Time graph and export it out of blender using the `Export graph data.py` script
 
-Import any CSV file with format: Time(Seconds), Beats Per Minute
+Import any CSV file with format: Time(Seconds), Beats Per Minute — e.g. File → Export → BPM CSV in the
+workspace, or `python -m pcg export rec.wav --bpm-csv bpm.csv`.
