@@ -92,6 +92,19 @@ def downloads_dir() -> Path:
     return d if d.is_dir() else Path.home()
 
 
+def reveal_in_folder(path: str) -> None:
+    """Open the file's folder in the system file manager, with the file selected where possible."""
+    if sys.platform == "win32":
+        proc = QtCore.QProcess()
+        proc.setProgram("explorer")
+        proc.setNativeArguments(f'/select,"{Path(path)}"')  # explorer wants the quotes after the comma
+        proc.startDetached()
+    else:
+        from PySide6 import QtGui
+
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(Path(path).parent)))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Annotation document
 # ─────────────────────────────────────────────────────────────────────────────

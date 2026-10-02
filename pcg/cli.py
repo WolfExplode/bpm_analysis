@@ -2,7 +2,7 @@
 
     analyze  PATHS...           run the engine, store Analyses in the library
     inspect  RECORDING --from S --to S   text dump of a window (same as Ctrl+Shift+C)
-    export   RECORDING ...      BPM CSV (from the Analysis or the Annotation), summary
+    export   RECORDING ...      BPM CSV / BPM chart (from the Analysis or the Annotation), summary
     rename   PATHS...           write each recording's BPM into its filename
     app      [PATHS...] [--analyze]  open the workspace (the default with no command)
 
@@ -135,25 +135,45 @@ def summary_text(a: analysis.Analysis) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _bpm_series(args, a: analysis.Analysis):
+    """(times, BPM) from the Annotation next to the recording or from the Analysis, per --source."""
+    if args.source == "annotation":
+        found = annotation.find_for_recording(args.recording, a.fingerprint)
+        if not found:
+            raise SystemExit("no Annotation found next to the recording")
+        return annotation.bpm_series(annotation.load(found).spans)
+    tr = a.trace("BPM")
+    if tr is None:
+        raise SystemExit("the Analysis has no BPM curve")
+    return tr.times(), tr.y
+
+
 def cmd_export(args) -> int:
     lib = _library(args)
     a = open_latest(args.recording, lib, args.channel)
     if args.bpm_csv:
-        if args.source == "annotation":
-            found = annotation.find_for_recording(args.recording, a.fingerprint)
-            if not found:
-                raise SystemExit("no Annotation found next to the recording")
-            t, b = annotation.bpm_series(annotation.load(found).spans)
-            write_bpm_csv(Path(args.bpm_csv), t, b, "bpm_annotation")
-        else:
-            tr = a.trace("BPM")
-            if tr is None:
-                raise SystemExit("the Analysis has no BPM curve")
-            write_bpm_csv(Path(args.bpm_csv), tr.times(), tr.y, "bpm")
+        t, b = _bpm_series(args, a)
+        write_bpm_csv(Path(args.bpm_csv), t, b, "bpm_annotation" if args.source == "annotation" else "bpm")
         print(f"wrote {args.bpm_csv}")
     if args.summary:
         Path(args.summary).write_text(summary_text(a), encoding="utf-8")
         print(f"wrote {args.summary}")
+    if args.chart:
+        from pcg.app.chart import annotation_bpm_curve, render_bpm_chart
+
+        if args.source == "annotation":
+            found = annotation.find_for_recording(args.recording, a.fingerprint)
+            if not found:
+                raise SystemExit("no Annotation found next to the recording")
+            t, b = annotation_bpm_curve(annotation.load(found).spans, a.params)
+        else:
+            t, b = _bpm_series(args, a)
+        env = a.trace("Algorithm envelope")
+        if env is None:
+            raise SystemExit("the Analysis has no envelope")
+        if not render_bpm_chart(t, b, env.t0, env.dt, env.y, 0.0, a.duration_sec).save(args.chart):
+            raise SystemExit(f"could not write {args.chart}")
+        print(f"wrote {args.chart}")
     return 0
 
 
@@ -208,11 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--traces", default=None, help="comma-separated trace names (default: signal/BPM lines)")
     p.set_defaults(func=cmd_inspect)
 
-    p = sub.add_parser("export", help="export BPM CSV / summary")
+    p = sub.add_parser("export", help="export BPM CSV / summary / BPM chart")
     p.add_argument("recording")
     p.add_argument("--bpm-csv")
     p.add_argument("--source", choices=("analysis", "annotation"), default="analysis")
     p.add_argument("--summary")
+    p.add_argument("--chart", help="PNG: the BPM curve (0-230 BPM) over the waveform, whole recording")
     p.add_argument("--channel", default=None)
     p.set_defaults(func=cmd_export)
 

@@ -365,6 +365,92 @@ class StageChip(QtWidgets.QAbstractButton):
                    self.text())
 
 
+class Segmented(QtWidgets.QFrame):
+    """A row of mutually exclusive options, all visible: one click picks one. Options that don't apply
+    right now stay visible but disabled (with a tooltip saying why)."""
+
+    changed = QtCore.Signal(str)
+
+    def __init__(self, options):
+        super().__init__()
+        self.setObjectName("segmented")
+        lay = QtWidgets.QHBoxLayout(self)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(2)
+        self._group = QtWidgets.QButtonGroup(self)
+        self._buttons: dict = {}
+        for key, label in options:
+            b = QtWidgets.QPushButton(label, checkable=True)
+            b.setProperty("segment", True)
+            b.setAutoDefault(False)  # Enter in a dialog goes to its default button, not the focused option
+            b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.changed.emit(k))
+            self._group.addButton(b)
+            self._buttons[key] = b
+            lay.addWidget(b)
+        lay.addStretch(0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
+
+    def value(self) -> str:
+        return next((k for k, b in self._buttons.items() if b.isChecked()), "")
+
+    def set_value(self, key: str) -> None:
+        if key in self._buttons:
+            self._buttons[key].setChecked(True)
+
+    def set_enabled(self, key: str, enabled: bool, why: str = "") -> None:
+        b = self._buttons[key]
+        b.setEnabled(enabled)
+        b.setToolTip("" if enabled else why)
+
+    def is_enabled(self, key: str) -> bool:
+        return self._buttons[key].isEnabled()
+
+
+class FormatCard(QtWidgets.QAbstractButton):
+    """A checkable card: a title and a one-line description."""
+
+    def __init__(self, title: str, description: str):
+        super().__init__()
+        self.setText(title)
+        self.description = description
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setMinimumWidth(120)
+
+    def sizeHint(self) -> QtCore.QSize:
+        fm = self.fontMetrics()
+        return QtCore.QSize(max(fm.horizontalAdvance(self.text()), fm.horizontalAdvance(self.description)) + 26,
+                            fm.height() * 2 + 22)
+
+    def enterEvent(self, ev) -> None:
+        self.update()
+
+    def leaveEvent(self, ev) -> None:
+        self.update()
+
+    def paintEvent(self, _ev) -> None:
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        r = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        on, hover = self.isChecked(), self.underMouse()
+        p.setPen(QtGui.QPen(qcolor(theme.ACCENT if on else theme.BORDER_STRONG if hover else theme.BORDER), 1))
+        p.setBrush(qcolor(theme.blend(theme.ACCENT, theme.SURFACE_2, 0.1)) if on else QtCore.Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r, 7, 7)
+        fm = self.fontMetrics()
+        text_r = r.adjusted(12, 9, -10, -9)
+        f = self.font()
+        f.setWeight(QtGui.QFont.Weight.DemiBold)
+        p.setFont(f)
+        p.setPen(qcolor(theme.TEXT if on or hover else theme.TEXT_2))
+        p.drawText(text_r, QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop, self.text())
+        p.setFont(self.font())
+        p.setPen(qcolor(theme.TEXT_3))
+        desc = fm.elidedText(self.description, QtCore.Qt.TextElideMode.ElideRight, int(text_r.width()))
+        p.drawText(text_r, QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignBottom, desc)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Tables
 # ─────────────────────────────────────────────────────────────────────────────

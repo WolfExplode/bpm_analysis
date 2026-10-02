@@ -10,7 +10,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from pcg import analysis as A
 from pcg import recording
 
-from . import theme
+from . import icon, theme
 from .run_screen import RunScreen
 from .state import Settings
 from .workspace import Workspace
@@ -129,8 +129,10 @@ class MainWindow(QtWidgets.QMainWindow):
 def main(paths: Optional[List[str]] = None, library: Optional[str] = None, analyze: bool = False) -> int:
     """Open the app. One file opens in the workspace; several go to the run queue. With
     *analyze* the engine starts right away (the workspace re-runs even an existing Analysis)."""
+    icon.set_taskbar_identity()
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("PCG Workspace")
+    app.setWindowIcon(icon.app_icon())
     theme.apply(app)
     # Windows rolls tooltips open; the peak-reasoning tooltips are long, so show them at once.
     for effect in (QtCore.Qt.UIEffect.UI_AnimateTooltip, QtCore.Qt.UIEffect.UI_FadeTooltip):

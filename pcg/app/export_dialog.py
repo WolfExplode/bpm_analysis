@@ -1,214 +1,238 @@
-"""The export dialog (Ctrl+Shift+E): a file browser on the left, the chosen format's options on the right."""
+"""The export dialog (Ctrl+Shift+E): pick a format and its options, then where the file goes.
+
+Folders are chosen by typing or pasting a path (recent ones are in the drop-down) or with
+"Browse…", which opens the system's own folder picker.
+"""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from . import theme
 from .state import Settings, downloads_dir
+from .widgets import FormatCard, Segmented
 
-# format key -> (label, extension, name filter)
-FORMATS: Dict[str, Tuple[str, str, str]] = {
-    "csv": ("BPM CSV", ".csv", "CSV (*.csv)"),
-    "summary": ("Summary", ".txt", "Text (*.txt)"),
-    "context": ("Window text for an LLM", ".txt", "Text (*.txt)"),
-    "image": ("Workspace image", ".png", "PNG (*.png)"),
+# format key -> (label, description, extension, file-name suffix)
+FORMATS: Dict[str, Tuple[str, str, str, str]] = {
+    "csv": ("BPM CSV", "Time and BPM rows", ".csv", "_bpm"),
+    "chart": ("BPM chart", "BPM over the waveform, 0–230", ".png", "_chart"),
+    "summary": ("Summary", "BPM, HRV and the gate", ".txt", "_summary"),
+    "context": ("Window text", "The visible window, for an LLM", ".txt", "_window"),
+    "image": ("Screenshot", "The lanes as they look", ".png", "_view"),
 }
-NAME_SUFFIX = {"csv": "_bpm", "summary": "_summary", "context": "_window", "image": "_view"}
 RANGES = (("whole", "Whole recording"), ("visible", "Visible window"), ("region", "Loop region"))
 TIME_FORMATS = (("seconds", "Seconds"), ("clock", "hh:mm:ss.xxx"), ("both", "Both"))
 SOURCES = (("analysis", "Analysis"), ("annotation", "Annotation"))
+OVERVIEW = (("with", "Include"), ("without", "Leave out"))
+RECENT_FOLDERS = 8
 
 
 class ExportDialog(QtWidgets.QDialog):
-    """After exec() == Accepted: .fmt, .path and .opts describe the export to run."""
+    """After exec() == Accepted: .fmt, .path, .opts and .open_after describe the export to run."""
 
     def __init__(self, parent, settings: Settings, stem: str, *, has_annotation: bool, has_region: bool):
         super().__init__(parent)
         self.setWindowTitle("Export")
         self.settings, self.stem = settings, stem
         self.has_annotation, self.has_region = has_annotation, has_region
-        self.fmt, self.path, self.opts = "csv", "", {}
-        saved = settings.get_json("export", {})
+        self.fmt, self.path, self.opts, self.open_after = "csv", "", {}, False
+        self._saved = settings.get_json("export", {})
 
-        self.files = QtWidgets.QFileDialog(self)
-        self.files.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
-        self.files.setWindowFlags(QtCore.Qt.WindowType.Widget)
-        self.files.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
-        self.files.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-        self.files.setLabelText(QtWidgets.QFileDialog.DialogLabel.Accept, "Export")
-        folder = saved.get("folder")
-        self.files.setDirectory(folder if folder and Path(folder).is_dir() else str(downloads_dir()))
-        self._use_recycle_bin()
-        self.files.accepted.connect(self._accepted)
-        self.files.rejected.connect(self.reject)
+        self.cards: Dict[str, FormatCard] = {}
+        cards = QtWidgets.QHBoxLayout()
+        cards.setSpacing(8)
+        for key, (label, desc, _ext, _suffix) in FORMATS.items():
+            card = FormatCard(label, desc)
+            card.toggled.connect(lambda on, k=key: on and self._format_changed(k))
+            self.cards[key] = card
+            cards.addWidget(card)
 
-        # A pasteable folder field, like Explorer's address bar (the browser's own is read-only).
-        self.folder_edit = QtWidgets.QLineEdit(self.files.directory().absolutePath())
-        self.folder_edit.setPlaceholderText("Paste a folder path and press Enter")
-        self.folder_edit.setClearButtonEnabled(True)
-        completer = QtWidgets.QCompleter(self)
-        completer.setModel(QtWidgets.QFileSystemModel(completer))
-        completer.model().setRootPath("")
-        completer.model().setFilter(QtCore.QDir.Filter.Dirs | QtCore.QDir.Filter.Drives | QtCore.QDir.Filter.NoDotAndDotDot)
-        completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
-        self.folder_edit.setCompleter(completer)
-        self.folder_edit.installEventFilter(self)
-        self.files.directoryEntered.connect(self.folder_edit.setText)
-
-        self.format_box = self._combo({k: v[0] for k, v in FORMATS.items()}.items())
-        self.range_box = self._combo(RANGES)
-        self.time_box = self._combo(TIME_FORMATS)
-        self.source_box = self._combo(SOURCES)
-        self.overview_box = QtWidgets.QCheckBox("Include the overview strip")
-        self.empty_note = QtWidgets.QLabel("No options for this format.")
-        self.empty_note.setProperty("tone", "muted")
-
-        form = QtWidgets.QFormLayout()
-        form.addRow("Format", self.format_box)
+        self.source = Segmented(SOURCES)
+        self.range = Segmented(RANGES)
+        self.time = Segmented(TIME_FORMATS)
+        self.overview = Segmented(OVERVIEW)
+        self.no_options = QtWidgets.QLabel("No options for this format.")
+        self.no_options.setProperty("tone", "muted")
+        self.options = QtWidgets.QFormLayout()
+        self.options.setHorizontalSpacing(14)
+        self.options.setVerticalSpacing(8)
+        self.options.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.rows = {
-            "source": self._row(form, "Source", self.source_box),
-            "range": self._row(form, "Range", self.range_box),
-            "time": self._row(form, "Time column", self.time_box),
-            "overview": self._row(form, "", self.overview_box),
-            "empty": self._row(form, "", self.empty_note),
+            "source": self._row("Source", self.source),
+            "range": self._row("Range", self.range),
+            "time": self._row("Time column", self.time),
+            "overview": self._row("Overview strip", self.overview),
+            "none": self._row("", self.no_options),
         }
-        panel = QtWidgets.QWidget()
-        panel.setFixedWidth(300)
-        pl = QtWidgets.QVBoxLayout(panel)
-        pl.addLayout(form)
-        pl.addStretch(1)
 
-        browser = QtWidgets.QVBoxLayout()
-        browser.addWidget(self.folder_edit)
-        browser.addWidget(self.files, 1)
-        lay = QtWidgets.QHBoxLayout(self)
-        lay.addLayout(browser, 1)
-        lay.addWidget(panel)
-        self.resize(1150, 640)
+        self.folder = QtWidgets.QComboBox(editable=True)
+        self.folder.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.folder.lineEdit().setPlaceholderText("Paste a folder path")
+        self.folder.lineEdit().setFont(theme.mono_font(8.5))
+        self.folder.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.folder.setMinimumContentsLength(30)
+        completer = QtWidgets.QCompleter(self)
+        model = QtWidgets.QFileSystemModel(completer)
+        model.setRootPath("")
+        model.setFilter(QtCore.QDir.Filter.Dirs | QtCore.QDir.Filter.Drives | QtCore.QDir.Filter.NoDotAndDotDot)
+        completer.setModel(model)
+        completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
+        self.folder.setCompleter(completer)
+        self.folder.lineEdit().textEdited.connect(lambda _t: theme.set_prop(self.folder.lineEdit(), "invalid", False))
+        browse = QtWidgets.QPushButton("Browse…", clicked=self._browse)
+        folder_row = QtWidgets.QHBoxLayout()
+        folder_row.setSpacing(6)
+        folder_row.addWidget(self.folder, 1)
+        folder_row.addWidget(browse)
 
-        self._restore(saved)
-        self.format_box.currentIndexChanged.connect(self._format_changed)
-        self._format_changed()
+        self.name = QtWidgets.QLineEdit()
+        self.name.setFont(theme.mono_font(8.5))
+        self.ext = QtWidgets.QLabel()
+        self.ext.setFont(theme.mono_font(8.5))
+        self.ext.setProperty("tone", "muted")
+        name_row = QtWidgets.QHBoxLayout()
+        name_row.setSpacing(6)
+        name_row.addWidget(self.name, 1)
+        name_row.addWidget(self.ext)
+
+        dest = QtWidgets.QFormLayout()
+        dest.setHorizontalSpacing(14)
+        dest.setVerticalSpacing(8)
+        dest.addRow(self._label("Folder"), folder_row)
+        dest.addRow(self._label("File name"), name_row)
+
+        line = QtWidgets.QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background: {theme.LINE};")
+        body = QtWidgets.QVBoxLayout()
+        body.setContentsMargins(16, 16, 16, 14)
+        body.setSpacing(14)
+        body.addLayout(cards)
+        body.addLayout(self.options)
+        body.addWidget(line)
+        body.addLayout(dest)
+
+        footer = QtWidgets.QFrame()
+        footer.setObjectName("footer")
+        fl = QtWidgets.QHBoxLayout(footer)
+        fl.setContentsMargins(16, 10, 16, 10)
+        self.open_after_box = QtWidgets.QCheckBox("Show in folder afterwards")
+        cancel = QtWidgets.QPushButton("Cancel", clicked=self.reject)
+        export = QtWidgets.QPushButton("Export", clicked=self._export)
+        export.setProperty("primary", True)
+        export.setDefault(True)
+        for b in (cancel, browse):
+            b.setAutoDefault(False)
+        fl.addWidget(self.open_after_box)
+        fl.addStretch(1)
+        fl.addWidget(cancel)
+        fl.addWidget(export)
+
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addLayout(body, 1)
+        lay.addWidget(footer)
+        self.setMinimumWidth(640)
+
+        self._restore()
 
     # ── layout helpers ────────────────────────────────────────────────────────
     @staticmethod
-    def _combo(items) -> QtWidgets.QComboBox:
-        box = QtWidgets.QComboBox()
-        for key, label in items:
-            box.addItem(label, key)
-        return box
+    def _label(text: str) -> QtWidgets.QLabel:
+        lab = QtWidgets.QLabel(text)
+        lab.setProperty("tone", "muted")
+        lab.setMinimumWidth(90)
+        return lab
 
-    @staticmethod
-    def _row(form: QtWidgets.QFormLayout, label: str, widget: QtWidgets.QWidget):
-        form.addRow(label, widget)
-        return form.labelForField(widget), widget
+    def _row(self, label: str, widget: QtWidgets.QWidget):
+        lab = self._label(label)
+        self.options.addRow(lab, widget)
+        return lab, widget
 
     def _set_row(self, name: str, shown: bool) -> None:
         for w in self.rows[name]:
-            if w is not None:
-                w.setVisible(shown)
-
-    @staticmethod
-    def _pick(box: QtWidgets.QComboBox, key) -> None:
-        i = box.findData(key)
-        if i >= 0:
-            box.setCurrentIndex(i)
-
-    @staticmethod
-    def _enable(box: QtWidgets.QComboBox, key: str, enabled: bool) -> None:
-        i = box.findData(key)
-        if i >= 0:
-            box.model().item(i).setEnabled(enabled)
+            w.setVisible(shown)
 
     # ── state ────────────────────────────────────────────────────────────────
-    def _restore(self, saved: dict) -> None:
-        self._pick(self.format_box, saved.get("format", "csv"))
+    def _restore(self) -> None:
+        saved = self._saved
         o = saved.get("opts", {})
-        self._pick(self.range_box, o.get("range", "whole"))
-        self._pick(self.time_box, o.get("time_format", "seconds"))
-        self._pick(self.source_box, o.get("source", "annotation" if self.has_annotation else "analysis"))
-        self.overview_box.setChecked(bool(o.get("overview", True)))
+        self.source.set_value(o.get("source", "annotation" if self.has_annotation else "analysis"))
+        self.range.set_value(o.get("range", "whole"))
+        self.time.set_value(o.get("time_format", "seconds"))
+        self.overview.set_value("with" if o.get("overview", True) else "without")
+        self.open_after_box.setChecked(bool(saved.get("open_after", False)))
+        recent = [f for f in saved.get("recent", []) if Path(f).is_dir()]
+        folder = saved.get("folder")
+        if folder and Path(folder).is_dir() and folder not in recent:
+            recent.insert(0, folder)
+        self.folder.addItems(recent or [str(downloads_dir())])
+        self.folder.setCurrentIndex(0)
+        self.cards.get(saved.get("format"), self.cards["csv"]).setChecked(True)
 
-    def _format_changed(self) -> None:
-        fmt = self.format_box.currentData()
-        _label, ext, flt = FORMATS[fmt]
-        self._set_row("source", fmt == "csv")
-        self._set_row("range", fmt in ("csv", "context"))
+    def _format_changed(self, fmt: str) -> None:
+        self.fmt = fmt
+        self._set_row("source", fmt in ("csv", "chart"))
+        self._set_row("range", fmt in ("csv", "chart", "context"))
         self._set_row("time", fmt == "csv")
         self._set_row("overview", fmt == "image")
-        self._set_row("empty", fmt == "summary")
-        # Offer only what exists: a loop region, an open Annotation; "whole" is for the CSV only.
-        self._enable(self.range_box, "region", self.has_region)
-        self._enable(self.range_box, "whole", fmt == "csv")
-        if not self.range_box.model().item(self.range_box.currentIndex()).isEnabled():
-            self._pick(self.range_box, "visible")
-        self._enable(self.source_box, "annotation", self.has_annotation)
+        self._set_row("none", fmt == "summary")
+        # Offer only what exists: a loop region, an open Annotation; "whole" is for the BPM exports only.
+        self.range.set_enabled("region", self.has_region, "Shift+drag a loop region first")
+        self.range.set_enabled("whole", fmt in ("csv", "chart"), "Only the BPM exports can cover the whole recording")
+        if not self.range.is_enabled(self.range.value()):
+            self.range.set_value("visible")
+        self.source.set_enabled("annotation", self.has_annotation, "No Annotation is open")
         if not self.has_annotation:
-            self._pick(self.source_box, "analysis")
-        self.files.setNameFilter(flt)
-        self.files.setDefaultSuffix(ext.lstrip("."))
-        self.files.selectFile(f"{self.stem}{NAME_SUFFIX[fmt]}{ext}")
+            self.source.set_value("analysis")
+        _label, _desc, ext, suffix = FORMATS[fmt]
+        self.ext.setText(ext)
+        self.name.setText(f"{self.stem}{suffix}")
 
-    def _use_recycle_bin(self) -> None:
-        """Qt's browser deletes permanently; route its Delete menu item to the Recycle Bin instead."""
-        for action in self.files.findChildren(QtGui.QAction):
-            if action.text().replace("&", "") == "Delete":
-                action.triggered.disconnect()
-                action.triggered.connect(self._trash_selected)
+    def _browse(self) -> None:
+        start = self.folder.currentText().strip() or str(downloads_dir())
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Export to folder", start)
+        if d:
+            self.folder.setEditText(str(Path(d)))
+            theme.set_prop(self.folder.lineEdit(), "invalid", False)
 
-    def _trash_selected(self) -> None:
-        for view in self.files.findChildren(QtWidgets.QAbstractItemView):
-            if view.objectName() in ("listView", "treeView") and view.isVisible():
-                break
-        else:
+    def _target(self) -> Optional[Path]:
+        """The file to write, or None (with the folder field marked) when the folder doesn't exist.
+        A full file path pasted into the folder field is split into folder and name."""
+        folder = Path(self.folder.currentText().strip().strip('"')).expanduser()
+        name = self.name.text().strip() or f"{self.stem}{FORMATS[self.fmt][3]}"
+        if not folder.is_dir() and folder.suffix and folder.parent.is_dir():
+            folder, name = folder.parent, folder.name
+        if not folder.is_dir():
+            theme.set_prop(self.folder.lineEdit(), "invalid", True)
+            self.folder.setFocus()
+            return None
+        ext = FORMATS[self.fmt][2]
+        if not name.lower().endswith(ext):
+            name += ext
+        return folder / name
+
+    def _export(self) -> None:
+        path = self._target()
+        if path is None:
             return
-        paths = {i.data(QtWidgets.QFileSystemModel.Roles.FilePathRole) for i in view.selectionModel().selectedIndexes()}
-        for path in sorted(p for p in paths if p):
-            name = Path(path).name
-            ask = QtWidgets.QMessageBox.question(self, "Move to Recycle Bin", f"Move '{name}' to the Recycle Bin?")
+        if path.exists():
+            ask = QtWidgets.QMessageBox.question(self, "Replace file", f"{path.name} already exists. Replace it?")
             if ask != QtWidgets.QMessageBox.StandardButton.Yes:
-                continue
-            if not QtCore.QFile.moveToTrash(path):
-                QtWidgets.QMessageBox.warning(self, "Recycle Bin", f"Could not move '{name}' to the Recycle Bin.")
-
-    def eventFilter(self, obj, ev):
-        # Enter in the folder field navigates; left alone it would reach the dialog's default Export button.
-        if obj is self.folder_edit and ev.type() == QtCore.QEvent.Type.KeyPress and ev.key() in (
-                QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
-            if not self.folder_edit.completer().popup().isVisible():
-                self._folder_typed()
-                return True
-        return super().eventFilter(obj, ev)
-
-    def _folder_typed(self) -> None:
-        """Enter in the folder field: go there. A pasted file path goes to its folder and fills the name."""
-        text = self.folder_edit.text().strip().strip('"')
-        path = Path(text).expanduser()
-        if path.is_dir():
-            self.files.setDirectory(str(path))
-        elif path.parent.is_dir() and path.suffix:
-            self.files.setDirectory(str(path.parent))
-            self.files.selectFile(path.name)
-        else:
-            theme.set_prop(self.folder_edit, "invalid", True)
-            return
-        theme.set_prop(self.folder_edit, "invalid", False)
-        self.folder_edit.setText(self.files.directory().absolutePath())
-
-    def _accepted(self) -> None:
-        picked = self.files.selectedFiles()
-        if not picked:
-            return
-        self.fmt = self.format_box.currentData()
-        self.path = picked[0]
+                return
+        self.path = str(path)
+        self.open_after = self.open_after_box.isChecked()
         self.opts = {
-            "range": self.range_box.currentData(),
-            "time_format": self.time_box.currentData(),
-            "source": self.source_box.currentData(),
-            "overview": self.overview_box.isChecked(),
+            "range": self.range.value(),
+            "time_format": self.time.value(),
+            "source": self.source.value(),
+            "overview": self.overview.value() == "with",
         }
-        self.settings.set_json("export", {"format": self.fmt, "folder": str(Path(self.path).parent), "opts": self.opts})
+        folder = str(path.parent)
+        recent = [folder] + [f for f in self._saved.get("recent", []) if f != folder]
+        self.settings.set_json("export", {"format": self.fmt, "folder": folder, "opts": self.opts,
+                                          "recent": recent[:RECENT_FOLDERS], "open_after": self.open_after})
         self.accept()

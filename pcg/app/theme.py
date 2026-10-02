@@ -52,6 +52,9 @@ ANNOTATION = "#e6e8ea"
 ENVELOPE = "#8796a4"       # the envelope's outline; its body is ENVELOPE_FILL
 ENVELOPE_FILL = "#46525d"
 PLAYHEAD = "#ffffff"
+# The exported BPM chart (no S1/S2 marks there, so the waveform can be cyan without clashing).
+CHART_BPM = METRIC
+CHART_WAVE = "#3f9fc2"
 
 # Stages, in the order the engine computes them.
 PREPROCESSING, PASS_1, PASS_2, PASS_3, RESULT, ANNOTATION_GROUP = (
@@ -293,7 +296,12 @@ QComboBox:focus, QSpinBox:focus, QLineEdit:focus {{ border-color: {accent_edge};
 QComboBox QAbstractItemView {{ background: {SURFACE_3}; color: {TEXT}; border: 1px solid {BORDER};
     selection-background-color: {accent_tint}; outline: 0; }}
 QLineEdit[invalid="true"] {{ color: {TONES['danger'][0]}; border-color: {TONES['danger'][0]}; }}
-QCheckBox {{ color: {TEXT_2}; spacing: 6px; }}
+QCheckBox {{ color: {TEXT_2}; spacing: 7px; }}
+QCheckBox:hover {{ color: {TEXT}; }}
+QCheckBox::indicator {{ width: 12px; height: 12px; border: 1px solid {BORDER_STRONG}; border-radius: 3px;
+                        background: {SURFACE_3}; }}
+QCheckBox::indicator:hover {{ border-color: {TEXT_3}; }}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 
 QTableView, QListView, QTreeView, QTextBrowser {{ background: {SURFACE_1}; color: {TEXT}; border: none;
     gridline-color: {LINE}; selection-background-color: {accent_tint}; selection-color: {TEXT}; outline: 0; }}
@@ -325,6 +333,13 @@ QLabel#laneTitle {{ color: {TEXT}; font-weight: 600; }}
 QLabel[tone="muted"] {{ color: {TEXT_3}; }}
 QLabel[tone="secondary"] {{ color: {TEXT_2}; }}
 QLabel[tone="accent"] {{ color: {ACCENT}; }}
+QFrame#segmented {{ background: {SURFACE_3}; border-radius: 6px; }}
+QPushButton[segment="true"] {{ background: transparent; color: {TEXT_2}; border: none; border-radius: 4px;
+                               padding: 4px 12px; }}
+QPushButton[segment="true"]:hover {{ color: {TEXT}; background: {SURFACE_2}; }}
+QPushButton[segment="true"]:checked {{ background: {blend(ACCENT, SURFACE_3, 0.28)}; color: {TEXT}; }}
+QPushButton[segment="true"]:disabled {{ color: {TEXT_4}; background: transparent; }}
+QFrame#footer {{ background: {SURFACE_1}; border-top: 1px solid {LINE}; }}
 QPushButton[chip="lane"] {{ border: 1px dashed {BORDER_STRONG}; border-radius: 10px; padding: 1px 10px; color: {TEXT_2}; }}
 QPushButton[chip="lane"]:hover {{ border-style: solid; color: {TEXT}; }}
 {tones}

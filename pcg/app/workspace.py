@@ -23,9 +23,10 @@ from pcg.engine.traces import KIND_LINE, KIND_POINTS, KIND_SPANS, ROLE_ENVELOPE,
 
 from . import theme
 from .audio import SOURCE_FILTERED, Player, load_playback_audio, spectrogram
+from .chart import annotation_bpm_curve, render_bpm_chart
 from .export_dialog import ExportDialog
 from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, palette_row
-from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir
+from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir, reveal_in_folder
 from .theme import TraceMeta, qcolor
 from .widgets import LEGEND_WIDTH, KeyButton, LaneLegend, LegendEntry, StageChip
 
@@ -1757,6 +1758,8 @@ class Workspace(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "Export failed", f"{dlg.path}\n\n{e}")
             return
         self.status.setText(f"Exported {dlg.path}")
+        if dlg.open_after:
+            reveal_in_folder(dlg.path)
 
     def _export_range(self, which: str) -> Tuple[float, float]:
         if which == "region" and self.region is not None:
@@ -1770,7 +1773,7 @@ class Workspace(QtWidgets.QWidget):
 
         a = self.analysis
         t0, t1 = self._export_range(opts["range"])
-        if fmt == "csv":
+        if fmt in ("csv", "chart"):
             if opts["source"] == "annotation" and self.doc is not None:
                 t, bpm = an.bpm_series(self.doc.spans)
                 header = "bpm_annotation"
@@ -1780,6 +1783,16 @@ class Workspace(QtWidgets.QWidget):
                     raise OSError("This Analysis has no BPM trace.")
                 t, bpm, header = tr.times(), tr.y, "bpm"
             t, bpm = np.asarray(t), np.asarray(bpm)
+            if fmt == "chart":
+                env = self._envelope_trace()
+                if env is None:
+                    raise OSError("This Analysis has no envelope to draw the waveform from.")
+                if header == "bpm_annotation":
+                    t, bpm = annotation_bpm_curve(self.doc.spans, a.params)
+                img = render_bpm_chart(t, bpm, env.t0, env.dt, env.y, max(t0, 0.0), min(t1, a.duration_sec))
+                if not img.save(str(path)):
+                    raise OSError("Could not write the image.")
+                return
             keep = (t >= t0) & (t <= t1)
             write_bpm_csv(path, t[keep], bpm[keep], header, opts["time_format"])
         elif fmt == "summary":
