@@ -14,10 +14,12 @@ from pcg import analysis as A
 from pcg import batch
 from pcg import annotation as an
 from pcg import context, recording
+from pcg.clock import clock_text
 from pcg.engine.traces import KIND_LINE, KIND_POINTS, KIND_SPANS, Trace
 
 from .audio import SOURCE_FILTERED, Player, load_playback_audio, spectrogram
-from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, clock_text, palette_row, qcolor
+from .export_dialog import ExportDialog
+from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, palette_row, qcolor
 from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir
 
 STATES_DEFAULT_HEIGHT = 160  # px, until the user drags a handle; the other lanes share the rest
@@ -102,6 +104,11 @@ class LaneViewBox(pg.ViewBox):
     def mouseDragEvent(self, ev, axis=None):
         if ev.button() == QtCore.Qt.MouseButton.RightButton:  # pyqtgraph's right-drag zoom is not wanted
             ev.ignore()
+            return
+        if axis == 1 and self.lane != "states" and ev.button() == QtCore.Qt.MouseButton.LeftButton:
+            ev.accept()  # dragging the y-axis slides the lane's y-range up and down
+            dy = self.mapSceneToView(ev.scenePos()).y() - self.mapSceneToView(ev.lastScenePos()).y()
+            self.ws.pan_y(self.lane, -dy, final=ev.isFinish())
             return
         if ev.button() != QtCore.Qt.MouseButton.LeftButton:
             return super().mouseDragEvent(ev, axis)
@@ -299,7 +306,7 @@ class Workspace(QtWidgets.QWidget):
         side.addTab(self.summary_text, "Summary")
 
         split = QtWidgets.QSplitter()
-        lanes_box = QtWidgets.QWidget()
+        self.lanes_box = lanes_box = QtWidgets.QWidget()
         lb = QtWidgets.QVBoxLayout(lanes_box)
         lb.setContentsMargins(0, 0, 0, 0)
         lb.setSpacing(0)
@@ -403,6 +410,7 @@ class Workspace(QtWidgets.QWidget):
         sc("Ctrl+S", self.save_annotation)
         sc("Ctrl+R", self.rerun)
         sc("Ctrl+Shift+C", self.copy_context)
+        sc("Ctrl+Shift+E", self.export_dialog)
 
     def eventFilter(self, obj, ev):
         t = ev.type()
@@ -957,6 +965,14 @@ class Workspace(QtWidgets.QWidget):
         self._y_manual[lane_name] = new
         self.settings.set_y_ranges(self.fingerprint, self._y_manual)
 
+    def pan_y(self, lane_name: str, dy: float, *, final: bool) -> None:
+        plot = self.lanes[lane_name].plot
+        lo, hi = plot.getViewBox().viewRange()[1]
+        plot.setYRange(lo + dy, hi + dy, padding=0)
+        self._y_manual[lane_name] = [lo + dy, hi + dy]
+        if final:
+            self.settings.set_y_ranges(self.fingerprint, self._y_manual)
+
     def reset_y(self, lane_name: str) -> None:
         self._y_manual.pop(lane_name, None)
         self.settings.set_y_ranges(self.fingerprint, self._y_manual)
@@ -1349,43 +1365,54 @@ class Workspace(QtWidgets.QWidget):
         QtWidgets.QApplication.clipboard().setText(text)
         self.status.setText(f"Copied context for {t0:.2f}–{t1:.2f}s ({len(text.splitlines())} lines)")
 
-    def export_bpm_csv(self, source: str) -> None:
-        from pcg.cli import write_bpm_csv
-
+    def export_dialog(self) -> None:
         if self.analysis is None:
             return
-        stem = Path(self.path).stem
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export BPM CSV",
-                                                        str(downloads_dir() / f"{stem}_{source}_bpm.csv"), "CSV (*.csv)")
-        if not path:
+        dlg = ExportDialog(self, self.settings, Path(self.path).stem, has_annotation=self.doc is not None,
+                           has_region=self.region is not None)
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
-        if source == "annotation":
-            t, b = an.bpm_series(self.doc.spans)
-            write_bpm_csv(Path(path), t, b, "bpm_annotation")
-        else:
-            tr = self.analysis.trace("BPM")
-            if tr is None:
-                return
-            write_bpm_csv(Path(path), tr.times(), tr.y, "bpm")
-        self.status.setText(f"Exported {path}")
-
-    def export_summary(self) -> None:
-        from pcg.cli import summary_text
-
-        if self.analysis is None:
+        try:
+            self._export(dlg.fmt, Path(dlg.path), dlg.opts)
+        except OSError as e:
+            QtWidgets.QMessageBox.critical(self, "Export failed", f"{dlg.path}\n\n{e}")
             return
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export summary", str(downloads_dir() / f"{Path(self.path).stem}_summary.txt"), "Text (*.txt)")
-        if path:
-            Path(path).write_text(summary_text(self.analysis), encoding="utf-8")
+        self.status.setText(f"Exported {dlg.path}")
 
-    def export_image(self) -> None:
-        if self.analysis is None:
-            return
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export view as image", str(downloads_dir() / f"{Path(self.path).stem}_view.png"), "PNG (*.png)")
-        if path:
-            self.lane_split.grab().save(path)
+    def _export_range(self, which: str) -> Tuple[float, float]:
+        if which == "region" and self.region is not None:
+            return tuple(sorted(self.region))
+        if which == "whole":
+            return 0.0, float("inf")
+        return self.view_range()
+
+    def _export(self, fmt: str, path: Path, opts: dict) -> None:
+        from pcg.cli import summary_text, write_bpm_csv
+
+        a = self.analysis
+        t0, t1 = self._export_range(opts["range"])
+        if fmt == "csv":
+            if opts["source"] == "annotation" and self.doc is not None:
+                t, bpm = an.bpm_series(self.doc.spans)
+                header = "bpm_annotation"
+            else:
+                tr = a.trace("BPM")
+                if tr is None:
+                    raise OSError("This Analysis has no BPM trace.")
+                t, bpm, header = tr.times(), tr.y, "bpm"
+            t, bpm = np.asarray(t), np.asarray(bpm)
+            keep = (t >= t0) & (t <= t1)
+            write_bpm_csv(path, t[keep], bpm[keep], header, opts["time_format"])
+        elif fmt == "summary":
+            path.write_text(summary_text(a), encoding="utf-8")
+        elif fmt == "context":
+            path.write_text(context.window_text(
+                a, t0, t1, recording_path=self.path, visible_traces=self.visible_trace_names(),
+                annotation=self.doc.ann if self.doc else None, disagreements=self.disagreements), encoding="utf-8")
+        elif fmt == "image":
+            target = self.lanes_box if opts["overview"] else self.lane_split
+            if not target.grab().save(str(path)):
+                raise OSError("Could not write the image.")
 
     def shutdown(self) -> None:
         self.player.stop()

@@ -22,7 +22,7 @@ HELP = """\
 <tr><td><b>Click</b></td><td>move playhead (on the Annotation row: select span)</td></tr>
 <tr><td><b>Shift+drag / Shift+click</b></td><td>set loop region / clear it</td></tr>
 <tr><td><b>Drag, wheel</b></td><td>pan, zoom (time only)</td></tr>
-<tr><td><b>Wheel on a y-axis / Ctrl+wheel</b></td><td>scale that lane's y-axis (double-click the axis to auto-range again); remembered per recording</td></tr>
+<tr><td><b>Wheel / drag on a y-axis, Ctrl+wheel</b></td><td>scale / slide that lane's y-axis (double-click the axis to auto-range again); remembered per recording</td></tr>
 <tr><td><b>L</b></td><td>follow playhead on/off</td></tr>
 <tr><td><b>G</b></td><td>spectrogram lane on/off (only computed while on)</td></tr>
 <tr><td><b>1 / 2</b></td><td>place S1 / S2 at the playhead (replaces what it overlaps)</td></tr>
@@ -34,6 +34,7 @@ HELP = """\
 <tr><td><b>Ctrl+Z / Ctrl+Shift+Z</b></td><td>undo / redo</td></tr>
 <tr><td><b>Ctrl+S</b></td><td>save Annotation (protected folders: Save As, starting in Downloads)</td></tr>
 <tr><td><b>Ctrl+R</b></td><td>re-run the engine (fresh process — picks up code edits)</td></tr>
+<tr><td><b>Ctrl+Shift+E</b></td><td>export dialog: BPM CSV, summary, window text, workspace image</td></tr>
 <tr><td><b>Ctrl+Shift+C</b></td><td>copy the visible window as text for an LLM</td></tr>
 </table>
 """
@@ -67,11 +68,7 @@ class MainWindow(QtWidgets.QMainWindow):
         m.addAction("Open Annotation…", ws.open_annotation_file)
         m.addAction("Save Annotation", ws.save_annotation)
         m.addSeparator()
-        e = m.addMenu("Export")
-        e.addAction("BPM CSV (Analysis)…", lambda: ws.export_bpm_csv("analysis"))
-        e.addAction("BPM CSV (Annotation)…", lambda: ws.export_bpm_csv("annotation"))
-        e.addAction("Summary…", ws.export_summary)
-        e.addAction("Current view as image…", ws.export_image)
+        m.addAction("Export…\tCtrl+Shift+E", ws.export_dialog)
         m.addSeparator()
         m.addAction("Protected folders…", self.edit_protected_folders)
         m.addAction("Open library folder", lambda: QtGui.QDesktopServices.openUrl(

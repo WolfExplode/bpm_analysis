@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from pcg import analysis, annotation, batch, context, recording
+from pcg.clock import clock_text
 
 
 def _utf8_stdio() -> None:
@@ -104,13 +105,15 @@ def cmd_inspect(args) -> int:
     return 0
 
 
-def write_bpm_csv(path: Path, times, bpm, header: str) -> None:
+def write_bpm_csv(path: Path, times, bpm, header: str, time_format: str = "seconds") -> None:
+    """*time_format*: "seconds", "clock" (hh:mm:ss.xxx) or "both"."""
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["time_sec", header])
+        w.writerow({"seconds": ["time_sec"], "clock": ["time"], "both": ["time_sec", "time"]}[time_format] + [header])
         for t, b in zip(times, bpm):
             if b == b:  # skip NaN
-                w.writerow([f"{t:.3f}", f"{b:.3f}"])
+                stamps = {"seconds": [f"{t:.3f}"], "clock": [clock_text(t)], "both": [f"{t:.3f}", clock_text(t)]}
+                w.writerow(stamps[time_format] + [f"{b:.3f}"])
 
 
 def summary_text(a: analysis.Analysis) -> str:
