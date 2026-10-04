@@ -92,6 +92,7 @@ def _run_springer_mode(
     algorithm_envelope: np.ndarray,
     sample_rate: int,
     params: Dict,
+    heart_rate_curve=None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
     Replace native passes 1-3 with the Springer 2015 pretrained HSMM segmenter.
@@ -141,6 +142,7 @@ def _run_springer_mode(
         audio_raw, float(native_fs),
         model["B_matrix"], model["pi_vector"], model["total_obs_distribution"],
         opts,
+        heart_rate_curve=heart_rate_curve,
     )
     assigned_states_native = np.asarray(assigned_states_native, dtype=np.int32)
 
@@ -433,6 +435,7 @@ def _run_algorithm_pass(
     compute_pass2_metrics: bool,
     _emit: StageCallback,
     _ui: Callable[[str], None],
+    heart_rate_curve=None,
 ) -> Dict[str, Any]:
     """Run one full algorithm branch (native multi-pass or Springer 2015 HSMM) through
     Pass 3/4, then compute metrics_after_pass3 and the BPM plausibility gate result.
@@ -453,7 +456,7 @@ def _run_algorithm_pass(
         logging.info("--- STAGE 2-5: Springer 2015 HSMM (replaces native passes 1-3) ---")
         _ui("Springer: running HSMM segmentation...")
         peaks_after_pass4, all_raw_peaks, analysis_data = _run_springer_mode(
-            wav_file_path, algorithm_envelope, sample_rate, params
+            wav_file_path, algorithm_envelope, sample_rate, params, heart_rate_curve
         )
         _attach_envelopes(analysis_data, envelopes)
         pass1_bpm = None
@@ -611,6 +614,7 @@ def run_analysis(
     on_stage: Optional[StageCallback] = None,
     debug_audio_sink: Optional[DebugAudioSink] = None,
     compute_pass2_metrics: bool = False,
+    heart_rate_curve=None,
 ) -> EngineResult:
     """Analyze one WAV: preprocessing → algorithm passes (with optional auto-switch) → metrics.
 
@@ -619,6 +623,8 @@ def run_analysis(
     debug_audio_sink: receives intermediate audio for debug playback (see preprocess_audio).
     compute_pass2_metrics: also compute Pass 2 BPM/HRV metrics (needed for STAGE_PASS2 and
         EngineResult.metrics_pass2); off by default to save time when nothing renders them.
+    heart_rate_curve: optional (times_sec, bpm_values) on the analysed audio's clock,
+        used by Springer's duration model. Native uses start_bpm_hint instead.
     """
     def _ui(label: str) -> None:
         if progress_callback is not None:
@@ -678,6 +684,7 @@ def run_analysis(
         noise_floor=noise_floor,
         troughs=troughs,
         start_bpm_hint=start_bpm_hint,
+        heart_rate_curve=heart_rate_curve,
         envelopes={
             "bandpass_envelope": bandpass_envelope,
             "inverse_band_envelope": inverse_band_envelope,

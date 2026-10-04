@@ -272,6 +272,10 @@ class Workspace(QtWidgets.QWidget):
         self.worker = AnalyzeWorker(self)
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
+        self.range_worker = AnalyzeWorker(self)
+        self.range_worker.progress.connect(self._on_worker_progress)
+        self.range_worker.range_finished.connect(self._on_range_finished)
+        self._range_target = None  # path, AnnotationDoc, bounds, original intersecting spans
         self.trace_vis: Dict[str, bool] = settings.trace_visibility()
         self.lane_vis: Dict[str, bool] = settings.lane_visibility()
         self.stages_on: Dict[str, bool] = settings.stages()
@@ -331,7 +335,9 @@ class Workspace(QtWidgets.QWidget):
         self.progress_label = QtWidgets.QLabel()
         self.progress_label.setProperty("tone", "accent")
         self.rerun_btn = KeyButton("Re-run", "Ctrl R", clicked=self.rerun)
-        self.cancel_btn = QtWidgets.QPushButton("Cancel", clicked=self.worker.cancel)
+        self.range_btn = KeyButton("Re-label selection…", "Ctrl Shift R", clicked=self.rerun_selection)
+        self.range_btn.setToolTip("Re-detect the selected audio with Springer or Native and update its Annotation")
+        self.cancel_btn = QtWidgets.QPushButton("Cancel", clicked=self.cancel_analysis)
         self.cancel_btn.hide()
         self.flip_btn = KeyButton("Flip S1/S2 after playhead", clicked=self.flip_after_playhead)
         self.source_btn = KeyButton("", "T", clicked=self.toggle_source)
@@ -340,7 +346,7 @@ class Workspace(QtWidgets.QWidget):
         for w in (self.name_label, self.algo_badge, self.info_label, self.gate_badge, self.stale_badge):
             top.addWidget(w)
         top.addStretch(1)
-        for w in (self.progress_label, self.cancel_btn, self.rerun_btn, self.flip_btn, self.source_btn):
+        for w in (self.progress_label, self.cancel_btn, self.rerun_btn, self.range_btn, self.flip_btn, self.source_btn):
             top.addWidget(w)
 
         # Second row: which debug stages the legends offer (left), the side panel (right).
@@ -686,6 +692,7 @@ class Workspace(QtWidgets.QWidget):
         sc("Ctrl+Y", self.redo)
         sc("Ctrl+S", self.save_annotation)
         sc("Ctrl+R", self.rerun)
+        sc("Ctrl+Shift+R", self.rerun_selection)
         sc("Ctrl+Shift+C", self.copy_context)
         sc("Ctrl+Shift+E", self.export_dialog)
 
@@ -720,6 +727,8 @@ class Workspace(QtWidgets.QWidget):
         self._original_envelope = None
         self.gain_editor.clear_recording()
         self.worker.cancel()
+        self._range_target = None
+        self.range_worker.cancel()
         self.path = str(Path(path).resolve())
         self.fingerprint = self.library.fingerprints.get(self.path)
         self.analysis = None
@@ -1341,11 +1350,6 @@ class Workspace(QtWidgets.QWidget):
         for lane in self.lanes.values():
             lane.playhead.setValue(t)
         self.overview_playhead.setValue(t)
-        if self.player.playing:
-            t0, t1 = self.view_range()
-            if t > t1 - 0.02 * (t1 - t0) or t < t0:
-                w = t1 - t0
-                self.lanes["states"].plot.setXRange(t - 0.02 * w, t + 0.98 * w, padding=0)
 
     def player_toggle(self) -> None:
         self.player.toggle()
@@ -1837,7 +1841,7 @@ class Workspace(QtWidgets.QWidget):
     # Re-run, context, export
     # ─────────────────────────────────────────────────────────────────────
     def rerun(self) -> None:
-        if not self.path or self.worker.running:
+        if not self.path or self.worker.running or self.range_worker.running:
             return
         a = self.analysis
         rs = a.run_settings if a else {}
@@ -1852,6 +1856,91 @@ class Workspace(QtWidgets.QWidget):
         self.progress_label.setText("Analyzing…")
         self.cancel_btn.show()
         self.rerun_btn.setEnabled(False)
+        self.range_btn.setEnabled(False)
+
+    def cancel_analysis(self) -> None:
+        self.worker.cancel()
+        self.range_worker.cancel()
+
+    def rerun_selection(self) -> None:
+        if self.worker.running or self.range_worker.running:
+            return
+        if not self.path or self.doc is None or self.region is None:
+            self.status.setText("Shift+drag a selection first, then choose Re-label selection.")
+            return
+        a, b = self.region
+        a, b = max(0.0, a), min(self.doc.ann.duration_sec, b)
+        if b - a < 0.001:
+            self.status.setText("Select a range inside the recording.")
+            return
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Re-label selection")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        label = QtWidgets.QLabel(
+            f"Re-detect sounds at {clock_text(a)}–{clock_text(b)}.\n"
+            "Includes 15 seconds of surrounding audio on each side.\n"
+            "Replaces Annotation labels only inside the selection.\n"
+            "Undo with Ctrl+Z; save with Ctrl+S.")
+        layout.addWidget(label)
+        form = QtWidgets.QFormLayout()
+        algorithm = QtWidgets.QComboBox()
+        algorithm.addItem("Springer 2015", "springer")
+        algorithm.addItem("Native", "native")
+        form.addRow("Algorithm", algorithm)
+        bpm = QtWidgets.QDoubleSpinBox()
+        bpm.setRange(0, 300)
+        bpm.setDecimals(1)
+        bpm.setSpecialValueText("Auto")
+        bpm.setToolTip("Auto estimates rhythm from the audio. A hint can help resolve half/double BPM.")
+        form.addRow("BPM hint", bpm)
+        layout.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok
+                                            | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText("Run and re-label")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        hint = bpm.value() or None
+        if hint is not None and hint < 20:
+            self.status.setText("BPM hint must be between 20 and 300, or Auto.")
+            return
+        self._range_target = (self.path, self.doc, a, b,
+                              tuple(s for s in self.doc.spans if s.overlaps(a, b)))
+        self.range_worker.start_range(self.path, a, b, algorithm=algorithm.currentData(),
+                                      channel=self.analysis.channel if self.analysis else recording.CHANNEL_MIXED,
+                                      bpm_hint=hint)
+        self.progress_label.setText("Re-analyzing selection…")
+        self.cancel_btn.show()
+        self.rerun_btn.setEnabled(False)
+        self.range_btn.setEnabled(False)
+
+    def _on_range_finished(self, result, error: str) -> None:
+        target, self._range_target = self._range_target, None
+        self.cancel_btn.hide()
+        self.rerun_btn.setEnabled(True)
+        self.range_btn.setEnabled(True)
+        self.progress_label.setText("")
+        if target is None or target[0] != self.path or target[1] is not self.doc:
+            return
+        if error or result is None:
+            self.status.setText("Cancelled" if error == "cancelled" else f"Selection analysis failed: {error}")
+            return
+        _, doc, a, b, original = target
+        if (result.start, result.end) != (a, b):
+            self.status.setText("Selection result had different bounds; labels were kept.")
+            return
+        if tuple(s for s in doc.spans if s.overlaps(a, b)) != original:
+            self.status.setText("Selection was edited while analysis ran; labels were kept. Run again to replace them.")
+            return
+        changed = doc.apply(lambda spans: an.replace_selection(spans, a, b, result.spans))
+        self.selected = None
+        msg = (f"Re-labeled {clock_text(a)}–{clock_text(b)} with {result.algorithm}: "
+               f"{len(result.spans)} sounds. " + ("Ctrl+Z to undo; Ctrl+S to save." if changed else "Labels unchanged."))
+        if result.gate_reasons:
+            msg += " Rhythm check: " + "; ".join(result.gate_reasons)
+        self.status.setText(msg)
 
     def _on_worker_progress(self, msg: str) -> None:
         self.progress_label.setText(msg)
@@ -1859,6 +1948,7 @@ class Workspace(QtWidgets.QWidget):
     def _on_worker_finished(self, paths: list, error: str) -> None:
         self.cancel_btn.hide()
         self.rerun_btn.setEnabled(True)
+        self.range_btn.setEnabled(True)
         if error or not paths:
             self.progress_label.setText(f"Analysis failed: {error}" if error != "cancelled" else "Cancelled")
             return
@@ -1905,7 +1995,7 @@ class Workspace(QtWidgets.QWidget):
         return self.view_range()
 
     def _export(self, fmt: str, path: Path, opts: dict) -> None:
-        from pcg.cli import summary_text, write_bpm_csv
+        from pcg.cli import write_bpm_csv
 
         a = self.analysis
         t0, t1 = self._export_range(opts["range"])
@@ -1931,17 +2021,13 @@ class Workspace(QtWidgets.QWidget):
                 return
             keep = (t >= t0) & (t <= t1)
             write_bpm_csv(path, t[keep], bpm[keep], header, opts["time_format"])
-        elif fmt == "summary":
-            path.write_text(summary_text(a), encoding="utf-8")
         elif fmt == "context":
             path.write_text(context.window_text(
                 a, t0, t1, recording_path=self.path, visible_traces=self.visible_trace_names(),
                 annotation=self.doc.ann if self.doc else None, disagreements=self.disagreements), encoding="utf-8")
-        elif fmt == "image":
-            target = self.lanes_box if opts["overview"] else self.lane_split
-            if not target.grab().save(str(path)):
-                raise OSError("Could not write the image.")
 
     def shutdown(self) -> None:
         self.player.stop()
         self.worker.cancel()
+        self._range_target = None
+        self.range_worker.cancel()

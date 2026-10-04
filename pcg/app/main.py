@@ -36,7 +36,8 @@ HELP = """\
 <tr><td><b>Ctrl+Z / Ctrl+Shift+Z</b></td><td>undo / redo</td></tr>
 <tr><td><b>Ctrl+S</b></td><td>save Annotation (protected folders: Save As, starting in Downloads)</td></tr>
 <tr><td><b>Ctrl+R</b></td><td>re-run the engine (fresh process — picks up code edits)</td></tr>
-<tr><td><b>Ctrl+Shift+E</b></td><td>export dialog: BPM CSV, summary, window text, workspace image</td></tr>
+<tr><td><b>Ctrl+Shift+R</b></td><td>re-detect and re-label the selected range with Springer or Native; undoable</td></tr>
+<tr><td><b>Ctrl+Shift+E</b></td><td>export dialog: BPM CSV, BPM/time graph, window text</td></tr>
 <tr><td><b>Ctrl+Shift+C</b></td><td>copy the visible window as text for an LLM</td></tr>
 </table>
 """

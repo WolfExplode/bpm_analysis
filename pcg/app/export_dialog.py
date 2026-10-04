@@ -17,15 +17,12 @@ from .widgets import FormatCard, Segmented
 # format key -> (label, description, extension, file-name suffix)
 FORMATS: Dict[str, Tuple[str, str, str, str]] = {
     "csv": ("BPM CSV", "Time and BPM rows", ".csv", "_bpm"),
-    "chart": ("BPM chart", "BPM over the waveform, 0–230", ".png", "_chart"),
-    "summary": ("Summary", "BPM, HRV and the gate", ".txt", "_summary"),
+    "chart": ("BPM/time graph", "BPM over the waveform, 0–230", ".png", "_chart"),
     "context": ("Window text", "The visible window, for an LLM", ".txt", "_window"),
-    "image": ("Screenshot", "The lanes as they look", ".png", "_view"),
 }
 RANGES = (("whole", "Whole recording"), ("visible", "Visible window"), ("region", "Loop region"))
 TIME_FORMATS = (("seconds", "Seconds"), ("clock", "hh:mm:ss.xxx"), ("both", "Both"))
 SOURCES = (("analysis", "Analysis"), ("annotation", "Annotation"))
-OVERVIEW = (("with", "Include"), ("without", "Leave out"))
 RECENT_FOLDERS = 8
 
 
@@ -52,9 +49,6 @@ class ExportDialog(QtWidgets.QDialog):
         self.source = Segmented(SOURCES)
         self.range = Segmented(RANGES)
         self.time = Segmented(TIME_FORMATS)
-        self.overview = Segmented(OVERVIEW)
-        self.no_options = QtWidgets.QLabel("No options for this format.")
-        self.no_options.setProperty("tone", "muted")
         self.options = QtWidgets.QFormLayout()
         self.options.setHorizontalSpacing(14)
         self.options.setVerticalSpacing(8)
@@ -63,8 +57,6 @@ class ExportDialog(QtWidgets.QDialog):
             "source": self._row("Source", self.source),
             "range": self._row("Range", self.range),
             "time": self._row("Time column", self.time),
-            "overview": self._row("Overview strip", self.overview),
-            "none": self._row("", self.no_options),
         }
 
         self.folder = QtWidgets.QComboBox(editable=True)
@@ -163,7 +155,6 @@ class ExportDialog(QtWidgets.QDialog):
         self.source.set_value(o.get("source", "annotation" if self.has_annotation else "analysis"))
         self.range.set_value(o.get("range", "whole"))
         self.time.set_value(o.get("time_format", "seconds"))
-        self.overview.set_value("with" if o.get("overview", True) else "without")
         self.open_after_box.setChecked(bool(saved.get("open_after", False)))
         recent = [f for f in saved.get("recent", []) if Path(f).is_dir()]
         folder = saved.get("folder")
@@ -178,8 +169,6 @@ class ExportDialog(QtWidgets.QDialog):
         self._set_row("source", fmt in ("csv", "chart"))
         self._set_row("range", fmt in ("csv", "chart", "context"))
         self._set_row("time", fmt == "csv")
-        self._set_row("overview", fmt == "image")
-        self._set_row("none", fmt == "summary")
         # Offer only what exists: a loop region, an open Annotation; "whole" is for the BPM exports only.
         self.range.set_enabled("region", self.has_region, "Shift+drag a loop region first")
         self.range.set_enabled("whole", fmt in ("csv", "chart"), "Only the BPM exports can cover the whole recording")
@@ -229,7 +218,6 @@ class ExportDialog(QtWidgets.QDialog):
             "range": self.range.value(),
             "time_format": self.time.value(),
             "source": self.source.value(),
-            "overview": self.overview.value() == "with",
         }
         folder = str(path.parent)
         recent = [folder] + [f for f in self._saved.get("recent", []) if f != folder]

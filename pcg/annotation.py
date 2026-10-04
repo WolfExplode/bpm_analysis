@@ -42,7 +42,7 @@ class Span:
     start: float
     end: float
     origin: str = ORIGIN_HAND
-    clipped: bool = False  # cut at a midpoint when seeded from overlapping algorithm states
+    clipped: bool = False  # cut at an overlap midpoint or a selected-range boundary
 
     @property
     def center(self) -> float:
@@ -237,6 +237,36 @@ def replace_region(spans: Spans, a: float, b: float, algorithm: Spans) -> Spans:
             kept.extend(_cut_noisy(s, a, b))
     kept.extend(s for s in algorithm if s.kind in SOUNDS and s.start >= a - _EPS and s.end <= b + _EPS)
     return _normalize(kept)
+
+
+def clip_sounds(spans: Spans, a: float, b: float) -> Spans:
+    """S1/S2 spans intersecting [a,b], clipped at its edges."""
+    return _normalize(
+        replace(s, start=max(a, s.start), end=min(b, s.end),
+                clipped=s.clipped or s.start < a or s.end > b)
+        for s in spans if s.kind in SOUNDS and s.overlaps(a, b)
+    )
+
+
+def replace_selection(spans: Spans, a: float, b: float, sounds: Spans) -> Spans:
+    """Apply a range rerun, preserving every span portion outside the selection."""
+    if not np.isfinite([a, b]).all() or not 0 <= a < b:
+        raise ValueError("selection needs finite 0 <= start < end")
+    kept: List[Span] = []
+    for s in spans:
+        if not s.overlaps(a, b):
+            kept.append(s)
+        else:
+            # Unlike the A-key edit, a rerun must not remove sounds outside its range.
+            if s.start < a:
+                kept.append(replace(s, end=a, clipped=True))
+            if s.end > b:
+                kept.append(replace(s, start=b, clipped=True))
+    # Retain even sub-millisecond tails of existing spans outside the selection.
+    # _normalize would drop those and thus edit time outside the requested range.
+    result = tuple(sorted([*kept, *clip_sounds(sounds, a, b)], key=lambda s: (s.start, s.end)))
+    validate(result)
+    return result
 
 
 def derived_states(spans: Spans) -> List[Tuple[float, float, str]]:

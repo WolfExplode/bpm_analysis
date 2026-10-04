@@ -151,6 +151,33 @@ def load(path: os.PathLike | str) -> Audio:
         return Audio(arr, int(seg.frame_rate))
 
 
+def load_range(path: os.PathLike | str, start: float, end: float) -> Tuple[Audio, float]:
+    """Decode a time window, returning audio and its sample-aligned recording offset.
+
+    Seekable formats read only the window. Other containers use the usual decoder.
+    """
+    if not np.isfinite([start, end]).all() or not 0 <= start < end:
+        raise ValueError("audio range must have finite times with 0 <= start < end")
+    try:
+        with sf.SoundFile(str(path)) as source:
+            sr = int(source.samplerate)
+            first = int(np.floor(start * sr))
+            stop = min(len(source), int(np.ceil(end * sr)))
+            if first >= stop:
+                raise ValueError("audio range is outside the recording")
+            source.seek(first)
+            samples = source.read(stop - first, dtype="float32", always_2d=True)
+            return Audio(np.ascontiguousarray(samples), sr), first / float(sr)
+    except (sf.LibsndfileError, RuntimeError):
+        audio = load(path)
+        sr = audio.sample_rate
+        first = int(np.floor(start * sr))
+        stop = min(len(audio.samples), int(np.ceil(end * sr)))
+        if first >= stop:
+            raise ValueError("audio range is outside the recording")
+        return Audio(audio.samples[first:stop], sr), first / float(sr)
+
+
 def engine_inputs(path: os.PathLike | str, channel_mode: str, workdir: os.PathLike | str) -> List[Tuple[str, str]]:
     """[(channel, wav_path)] for the engine, which reads WAV.
 

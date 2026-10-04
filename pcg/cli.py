@@ -1,6 +1,7 @@
 """Command line: `python -m pcg <command>`.
 
     analyze  PATHS...           run the engine, store Analyses in the library
+    reanalyze-range RECORDING --from S --to S   rerun a selection, return labels as JSON
     inspect  RECORDING --from S --to S   text dump of a window (same as Ctrl+Shift+C)
     export   RECORDING ...      BPM CSV / BPM chart (from the Analysis or the Annotation), summary
     rename   PATHS...           write each recording's BPM into its filename
@@ -105,6 +106,27 @@ def cmd_inspect(args) -> int:
     return 0
 
 
+def cmd_reanalyze_range(args) -> int:
+    from pcg.reanalysis import run_range
+
+    def progress(message: str) -> None:
+        if args.progress_json:
+            print(json.dumps({"progress": message}), flush=True)
+
+    try:
+        result = run_range(args.recording, args.t_from, args.t_to, algorithm=args.algorithm,
+                           channel=args.channel, context_sec=args.context, bpm_hint=args.bpm, progress=progress)
+    except Exception as exc:
+        if args.progress_json:
+            print(json.dumps({"range_result": None, "error": str(exc)}), flush=True)
+        else:
+            print(f"Range analysis failed: {exc}", file=sys.stderr)
+        return 1
+    payload = {"range_result": result.to_dict()} if args.progress_json else result.to_dict()
+    print(json.dumps(payload), flush=True)
+    return 0
+
+
 def write_bpm_csv(path: Path, times, bpm, header: str, time_format: str = "seconds") -> None:
     """*time_format*: "seconds", "clock" (hh:mm:ss.xxx) or "both"."""
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -198,7 +220,7 @@ def cmd_app(args) -> int:
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-COMMANDS = ("analyze", "inspect", "export", "rename", "app")
+COMMANDS = ("analyze", "reanalyze-range", "inspect", "export", "rename", "app")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -219,6 +241,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--progress-json", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_analyze)
+
+    p = sub.add_parser("reanalyze-range", help="rerun a selection; return S1/S2 labels as JSON without saving")
+    p.add_argument("recording")
+    p.add_argument("--from", dest="t_from", type=float, required=True)
+    p.add_argument("--to", dest="t_to", type=float, required=True)
+    p.add_argument("--algorithm", choices=("springer", "native"), default="springer")
+    p.add_argument("--channel", choices=("mixed", "left", "right"), default="mixed")
+    p.add_argument("--context", type=float, default=15.0, help="seconds of surrounding audio on each side")
+    p.add_argument("--bpm", type=float, help="optional BPM hint for either algorithm")
+    p.add_argument("--progress-json", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_reanalyze_range)
 
     p = sub.add_parser("inspect", help="text dump of a time window")
     p.add_argument("recording")

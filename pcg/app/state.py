@@ -175,6 +175,7 @@ class AnalyzeWorker(QtCore.QObject):
 
     progress = QtCore.Signal(str)
     finished = QtCore.Signal(list, str)  # analysis paths, error
+    range_finished = QtCore.Signal(object, str)  # RangeResult or None, error
 
     def __init__(self, parent: Optional[QtCore.QObject] = None):
         super().__init__(parent)
@@ -182,6 +183,8 @@ class AnalyzeWorker(QtCore.QObject):
         self._paths: List[str] = []
         self._error = ""
         self._buf = b""
+        self._range_mode = False
+        self._range_result = None
 
     @property
     def running(self) -> bool:
@@ -199,7 +202,25 @@ class AnalyzeWorker(QtCore.QObject):
             args.append("--auto-switch")
         if bpm_hint is not None:
             args += ["--bpm", str(bpm_hint)]
+        self._range_mode = False
+        self._start_process(args)
+
+    def start_range(self, recording_path: str, start: float, end: float, *, algorithm: str,
+                    channel: str, bpm_hint: Optional[float] = None) -> None:
+        if self.running:
+            return
+        args = ["-m", "pcg", "reanalyze-range", recording_path, "--progress-json",
+                "--from", str(start), "--to", str(end), "--algorithm", algorithm, "--channel", channel]
+        if bpm_hint is not None:
+            args += ["--bpm", str(bpm_hint)]
+        self._range_mode = True
+        self._start_process(args)
+
+    def _start_process(self, args: List[str]) -> None:
         self._paths, self._error, self._buf = [], "", b""
+        self._range_result = None
+        if self.proc is not None:
+            self.proc.deleteLater()
         self.proc = QtCore.QProcess(self)
         self.proc.setWorkingDirectory(str(REPO_ROOT))
         env = QtCore.QProcessEnvironment.systemEnvironment()
@@ -208,7 +229,13 @@ class AnalyzeWorker(QtCore.QObject):
         self.proc.setProcessEnvironment(env)
         self.proc.readyReadStandardOutput.connect(self._read)
         self.proc.finished.connect(self._done)
+        self.proc.errorOccurred.connect(self._process_error)
         self.proc.start(sys.executable, args)
+
+    def _process_error(self, error) -> None:
+        if error == QtCore.QProcess.ProcessError.FailedToStart:
+            self._error = self.proc.errorString()
+            self._done(-1, QtCore.QProcess.ExitStatus.CrashExit)
 
     def cancel(self) -> None:
         if self.running:
@@ -223,16 +250,30 @@ class AnalyzeWorker(QtCore.QObject):
                 msg = json.loads(raw.decode("utf-8", "replace"))
             except ValueError:
                 continue
+            if not isinstance(msg, dict):
+                continue
             if "progress" in msg:
                 self.progress.emit(msg["progress"])
             if "done" in msg:
                 self._paths = msg["done"] or []
                 self._error = msg.get("error") or self._error
+            if "range_result" in msg:
+                from pcg.reanalysis import RangeResult
+
+                self._error = msg.get("error") or self._error
+                if msg["range_result"] is not None:
+                    try:
+                        self._range_result = RangeResult.from_dict(msg["range_result"])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        self._error = f"Invalid range result: {exc}"
 
     def _done(self, code: int, _status) -> None:
         self._read()
         err = self._error
-        if not self._paths and not err:
+        if code != 0 or not (self._range_result if self._range_mode else self._paths):
             tail = bytes(self.proc.readAllStandardError()).decode("utf-8", "replace").strip().splitlines()
-            err = tail[-1] if tail else f"worker exited with code {code}"
-        self.finished.emit(self._paths, err)
+            err = err or (tail[-1] if tail else f"worker exited with code {code}")
+        if self._range_mode:
+            self.range_finished.emit(self._range_result, err)
+        else:
+            self.finished.emit(self._paths, err)

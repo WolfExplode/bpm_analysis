@@ -32,11 +32,14 @@ python -m pytest tests/ -q
 | `test_analysis_file.py`     | `pcg.analysis`, `pcg.recording`, `engine.traces` | Analysis zip round trip, staleness (params / engine code, not run settings), library paths, Trace validation / shifting / windowing, fingerprint stable across rename and WAV↔FLAC but not trimming, fingerprint cache, channel extraction, protected folders |
 | `test_annotation.py`        | `pcg.annotation`    | every edit keeps spans sorted and non-overlapping (incl. 2000 random edits), seeding/clipping from algorithm states, replace-region, BPM from S1 (Noisy intervals excluded), Disagreements (vs a brute-force reference), derived states, JSON round trip, fingerprint matching |
 | `test_batch.py`             | `pcg.batch`         | filename BPM tags (parse priority, strip/format), BPM rename incl. the Annotation sidecar, input collection (WAV preferred), Springer runs serialised, annotated recordings found after renames |
+| `test_reanalysis.py`        | `pcg.reanalysis`, `recording`, `annotation`, `cli` | selected audio/context/channel extraction, recording-clock alignment, boundary preservation, empty/invalid results, both complete algorithm pipelines on synthetic PCG, JSON without saving |
+| `test_reanalysis_workspace.py` | `app.workspace`, `app.state` | range algorithm/BPM choice, undo/redo, cancellation/failure, in-flight edits, stale Annotation results, real CLI subprocess protocol for both algorithms |
 
 ## Scope (intentional)
 
 No real audio: a few tests write tiny synthetic WAV/FLAC files to `tmp_path`. The
 end-to-end engine is validated separately against the Annotations by
 `benchmarking/run_benchmark.py` and, without ground truth, by
-`benchmarking/state_invariants.py`. The Qt app has no automated tests; its logic lives in
-the tested modules (`annotation`, `analysis`, `context`, `batch`).
+`benchmarking/state_invariants.py`. Qt interaction checks run offscreen, including
+selected-range reanalysis, gain editing and waveform display; most app logic lives
+in the tested modules (`annotation`, `analysis`, `context`, `batch`).

@@ -73,17 +73,33 @@ the Traces panel; choices persist). Keys (also under Help → Keys):
 | ] / [ | next / previous Defect or Disagreement |
 | Ctrl+Z / Ctrl+Shift+Z / Ctrl+S | undo / redo / save Annotation |
 | Ctrl+R | re-run the engine in a fresh process (picks up code edits) |
+| Ctrl+Shift+R | re-detect and re-label the selected range with Springer or Native |
 | Ctrl+Shift+C | copy the visible window as text for an LLM |
+
+To re-label just part of a recording, **Shift+drag** a range and click **Re-label
+selection…** (Ctrl+Shift+R). Choose Springer 2015 or Native, optionally supply a BPM
+hint, then run. Both algorithms process original audio with up to 15 seconds of
+context on each side. Only Annotation labels inside the selection are replaced;
+sounds crossing its edges are clipped, preserving their portions outside it.
+The edit is one undo step (Ctrl+Z) and is saved only with Ctrl+S. The full Analysis
+remains available for comparison. Failed/cancelled runs and selections with no
+detected sounds keep the existing labels. If you edit the selection while a run
+is in progress, its result is discarded so your edits are preserved.
 
 ## Command Line
 
 ```bash
 python -m pcg analyze inputs/ -j 8 --rename      # analyze, store in the library, tag filenames
 python -m pcg analyze rec.wav --springer --start 5
+python -m pcg reanalyze-range rec.wav --from 120 --to 126 --algorithm springer --bpm 90
 python -m pcg inspect rec.wav --from 120 --to 126 # the same text as Ctrl+Shift+C
 python -m pcg export rec.wav --bpm-csv bpm.csv [--source annotation] --summary summary.txt
 python -m pcg rename inputs/                      # write BPM tags from existing Analyses
 ```
+
+`reanalyze-range` also accepts `--algorithm native`, `--channel mixed|left|right`
+and `--context SECONDS` (default 15 per side). It returns the selected S1/S2 spans
+as JSON on the recording's clock and writes no Annotation or library files.
 
 The start-BPM hint defaults to the filename tag. Springer and auto-switch runs always go one at a
 time: the Springer HSMM needs several GB of memory per minute of audio. For breakpoint debugging,

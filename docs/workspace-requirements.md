@@ -176,6 +176,16 @@ panel (BPM range, HRV, plausibility-gate result, algorithm used / switch reason)
 - **Ctrl+R** re-runs the engine on the open Recording in a fresh worker process, so code
   edits are picked up without restarting the app. Cancellable; UI never blocks.
 - After a re-run the view (zoom window, visible traces, Annotation) stays exactly in place.
+- **Ctrl+Shift+R / Re-label selection…** re-detects the Shift+drag selection with
+  Springer 2015 or Native in a fresh, cancellable worker process. An optional BPM
+  hint seeds Native or supplies Springer's duration prior; Auto derives rhythm
+  from the audio. Both paths analyse original audio, on the current channel,
+  with up to 15 seconds of context on each side. Only the selected Annotation
+  range is replaced, in one undo step, with no automatic save. Boundary sounds
+  are clipped to preserve all portions outside the selection. The full Analysis
+  and its diagnostics stay available for comparison. Failure, cancellation,
+  no sounds in the selection, opening another recording/Annotation, or editing
+  the selected spans during the run never applies its labels.
 
 ### LLM context
 
@@ -198,7 +208,8 @@ panel (BPM range, HRV, plausibility-gate result, algorithm used / switch reason)
 
 ## 8. Exports
 
-- BPM CSV (from the Analysis or from the Annotation), summary, current view as image.
+- Workspace: BPM CSV and BPM/time graph (from the Analysis or from the Annotation), window text.
+- CLI: BPM CSV, BPM chart, summary.
 - No per-run side outputs; everything is an explicit export.
 
 ## 9. Performance targets
