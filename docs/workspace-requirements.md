@@ -1,5 +1,15 @@
 # Workspace requirements
 
+The Signal lane includes an **Original audio envelope**, off by default and
+independently toggleable in its legend with a `display` tag. It is a smoothed
+Hilbert magnitude of the decoded, unfiltered original playback channel, sampled
+at roughly 200 Hz for display. Background computation uses bounded chunks and
+the Analysis's envelope smoothing window. It starts at recording time zero,
+including any start the algorithm skips. It applies no peak normalization,
+bandpass, noise subtraction or playback gain. This workspace-only trace is not
+saved in Analysis and does not change detection, Annotation, or the overview's
+algorithm envelope. Existing Analyses need no re-run to display it.
+
 ### Playback gain audition
 
 The top-right gain controls contain **+** and numbered point buttons. Click **+**,

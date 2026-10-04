@@ -11,7 +11,8 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import resample_poly
+from scipy.ndimage import uniform_filter1d
+from scipy.signal import hilbert, resample_poly
 
 from pcg import recording
 from .gain import GainEdit, gain_envelope
@@ -19,6 +20,31 @@ from .gain import GainEdit, gain_envelope
 PLAYBACK_RATE_MAX = 16000
 SOURCE_ORIGINAL = "original"
 SOURCE_FILTERED = "filtered"
+
+
+def original_audio_envelope(signal: np.ndarray, sample_rate: int, smooth_ms: float = 50.0,
+                            display_rate: int = 200) -> Tuple[float, np.ndarray]:
+    """Smoothed Hilbert magnitude of unfiltered playback audio, for display only.
+
+    Thirty-second chunks have half-second context on both sides to avoid seams.
+    The display is sampled at ~200 Hz; full-rate intermediates stay bounded for long recordings.
+    No peak normalization, bandpass, noise subtraction or playback gain is applied.
+    """
+    if sample_rate <= 0 or display_rate <= 0 or not np.isfinite(smooth_ms) or smooth_ms < 0:
+        raise ValueError("Envelope requires positive rates and a finite non-negative smoothing window")
+    hop = max(1, int(round(sample_rate / display_rate)))
+    window = max(1, int(round(sample_rate * smooth_ms / 1000)))
+    chunk = max(hop, int(sample_rate * 30) // hop * hop)
+    pad = max(int(sample_rate * 0.5), window)
+    output = np.empty((len(signal) + hop - 1) // hop, dtype=np.float32)
+    for start in range(0, len(signal), chunk):
+        stop = min(len(signal), start + chunk)
+        lo, hi = max(0, start - pad), min(len(signal), stop + pad)
+        magnitude = np.abs(hilbert(np.asarray(signal[lo:hi], dtype=np.float32)))
+        smoothed = uniform_filter1d(magnitude, size=window, mode="nearest")
+        values = smoothed[start - lo:stop - lo:hop]
+        output[start // hop:start // hop + len(values)] = values
+    return hop / sample_rate, output
 
 
 def load_playback_audio(path: str, channel: str) -> Tuple[np.ndarray, int]:

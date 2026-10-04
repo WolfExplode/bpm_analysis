@@ -11,6 +11,7 @@ from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 from pcg.analysis import Library
 from pcg.app.state import Settings
 from pcg.app.workspace import Workspace
+from pcg.app.workspace import ORIGINAL_ENVELOPE
 
 
 @pytest.fixture
@@ -173,3 +174,35 @@ def test_selection_resize_clamps_to_recording_and_prevents_crossing(editor):
     assert ws.region == pytest.approx((1.198, 1.2))
     ws.resize_region("end", 0.5, 0.1, final=True)
     assert ws.region == pytest.approx((0.5, 0.502))
+
+
+def test_original_envelope_display_is_toggleable_without_analysis_and_drops_stale_results(editor):
+    ws = editor.ws
+    original = np.full(400, 0.3, np.float32)
+    ws._original_envelope_ready(ws._audio_token, (0.005, original))
+    assert ORIGINAL_ENVELOPE not in ws.lanes["signal"].items
+    assert not ws._wanted(ORIGINAL_ENVELOPE)
+    ws._on_legend_toggled(ORIGINAL_ENVELOPE, True)
+    item = ws.lanes["signal"].items[ORIGINAL_ENVELOPE]
+    assert item.isVisible()
+    assert ws.analysis is None
+    assert ws._original_envelope.t0 == 0
+    ws._on_legend_toggled(ORIGINAL_ENVELOPE, False)
+    assert not item.isVisible()
+    ws._on_legend_toggled(ORIGINAL_ENVELOPE, True)
+    assert item.isVisible()
+    trace = ws._original_envelope
+    ws._original_envelope_ready(ws._audio_token - 1, (0.005, np.ones(400)))
+    assert ws._original_envelope is trace
+    editor.add(0.5, -12)
+    ws.player.toggle_source()
+    np.testing.assert_array_equal(ws._original_envelope.y, original)
+    ws._clear_plots()
+    ws._show(ORIGINAL_ENVELOPE, True)
+    assert ws.lanes["signal"].items[ORIGINAL_ENVELOPE].isVisible()
+    ws._clear_plots()
+    ws.set_lane_visible("signal", False)
+    ws._original_envelope_ready(ws._audio_token, (0.005, original))
+    assert ORIGINAL_ENVELOPE not in ws.lanes["signal"].items
+    ws.set_lane_visible("signal", True)
+    assert ws.lanes["signal"].items[ORIGINAL_ENVELOPE].isVisible()

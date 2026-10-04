@@ -64,8 +64,10 @@ CHART_WAVE = "#3f9fc2"
 PREPROCESSING, PASS_1, PASS_2, PASS_3, RESULT, ANNOTATION_GROUP = (
     "Preprocessing", "Pass 1", "Pass 2", "Pass 3", "Result", "Annotation")
 DEBUG_STAGES = (PREPROCESSING, PASS_1, PASS_2, PASS_3)
-ALWAYS_LISTED = (RESULT, ANNOTATION_GROUP)
+DISPLAY = "Display"
+ALWAYS_LISTED = (DISPLAY, RESULT, ANNOTATION_GROUP)
 STAGE_COLORS = {
+    DISPLAY: TEXT_2,
     PREPROCESSING: "#c4a882",
     PASS_1: "#9d8cf2",
     PASS_2: "#e3b450",
@@ -73,7 +75,7 @@ STAGE_COLORS = {
     RESULT: METRIC,
     ANNOTATION_GROUP: ANNOTATION,
 }
-STAGE_TAGS = {PREPROCESSING: "pre", PASS_1: "P1", PASS_2: "P2", PASS_3: "P3", RESULT: "result",
+STAGE_TAGS = {DISPLAY: "display", PREPROCESSING: "pre", PASS_1: "P1", PASS_2: "P2", PASS_3: "P3", RESULT: "result",
               ANNOTATION_GROUP: "ann"}
 # Groups a debug trace may invent (emit_trace) get one of these, by name.
 EXTRA_STAGE_COLORS = ("#d98bb5", "#8fb3e0", "#d4cf7a")

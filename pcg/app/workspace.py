@@ -22,7 +22,7 @@ from pcg.clock import clock_text
 from pcg.engine.traces import KIND_LINE, KIND_POINTS, KIND_SPANS, ROLE_ENVELOPE, ROLE_NOISE, ROLE_S1, ROLE_S2, Trace
 
 from . import theme
-from .audio import SOURCE_FILTERED, Player, load_playback_audio, spectrogram
+from .audio import SOURCE_FILTERED, Player, load_playback_audio, original_audio_envelope, spectrogram
 from .chart import annotation_bpm_curve, render_bpm_chart
 from .export_dialog import ExportDialog
 from .gain_editor import GainEditor
@@ -43,10 +43,12 @@ AXIS_WIDTH = 64  # px; equal on every lane so the plots line up
 
 # Pseudo-traces the workspace draws itself (not from the Analysis's trace catalog).
 PEAKS_S1, PEAKS_S2, PEAKS_NOISE = "Peaks: S1", "Peaks: S2", "Peaks: noise"
+ORIGINAL_ENVELOPE = "Original audio envelope"
 ANN_BPM = "BPM from Annotation"                 # smoothed like the result curve
 ANN_BPM_INSTANT = "Instant BPM from Annotation"  # one value per S1-S1 interval
 BPM_TRACE = "BPM"  # the result heart-rate line the high/low marks follow
 PSEUDO_TRACES = (
+    TraceMeta(ORIGINAL_ENVELOPE, "signal", KIND_LINE, theme.DISPLAY),
     TraceMeta(PEAKS_S1, "signal", KIND_POINTS, theme.RESULT, ROLE_S1, visible=True),
     TraceMeta(PEAKS_S2, "signal", KIND_POINTS, theme.RESULT, ROLE_S2, visible=True),
     TraceMeta(PEAKS_NOISE, "signal", KIND_POINTS, theme.RESULT, ROLE_NOISE),
@@ -249,6 +251,8 @@ class Workspace(QtWidgets.QWidget):
     _filtered_loaded = QtCore.Signal(int, object)
     _spectrogram_loaded = QtCore.Signal(int, object)
     _audio_error = QtCore.Signal(int, str)
+    _original_envelope_loaded = QtCore.Signal(int, object)
+    _original_envelope_error = QtCore.Signal(int, str)
 
     def __init__(self, settings: Settings, library: A.Library, parent=None):
         super().__init__(parent)
@@ -264,6 +268,7 @@ class Workspace(QtWidgets.QWidget):
         self.region: Optional[Tuple[float, float]] = None
         self.n_held = False
         self.player = Player()
+        self._original_envelope: Optional[Trace] = None
         self.worker = AnalyzeWorker(self)
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
@@ -289,6 +294,8 @@ class Workspace(QtWidgets.QWidget):
         self._y_manual: Dict[str, List[float]] = {}  # lane -> [lo, hi] the user set, for the open Recording
         self._spec_token = 0  # bumped to drop an in-flight spectrogram (new audio, or the lane turned off)
         self._audio_error.connect(self._audio_failed)
+        self._original_envelope_loaded.connect(self._original_envelope_ready)
+        self._original_envelope_error.connect(self._original_envelope_failed)
         self._build_ui()
         self._build_shortcuts()
         self._timer = QtCore.QTimer(self, interval=33, timeout=self._tick)
@@ -710,11 +717,14 @@ class Workspace(QtWidgets.QWidget):
 
     def open_recording(self, path: str, analysis_path: Optional[str] = None) -> None:
         self.player.clear()
+        self._original_envelope = None
         self.gain_editor.clear_recording()
         self.worker.cancel()
         self.path = str(Path(path).resolve())
         self.fingerprint = self.library.fingerprints.get(self.path)
         self.analysis = None
+        self._metas = {}
+        self._styles = {}
         self.doc = None
         self.selected = None
         self.region = None
@@ -792,8 +802,32 @@ class Workspace(QtWidgets.QWidget):
                 self._audio_loaded.emit(token, (sig, sr, params))
             except Exception as e:  # noqa: BLE001
                 self._audio_error.emit(token, str(e))
+                return
+            try:
+                envelope = original_audio_envelope(sig, sr, float(param(params, "envelope_smooth_window_ms")))
+                self._original_envelope_loaded.emit(token, envelope)
+            except Exception as e:  # noqa: BLE001
+                self._original_envelope_error.emit(token, str(e))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _original_envelope_ready(self, token: int, payload) -> None:
+        if token != self._audio_token:
+            return
+        dt, y = payload
+        self._original_envelope = Trace(ORIGINAL_ENVELOPE, theme.DISPLAY, "signal", KIND_LINE,
+                                        x=[], y=y, dt=dt)
+        if ORIGINAL_ENVELOPE not in self._metas:
+            self._metas[ORIGINAL_ENVELOPE] = TraceMeta.of(self._original_envelope)
+            self._styles = theme.assign_styles(self._metas.values())
+        self._show(ORIGINAL_ENVELOPE, self._wanted(ORIGINAL_ENVELOPE))
+        self._fill_legends()
+        if "signal" not in self._y_manual:
+            self._auto_y("signal")
+
+    def _original_envelope_failed(self, token: int, message: str) -> None:
+        if token == self._audio_token:
+            self.status.setText(f"Original audio envelope unavailable: {message}")
 
     def _audio_ready(self, token: int, payload) -> None:
         if token != self._audio_token:
@@ -933,7 +967,10 @@ class Workspace(QtWidgets.QWidget):
         self._fill_legends()
 
     def _show(self, name: str, shown: bool) -> None:
-        if name in (PEAKS_S1, PEAKS_S2, PEAKS_NOISE):
+        if name == ORIGINAL_ENVELOPE:
+            if self._original_envelope is not None:
+                self._set_trace_shown(self._original_envelope, shown)
+        elif name in (PEAKS_S1, PEAKS_S2, PEAKS_NOISE):
             self._set_peaks_shown(name, shown)
         elif name in (ANN_BPM, ANN_BPM_INSTANT):
             self._set_ann_bpm_shown(name, shown)
@@ -1183,8 +1220,6 @@ class Workspace(QtWidgets.QWidget):
 
     def _fill_legends(self) -> None:
         """Each lane's legend: its offered traces in pipeline order (stage, then catalog order)."""
-        if self.analysis is None:
-            return
         rank = {g: i for i, g in enumerate(theme.stage_order(m.group for m in self._metas.values()))}
         by_lane: Dict[str, List[TraceMeta]] = {n: [] for n in self.lanes}
         for i, m in enumerate(self._metas.values()):
@@ -1207,6 +1242,8 @@ class Workspace(QtWidgets.QWidget):
         self.trace_vis[name] = on
         self.settings.set_trace_visibility(self.trace_vis)
         self._show(name, on)
+        if name == ORIGINAL_ENVELOPE and "signal" not in self._y_manual:
+            self._auto_y("signal")
 
     def _highlight(self, lane: Lane, name: Optional[str]) -> None:
         """Hovering a legend entry isolates its trace: the lane's other traces fade."""
@@ -1226,6 +1263,10 @@ class Workspace(QtWidgets.QWidget):
             self._drop_spectrogram()
         if self.analysis is not None and on:
             self._realize_lane(name)
+        elif on and name == "signal" and self._original_envelope is not None:
+            self._show(ORIGINAL_ENVELOPE, self._wanted(ORIGINAL_ENVELOPE))
+            if name not in self._y_manual:
+                self._auto_y(name)
 
     def _realize_lane(self, lane_name: str) -> None:
         """Create the items of a lane that just became visible."""
@@ -1352,7 +1393,8 @@ class Workspace(QtWidgets.QWidget):
         plot = self.lanes[lane_name].plot
         if lane_name == "spectrogram":
             plot.setYRange(0, 1000, padding=0)
-        elif lane_name == "signal" and self.analysis is not None and self._envelope_trace() is not None:
+        elif lane_name == "signal" and (self._original_envelope is not None or (
+                self.analysis is not None and self._envelope_trace() is not None)):
             plot.setYRange(*self._signal_y_range(), padding=0)
         elif lane_name != "states":
             plot.enableAutoRange(axis="y", enable=True)
@@ -1360,17 +1402,28 @@ class Workspace(QtWidgets.QWidget):
     def _signal_y_range(self) -> Tuple[float, float]:
         """Fit the envelope's ordinary peaks, not its rare artifact spikes: the 99th percentile of
         per-block maxima, plus headroom for the peak markers."""
-        y = self._envelope_trace().y
+        algorithm = self._envelope_trace() if self.analysis is not None else None
+        arrays = [algorithm.y] if algorithm is not None else []
+        if self._original_envelope is not None and self._wanted(ORIGINAL_ENVELOPE):
+            arrays.append(self._original_envelope.y)
+        top, lo = 0.0, 0.0
+        for y in arrays:
+            env_lo, env_top = self._envelope_bounds(y)
+            lo, top = min(lo, env_lo), max(top, env_top)
+        hi = top * 1.12 if np.isfinite(top) and top > lo else lo + 1.0
+        if self.gain_editor.add_btn.isChecked() or self.gain_editor.edits:
+            lo = min(lo, -hi * 0.65)
+        return lo, hi
+
+    @staticmethod
+    def _envelope_bounds(y: np.ndarray) -> Tuple[float, float]:
         per = max(1, len(y) // 4000)
         k = len(y) // per
         with np.errstate(all="ignore"):
             maxima = np.nanmax(y[: k * per].reshape(k, per), axis=1) if k else y
             top = float(np.nanpercentile(maxima, 99)) if len(maxima) else 1.0
             lo = float(min(0.0, np.nanmin(y))) if len(y) else 0.0
-        hi = top * 1.12 if np.isfinite(top) and top > lo else lo + 1.0
-        if self.gain_editor.add_btn.isChecked() or self.gain_editor.edits:
-            lo = min(lo, -hi * 0.65)
-        return lo, hi
+        return lo, top
 
     def _restore_y(self) -> None:
         """Re-apply the y-ranges saved for this Recording; every other lane gets its automatic range."""
