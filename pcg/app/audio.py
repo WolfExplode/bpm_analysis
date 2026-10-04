@@ -14,6 +14,7 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 from pcg import recording
+from .gain import GainEdit, gain_envelope
 
 PLAYBACK_RATE_MAX = 16000
 SOURCE_ORIGINAL = "original"
@@ -73,6 +74,9 @@ class Player:
         self._lock = threading.Lock()
         self._stream = None
         self.gain = 1.0
+        self._gain_edits: tuple[GainEdit, ...] = ()
+        self._gain_enabled = True
+        self._rendered_gain = None
 
     # sources ------------------------------------------------------------------
     def set_audio(self, original: np.ndarray, sample_rate: int) -> None:
@@ -83,6 +87,8 @@ class Player:
             self.sample_rate = int(sample_rate)
             self._pos = 0
             self.source = SOURCE_ORIGINAL
+            self._loop = None
+            self._rendered_gain = None
 
     def set_filtered(self, filtered: np.ndarray) -> None:
         with self._lock:
@@ -96,6 +102,17 @@ class Player:
         with self._lock:
             self._sources = {}
             self.sample_rate = 0
+            self._loop = None
+            self._gain_edits = ()
+            self._rendered_gain = None
+
+    def set_gain_edits(self, edits: tuple[GainEdit, ...], enabled: bool = True) -> None:
+        """Swap immutable effect settings between output blocks, including during playback."""
+        if any(not np.isfinite([e.center, e.width, e.db, e.q]).all() or e.width <= 0 or e.q <= 0
+               or e.shape not in ("bell", "region") or not -60 <= e.db <= 12 for e in edits):
+            raise ValueError("Gain edits require finite times, positive width/Q, a valid shape and -60 to +12 dB")
+        with self._lock:
+            self._gain_edits, self._gain_enabled = tuple(edits), bool(enabled)
 
     def samples(self, source: str = SOURCE_ORIGINAL) -> Optional[np.ndarray]:
         return self._sources.get(source)
@@ -166,6 +183,9 @@ class Player:
         import sounddevice as sd
 
         with self._lock:
+            current_gain = (self._gain_edits, self._gain_enabled)
+            previous_gain = self._rendered_gain or current_gain
+            self._rendered_gain = current_gain
             src = self._sources.get(self.source)
             if src is None:
                 src = self._sources[SOURCE_ORIGINAL]
@@ -179,7 +199,19 @@ class Player:
                         outdata[written:, 0] = 0
                         raise sd.CallbackStop
                 n = min(frames - written, hi - self._pos)
-                outdata[written:written + n, 0] = src[self._pos:self._pos + n] * self.gain
+                chunk = src[self._pos:self._pos + n] * self.gain
+                if (self._gain_enabled and self._gain_edits) or previous_gain != current_gain:
+                    times = (self._pos + np.arange(n)) / self.sample_rate
+                    effect = gain_envelope(times, self._gain_edits) if self._gain_enabled else np.ones(n)
+                    if previous_gain != current_gain:
+                        old_edits, old_enabled = previous_gain
+                        old = gain_envelope(times, old_edits) if old_enabled else np.ones(n)
+                        # Crossfade live handle moves and bypass changes over 5 ms.
+                        mix = np.clip((written + np.arange(n)) / max(1, self.sample_rate * 0.005), 0, 1)
+                        effect = old + (effect - old) * mix
+                    chunk = chunk * effect
+                    chunk = np.clip(chunk, -1, 1)
+                outdata[written:written + n, 0] = chunk
                 self._pos += n
                 written += n
 

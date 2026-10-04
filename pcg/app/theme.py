@@ -52,6 +52,10 @@ ANNOTATION = "#e6e8ea"
 ENVELOPE = "#8796a4"       # the envelope's outline; its body is ENVELOPE_FILL
 ENVELOPE_FILL = "#46525d"
 PLAYHEAD = "#ffffff"
+# Playback gain handles use an EQ-style numbered ring and translucent bell fill.
+GAIN = "#67b84f"
+GAIN_FILL = "#29443b"
+GAIN_COLORS = (GAIN, "#dcad4d", "#a88bd1", "#63b7c3", "#cc7e96", "#8aace5", "#b7c861")
 # The exported BPM chart (no S1/S2 marks there, so the waveform can be cyan without clashing).
 CHART_BPM = METRIC
 CHART_WAVE = "#3f9fc2"

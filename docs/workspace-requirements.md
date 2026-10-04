@@ -1,5 +1,32 @@
 # Workspace requirements
 
+### Playback gain audition
+
+The top-right gain controls contain **+** and numbered point buttons. Click **+**,
+then click the Signal graph to place a time-local handle. Click its graph circle
+to select it, then drag
+up/down to boost or attenuate, or left/right to move it. The gain line's 0 dB
+baseline is anchored to Signal y=0. Colored numbered rings and shaded bell curves
+show each band, with time/gain/Q readouts beside the selected center. Dragging
+sets -60 dB (Mute) to +12 dB. New bells have a 0.2 s half-change bandwidth at Q=1.
+Q divides this bandwidth: scrolling up over a band center increases Q and
+narrows the bell; scrolling down widens it, without zooming the graph.
+Delete or Backspace deletes the selected gain point. Clicking a numbered button
+toggles only that point's effect on/off; disabled points remain visible in gray.
+Shift-drag selects and loops a region. Left-drag within six pixels of either
+selection border to resize it on any lane; a horizontal resize cursor marks the
+grab zone. The lanes stay synchronized, and the playback loop updates on release.
+Borders stay within the Recording and cannot cross one another. Overlapping
+edits multiply; boosted playback is clipped to the output range.
+
+Point toggles work with either original or filtered playback. Live edits and
+bypass changes crossfade over 5 ms. The curve is a playback gain overlay,
+with its own dB scale, independent of the underlying Signal amplitude scale.
+These session edits reset when another Recording is opened; they are not saved
+or exported. Processing happens in the audio output callback, without encoding,
+modifying source samples, changing Analysis, or changing Annotation. Gain affects
+all sounds at a given time; it cannot separate overlapping sounds.
+
 Requirements for the native app that replaces the tkinter GUI and the Plotly HTML
 reports. Terms in **bold** are defined in [CONTEXT.md](../CONTEXT.md); the big
 decisions are recorded in [ADR 0004](adr/0004-recording-identity-by-audio-fingerprint.md)

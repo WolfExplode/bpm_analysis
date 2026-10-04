@@ -25,6 +25,7 @@ from . import theme
 from .audio import SOURCE_FILTERED, Player, load_playback_audio, spectrogram
 from .chart import annotation_bpm_curve, render_bpm_chart
 from .export_dialog import ExportDialog
+from .gain_editor import GainEditor
 from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, palette_row
 from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir, reveal_in_folder
 from .theme import TraceMeta, qcolor
@@ -118,6 +119,8 @@ class LaneViewBox(pg.ViewBox):
         self._drag_ref: object = None
 
     def wheelEvent(self, ev, axis=None):
+        if self.lane == "signal" and axis is None and self.ws.gain_editor.wheel(ev):
+            return
         if self.lane == "states" or not (axis == 1 or ev.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier):
             return super().wheelEvent(ev, axis)
         ev.accept()
@@ -142,8 +145,17 @@ class LaneViewBox(pg.ViewBox):
             y0 = self.mapSceneToView(ev.buttonDownScenePos()).y()
             if ev.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
                 self._drag_mode, self._drag_ref = "region", x0
+            elif self.lane == "signal" and self.ws.gain_editor.hit(ev.buttonDownScenePos()) is not None:
+                editor = self.ws.gain_editor
+                index = editor.hit(ev.buttonDownScenePos())
+                self._drag_mode, self._drag_ref = "gain", index
             elif self.ws.n_held:
                 self._drag_mode, self._drag_ref = "noisy", x0
+            elif self.ws.region_edge_at(self, x0) is not None:
+                side = self.ws.region_edge_at(self, x0)
+                a, b = self.ws.region
+                edge, fixed = (a, b) if side == "start" else (b, a)
+                self._drag_mode, self._drag_ref = "region_resize", (side, fixed, x0 - edge)
             else:
                 edge = self.ws.noisy_edge_at(self, x0, y0) if self.lane == "states" else None
                 self._drag_mode, self._drag_ref = ("resize", edge) if edge else (None, None)
@@ -152,6 +164,11 @@ class LaneViewBox(pg.ViewBox):
         ev.accept()
         if self._drag_mode == "region":
             self.ws.set_region((self._drag_ref, x), final=ev.isFinish())
+        elif self._drag_mode == "region_resize":
+            side, fixed, offset = self._drag_ref
+            self.ws.resize_region(side, fixed, x - offset, final=ev.isFinish())
+        elif self._drag_mode == "gain":
+            self.ws.gain_editor.move(self._drag_ref, x, self.mapSceneToView(ev.scenePos()).y())
         elif self._drag_mode == "noisy":
             self.ws.preview_noisy((self._drag_ref, x), final=ev.isFinish())
         elif self._drag_mode == "resize":
@@ -162,6 +179,27 @@ class LaneViewBox(pg.ViewBox):
             self._drag_mode = None
 
     def mouseClickEvent(self, ev):
+        if self.lane == "signal":
+            editor = self.ws.gain_editor
+            if self.sceneBoundingRect().contains(ev.scenePos()) and not (
+                    ev.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier):
+                index = editor.hit(ev.scenePos())
+                if ev.button() == QtCore.Qt.MouseButton.RightButton:
+                    if index is not None:
+                        editor.remove(index)
+                    ev.accept()
+                    return
+                if ev.button() == QtCore.Qt.MouseButton.LeftButton:
+                    if index is None and editor.add_btn.isChecked():
+                        editor.add(self.mapSceneToView(ev.scenePos()).x())
+                    elif index is not None:
+                        editor.select(index)
+                    else:
+                        editor.select(None)
+                        self.ws.click(self.lane, self.mapSceneToView(ev.scenePos()).x(),
+                                      self.mapSceneToView(ev.scenePos()).y())
+                    ev.accept()
+                    return
         if ev.button() != QtCore.Qt.MouseButton.LeftButton:
             return
         ev.accept()
@@ -264,7 +302,11 @@ class Workspace(QtWidgets.QWidget):
     def _build_ui(self) -> None:
         header = QtWidgets.QFrame()
         header.setObjectName("header")
-        top = QtWidgets.QHBoxLayout(header)
+        header_layout = QtWidgets.QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 4, 0, 0)
+        header_layout.setSpacing(0)
+        top = QtWidgets.QHBoxLayout()
+        header_layout.addLayout(top)
         top.setContentsMargins(12, 6, 10, 6)
         top.setSpacing(8)
         self.name_label = QtWidgets.QLabel("No recording")
@@ -358,6 +400,12 @@ class Workspace(QtWidgets.QWidget):
 
         for name in LANE_ORDER:
             self._make_lane(name)
+        self.gain_editor = GainEditor(self)
+        gain_row = QtWidgets.QHBoxLayout()
+        gain_row.setContentsMargins(12, 0, 10, 0)
+        gain_row.addStretch()
+        gain_row.addWidget(self.gain_editor)
+        header_layout.insertLayout(0, gain_row)
 
         # Hidden lanes, one chip each: click to bring the lane back.
         self.lane_bar = QtWidgets.QFrame()
@@ -619,7 +667,8 @@ class Workspace(QtWidgets.QWidget):
         sc("1", lambda: self.place(an.S1))
         sc("2", lambda: self.place(an.S2))
         sc("X", self.delete_span)
-        sc("Delete", self.delete_span)
+        sc("Delete", self.delete_selection)
+        sc("Backspace", self.gain_editor.delete_selected)
         sc("F", self.relabel_span)
         sc("A", self.replace_region_from_algorithm)
         sc("]", lambda: self.step_issue(+1))
@@ -661,6 +710,7 @@ class Workspace(QtWidgets.QWidget):
 
     def open_recording(self, path: str, analysis_path: Optional[str] = None) -> None:
         self.player.clear()
+        self.gain_editor.clear_recording()
         self.worker.cancel()
         self.path = str(Path(path).resolve())
         self.fingerprint = self.library.fingerprints.get(self.path)
@@ -1317,7 +1367,10 @@ class Workspace(QtWidgets.QWidget):
             maxima = np.nanmax(y[: k * per].reshape(k, per), axis=1) if k else y
             top = float(np.nanpercentile(maxima, 99)) if len(maxima) else 1.0
             lo = float(min(0.0, np.nanmin(y))) if len(y) else 0.0
-        return lo, (top * 1.12 if np.isfinite(top) and top > lo else lo + 1.0)
+        hi = top * 1.12 if np.isfinite(top) and top > lo else lo + 1.0
+        if self.gain_editor.add_btn.isChecked() or self.gain_editor.edits:
+            lo = min(lo, -hi * 0.65)
+        return lo, hi
 
     def _restore_y(self) -> None:
         """Re-apply the y-ranges saved for this Recording; every other lane gets its automatic range."""
@@ -1330,11 +1383,16 @@ class Workspace(QtWidgets.QWidget):
         self._y_manual = dict(saved)
 
     def click(self, lane: str, x: float, y: float) -> None:
+        self.gain_editor.select(None)
         self.player.seek(x)
         self._tick()
         if lane == "states" and self.doc is not None and ROW_ANN[0] <= y <= ROW_ANN[1]:
             self.selected = an.span_at(self.doc.spans, x)
             self._draw_annotation()
+
+    def delete_selection(self) -> None:
+        if not self.gain_editor.delete_selected():
+            self.delete_span()
 
     def set_region(self, region: Optional[Tuple[float, float]], final: bool) -> None:
         if region is not None:
@@ -1380,15 +1438,40 @@ class Workspace(QtWidgets.QWidget):
                     best = (d, s, side)
         return (best[1], best[2]) if best else None
 
+    def region_edge_at(self, vb: pg.ViewBox, x: float) -> Optional[str]:
+        """A six-pixel grab zone on either side of a selection border, at every zoom."""
+        if self.region is None:
+            return None
+        distances = [abs(x - edge) for edge in self.region]
+        index = int(np.argmin(distances))
+        return ("start", "end")[index] if distances[index] <= 6 * self._sec_per_px(vb) else None
+
+    def resize_region(self, side: str, fixed: float, x: float, *, final: bool) -> None:
+        duration = self.player.duration
+        if not duration and self.analysis is not None:
+            duration = self.analysis.duration_sec
+        minimum = 0.002  # Keep a usable selection when a border is dragged past the other one.
+        if side == "start":
+            region = (float(np.clip(x, 0, max(0, fixed - minimum))), fixed)
+        else:
+            region = (fixed, float(np.clip(x, fixed + minimum, max(duration, fixed + minimum))))
+        self.set_region(region, final=final)
+
     @staticmethod
     def _sec_per_px(vb: pg.ViewBox) -> float:
         (t0, t1), _ = vb.viewRange()
         return (t1 - t0) / max(1.0, vb.width())
 
     def _on_mouse_moved(self, scene_pos, lane: Lane) -> None:
+        vb = lane.plot.getViewBox()
+        near_edge = (vb.sceneBoundingRect().contains(scene_pos)
+                     and self.region_edge_at(vb, vb.mapSceneToView(scene_pos).x()) is not None)
+        cursor = QtCore.Qt.CursorShape.SizeHorCursor if near_edge else (
+            QtCore.Qt.CursorShape.CrossCursor if lane.name == "signal" and self.gain_editor.add_btn.isChecked()
+            else QtCore.Qt.CursorShape.ArrowCursor)
+        lane.widget.viewport().setCursor(cursor)
         if self.analysis is None or not lane.plot.sceneBoundingRect().contains(scene_pos):
             return
-        vb = lane.plot.getViewBox()
         pt = vb.mapSceneToView(scene_pos)
         self.status.setText(f"{clock_text(pt.x())}   {pt.x():.3f} s   {lane.name}: {pt.y():.4g}")
         text = self._hover_text(lane, vb, pt.x(), pt.y(), scene_pos)
