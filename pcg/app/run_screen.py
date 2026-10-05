@@ -1,10 +1,12 @@
 """Run screen: a queue of Recordings -> Analyses."""
 from __future__ import annotations
 
+import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -18,6 +20,12 @@ from .widgets import PillDelegate
 COLS = ["Recording", "Start BPM", "Skip (s)", "Status", "Result", ""]
 C_NAME, C_BPM, C_START, C_STATUS, C_RESULT, C_STALE = range(len(COLS))
 
+# Engine stderr: log records are "LEVEL logger: message" (pcg.cli's logging format). The engine
+# logs through the root logger; Springer through its own module loggers.
+_LOG_RECORD = re.compile(r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+): ")
+_ALGORITHM_LOGGERS = ("pcg.engine", "springer")
+_PY_WARNING = re.compile(r"^\S.*:\d+: \w*Warning: ")
+
 
 @dataclass
 class Row:
@@ -29,6 +37,8 @@ class Row:
     stale: str = ""
     analyses: List[str] = field(default_factory=list)
     bpm: Optional[dict] = None
+    log: List[Tuple[str, bool, bool]] = field(default_factory=list)  # (line, in Basic, in Verbose)
+    in_py_warning: bool = False  # inside a Python warning's multi-line stderr output
 
 
 class RunScreen(QtWidgets.QWidget):
@@ -42,6 +52,7 @@ class RunScreen(QtWidgets.QWidget):
         self.rows: List[Row] = []
         self.workers: Dict[str, AnalyzeWorker] = {}
         self.pending: List[Row] = []
+        self._log_row: Optional[Row] = None  # whose console log the panel shows
         self.setAcceptDrops(True)
         self._status_ready.connect(self._apply_status)
         self._build_ui()
@@ -97,19 +108,58 @@ class RunScreen(QtWidgets.QWidget):
         self.table.setItemDelegateForColumn(C_STATUS, PillDelegate(_status_tone, self.table))
         self.table.setItemDelegateForColumn(C_STALE, PillDelegate(lambda _t: "warning", self.table))
         self.table.cellDoubleClicked.connect(self._double_clicked)
+        self.table.viewport().installEventFilter(self)  # to tell which button double-clicked
+        self._dbl_button = QtCore.Qt.MouseButton.LeftButton
+        self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.itemChanged.connect(self._item_changed)
 
-        self.note = QtWidgets.QLabel(
-            "Drop recordings or folders here. Start BPM blank = from the filename tag. "
-            "Springer / auto-switch run one at a time (memory). Double-click a recording to open it.")
-        self.note.setProperty("tone", "muted")
-        self.note.setContentsMargins(12, 4, 12, 6)
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(header)
-        lay.addWidget(self.table, 1)
-        lay.addWidget(self.note)
+        lay.addWidget(self._build_console_panel(), 1)
+
+    def _build_console_panel(self) -> QtWidgets.QSplitter:
+        self.console_title = QtWidgets.QLabel("Console")
+        self.console_title.setProperty("tone", "muted")
+        self.console_title.setContentsMargins(12, 6, 12, 4)
+        consoles = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        consoles.setChildrenCollapsible(False)
+        self.console, self.verbose_console = (self._console_pane(consoles, title)
+                                              for title in ("Basic", "Verbose — algorithm logging"))
+        panel = QtWidgets.QWidget()
+        pl = QtWidgets.QVBoxLayout(panel)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(0)
+        pl.addWidget(self.console_title)
+        pl.addWidget(consoles, 1)
+        split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        split.addWidget(self.table)
+        split.addWidget(panel)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        split.setChildrenCollapsible(False)
+        return split
+
+    @staticmethod
+    def _console_pane(parent: QtWidgets.QSplitter, title: str) -> QtWidgets.QPlainTextEdit:
+        label = QtWidgets.QLabel(title)
+        label.setProperty("tone", "muted")
+        label.setContentsMargins(12, 2, 12, 2)
+        text = QtWidgets.QPlainTextEdit(readOnly=True)
+        text.setFont(theme.mono_font())
+        text.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        text.setMaximumBlockCount(20000)
+        text.setPlaceholderText("Double-click a Status to show that run's console log.")
+        pane = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(pane)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(label)
+        lay.addWidget(text, 1)
+        parent.addWidget(pane)
+        return text
 
     # ── queue ────────────────────────────────────────────────────────────
     def dragEnterEvent(self, ev: QtGui.QDragEnterEvent) -> None:
@@ -151,6 +201,8 @@ class RunScreen(QtWidgets.QWidget):
         for i, r in enumerate(self.rows):
             self._fill_row(i, r)
         self.table.blockSignals(False)
+        if self._log_row not in self.rows:
+            self._show_log(self.rows[0] if self.rows else None)
 
     def _fill_row(self, i: int, r: Row) -> None:
         def cell(col, text, editable=False, tip=""):
@@ -244,12 +296,20 @@ class RunScreen(QtWidgets.QWidget):
         return s
 
     def run(self) -> None:
-        sel = sorted({i.row() for i in self.table.selectionModel().selectedRows()})
-        targets = [self.rows[i] for i in sel] if len(sel) > 1 else list(self.rows)
+        sel = self._selected_rows()
+        self._run_rows(sel if len(sel) > 1 else list(self.rows))
+
+    def _selected_rows(self) -> List[Row]:
+        return [self.rows[i] for i in sorted({i.row() for i in self.table.selectionModel().selectedRows()})]
+
+    def _run_rows(self, targets: List[Row]) -> None:
         self.pending = [r for r in targets if r.path not in self.workers]
         for r in self.pending:
             r.status = "queued"
+            r.log.clear()
         self._refresh_table()
+        if self._log_row in self.pending:
+            self._show_log(self._log_row)  # the stored log was cleared; clear the panel too
         self._settings = self.run_settings()
         self._pump()
 
@@ -263,7 +323,9 @@ class RunScreen(QtWidgets.QWidget):
         while self.pending and len(self.workers) < limit:
             r = self.pending.pop(0)
             w = AnalyzeWorker(self)
+            w.progress.connect(lambda msg, p=r: self._log_line(p, msg))
             w.progress.connect(lambda msg, p=r.path: self._set_status(p, msg))
+            w.log.connect(lambda line, p=r: self._log_stderr(p, line))
             w.finished.connect(lambda paths, err, p=r.path: self._finished(p, paths, err))
             self.workers[r.path] = w
             hint = r.bpm_override if r.bpm_override is not None else batch.start_bpm_from_filename(r.path)
@@ -271,6 +333,41 @@ class RunScreen(QtWidgets.QWidget):
                     auto_switch=self._settings.auto_switch, channel=self._settings.channel,
                     start_sec=r.start_sec, bpm_hint=hint)
             self._set_status(r.path, "starting…")
+
+    # ── console log ──────────────────────────────────────────────────────
+    def _show_log(self, row: Optional[Row]) -> None:
+        self._log_row = row
+        self.console_title.setText(f"Console — {Path(row.path).name}" if row else "Console")
+        entries = row.log if row else []
+        for view, verbose in ((self.console, False), (self.verbose_console, True)):
+            view.setPlainText("\n".join(line for line, basic, verb in entries if (verb if verbose else basic)))
+            view.verticalScrollBar().setValue(view.verticalScrollBar().maximum())
+
+    def _log_line(self, row: Row, text: str, basic: bool = True, verbose: bool = True) -> None:
+        line = f"{time.strftime('%H:%M:%S')}  {text}"
+        row.log.append((line, basic, verbose))
+        if row is self._log_row:
+            if basic:
+                self.console.appendPlainText(line)
+            if verbose:
+                self.verbose_console.appendPlainText(line)
+
+    def _log_stderr(self, row: Row, line: str) -> None:
+        """Route an engine stderr line: Basic gets warnings and anything that isn't a log record
+        (tracebacks); Verbose gets every algorithm log record plus tracebacks, but not
+        other libraries' logging or Python warnings."""
+        m = _LOG_RECORD.match(line)
+        if m:
+            row.in_py_warning = False
+            level, name = m.group(1), m.group(2)
+            self._log_line(row, line, basic=level not in ("DEBUG", "INFO"),
+                           verbose=name == "root" or name.startswith(_ALGORITHM_LOGGERS))
+            return
+        if _PY_WARNING.match(line):
+            row.in_py_warning = True  # its source line follows, indented
+        elif not line[:1].isspace():
+            row.in_py_warning = False
+        self._log_line(row, line, verbose=not row.in_py_warning)
 
     def _set_status(self, path: str, msg: str) -> None:
         i = self._row_index(path)
@@ -289,6 +386,8 @@ class RunScreen(QtWidgets.QWidget):
             r = self.rows[i]
             if err or not paths:
                 r.status, r.result = ("cancelled" if err == "cancelled" else "failed"), err
+                if err:
+                    self._log_line(r, f"{r.status}: {err}")
             else:
                 r.status, r.analyses, r.stale = "done", list(paths), ""
                 summaries = [A.load(p).summary for p in paths]
@@ -317,10 +416,36 @@ class RunScreen(QtWidgets.QWidget):
         if skipped:
             QtWidgets.QMessageBox.information(self, "Some files were not renamed", "\n".join(skipped[:30]))
 
+    def eventFilter(self, obj, ev) -> bool:
+        if obj is self.table.viewport() and ev.type() == QtCore.QEvent.Type.MouseButtonDblClick:
+            self._dbl_button = ev.button()
+        return super().eventFilter(obj, ev)
+
+    def _context_menu(self, pos: QtCore.QPoint) -> None:
+        i = self.table.rowAt(pos.y())
+        if i < 0:
+            return
+        if not self.table.selectionModel().isRowSelected(i):
+            self.table.selectRow(i)
+        menu = QtWidgets.QMenu(self)
+        menu.addAction("Run", lambda: self._run_and_show(self.rows[i]))
+        menu.addAction("Remove", self.remove_selected)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _run_and_show(self, clicked: Row) -> None:
+        """Run the selected rows and put the right-clicked one in the consoles."""
+        self._run_rows(self._selected_rows())
+        self._show_log(clicked)
+
     def _double_clicked(self, row: int, col: int) -> None:
-        if col != C_NAME:  # the other cells are editable
+        if self._dbl_button != QtCore.Qt.MouseButton.LeftButton:
             return
         r = self.rows[row]
+        if col == C_STATUS:
+            self._show_log(r)
+            return
+        if col != C_NAME:  # the other cells are editable
+            return
         self.open_requested.emit(r.path, r.analyses[0] if r.analyses else "")
 
     def busy(self) -> bool:

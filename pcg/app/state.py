@@ -184,6 +184,7 @@ class AnalyzeWorker(QtCore.QObject):
     """Runs `python -m pcg analyze --progress-json` for one recording in a fresh process."""
 
     progress = QtCore.Signal(str)
+    log = QtCore.Signal(str)  # a line of the process's stderr (warnings, tracebacks)
     finished = QtCore.Signal(list, str)  # analysis paths, error
     range_finished = QtCore.Signal(object, str)  # RangeResult or None, error
 
@@ -204,7 +205,7 @@ class AnalyzeWorker(QtCore.QObject):
               start_sec: float, bpm_hint: Optional[float]) -> None:
         if self.running:
             return
-        args = ["-m", "pcg", "--library", library, "analyze", recording_path, "--progress-json",
+        args = ["-m", "pcg", "--library", library, "analyze", recording_path, "--progress-json", "-v",
                 "--channel", channel, "--start", str(start_sec)]
         if springer:
             args.append("--springer")
@@ -237,7 +238,9 @@ class AnalyzeWorker(QtCore.QObject):
         env.insert("PYTHONIOENCODING", "utf-8")
         env.insert("PYTHONUNBUFFERED", "1")
         self.proc.setProcessEnvironment(env)
+        self._stderr = b""
         self.proc.readyReadStandardOutput.connect(self._read)
+        self.proc.readyReadStandardError.connect(self._read_stderr)
         self.proc.finished.connect(self._done)
         self.proc.errorOccurred.connect(self._process_error)
         self.proc.start(_python_executable(), args)
@@ -251,6 +254,13 @@ class AnalyzeWorker(QtCore.QObject):
         if self.running:
             self._error = "cancelled"
             self.proc.kill()
+
+    def _read_stderr(self) -> None:
+        chunk = bytes(self.proc.readAllStandardError())
+        self._stderr += chunk
+        for line in chunk.decode("utf-8", "replace").splitlines():
+            if line.strip():
+                self.log.emit(line.rstrip())
 
     def _read(self) -> None:
         self._buf += bytes(self.proc.readAllStandardOutput())
@@ -280,8 +290,9 @@ class AnalyzeWorker(QtCore.QObject):
     def _done(self, code: int, _status) -> None:
         self._read()
         err = self._error
+        self._read_stderr()
         if code != 0 or not (self._range_result if self._range_mode else self._paths):
-            tail = bytes(self.proc.readAllStandardError()).decode("utf-8", "replace").strip().splitlines()
+            tail = self._stderr.decode("utf-8", "replace").strip().splitlines()
             err = err or (tail[-1] if tail else f"worker exited with code {code}")
         if self._range_mode:
             self.range_finished.emit(self._range_result, err)
