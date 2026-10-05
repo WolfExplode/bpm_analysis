@@ -101,7 +101,7 @@ class RunScreen(QtWidgets.QWidget):
 
         self.note = QtWidgets.QLabel(
             "Drop recordings or folders here. Start BPM blank = from the filename tag. "
-            "Springer / auto-switch run one at a time (memory). Double-click a row to open it.")
+            "Springer / auto-switch run one at a time (memory). Double-click a recording to open it.")
         self.note.setProperty("tone", "muted")
         self.note.setContentsMargins(12, 4, 12, 6)
         lay = QtWidgets.QVBoxLayout(self)
@@ -306,11 +306,6 @@ class RunScreen(QtWidgets.QWidget):
         if not todo:
             QtWidgets.QMessageBox.information(self, "Rename", "No analysed single-channel recordings selected.")
             return
-        preview = "\n".join(f"{Path(r.path).name}\n  → {batch.renamed_with_bpm(r.path, r.bpm).name}" for r in todo[:15])
-        more = f"\n… and {len(todo) - 15} more" if len(todo) > 15 else ""
-        if QtWidgets.QMessageBox.question(self, "Write BPM into filenames", preview + more) \
-                != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
         skipped = []
         for r in todo:
             new, why = batch.rename_with_bpm(r.path, r.bpm)
@@ -322,7 +317,9 @@ class RunScreen(QtWidgets.QWidget):
         if skipped:
             QtWidgets.QMessageBox.information(self, "Some files were not renamed", "\n".join(skipped[:30]))
 
-    def _double_clicked(self, row: int, _col: int) -> None:
+    def _double_clicked(self, row: int, col: int) -> None:
+        if col != C_NAME:  # the other cells are editable
+            return
         r = self.rows[row]
         self.open_requested.emit(r.path, r.analyses[0] if r.analyses else "")
 

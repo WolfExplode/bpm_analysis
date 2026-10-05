@@ -6,9 +6,11 @@ is ever written into the audio file.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,9 +75,33 @@ def _pydub_segment(path: Path):
     except ImportError as e:  # pragma: no cover - environment dependent
         raise AudioError(f"cannot decode {path.name}: soundfile failed and pydub is not installed") from e
     try:
-        return AudioSegment.from_file(str(path))
+        with _no_console_windows():
+            return AudioSegment.from_file(str(path))
     except Exception as e:
         raise AudioError(f"cannot decode {path.name}: {e}") from e
+
+
+@contextlib.contextmanager
+def _no_console_windows():
+    """pydub shells out to ffmpeg/ffprobe; from a GUI process on Windows each call flashes a console."""
+    if sys.platform != "win32":
+        yield
+        return
+    import subprocess
+
+    from pydub import utils as pydub_utils  # binds Popen by name at import, so patch it there too
+
+    class _Popen(subprocess.Popen):
+        def __init__(self, *a, **kw):
+            kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+            super().__init__(*a, **kw)
+
+    original, pydub_original = subprocess.Popen, pydub_utils.Popen
+    subprocess.Popen = pydub_utils.Popen = _Popen
+    try:
+        yield
+    finally:
+        subprocess.Popen, pydub_utils.Popen = original, pydub_original
 
 
 def _decoded_blocks(path: Path) -> Tuple[int, int, Iterator[np.ndarray]]:

@@ -6,7 +6,7 @@ from typing import Callable, List, Optional, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from pcg.engine.traces import KIND_LINE, KIND_POINTS, KIND_SPANS
+from pcg.engine.traces import KIND_POINTS, KIND_SPANS
 
 from . import theme
 from .theme import TraceStyle, qcolor

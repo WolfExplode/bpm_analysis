@@ -92,6 +92,16 @@ def downloads_dir() -> Path:
     return d if d.is_dir() else Path.home()
 
 
+def _python_executable() -> str:
+    """Interpreter for engine child processes; on Windows the windowless one, so no console flashes up."""
+    exe = Path(sys.executable)
+    if sys.platform == "win32" and exe.name.lower() == "python.exe":
+        windowless = exe.with_name("pythonw.exe")
+        if windowless.is_file():
+            return str(windowless)
+    return str(exe)
+
+
 def reveal_in_folder(path: str) -> None:
     """Open the file's folder in the system file manager, with the file selected where possible."""
     if sys.platform == "win32":
@@ -230,7 +240,7 @@ class AnalyzeWorker(QtCore.QObject):
         self.proc.readyReadStandardOutput.connect(self._read)
         self.proc.finished.connect(self._done)
         self.proc.errorOccurred.connect(self._process_error)
-        self.proc.start(sys.executable, args)
+        self.proc.start(_python_executable(), args)
 
     def _process_error(self, error) -> None:
         if error == QtCore.QProcess.ProcessError.FailedToStart:
