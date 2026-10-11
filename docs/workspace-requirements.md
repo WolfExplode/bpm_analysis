@@ -10,6 +10,52 @@ bandpass, noise subtraction or playback gain. This workspace-only trace is not
 saved in Analysis and does not change detection, Annotation, or the overview's
 algorithm envelope. Existing Analyses need no re-run to display it.
 
+### Recording metadata and simplified recovery estimates
+
+The **Recording** button beside **Summary** opens age at recording, reported sex,
+**Resting heart rate**, and a recovery-marker selector. The app uses only the
+simplified stop-and-sit model; there is no protocol selector, cohort confirmation,
+peak-HR confirmation, pediatric age band, BMI or supine-resting-HR control.
+Age and reported sex adjust the approximation at supported checkpoints when age
+is supplied. Without age, the original basic estimate remains available.
+
+Metadata autosaves to `<fingerprint>.recording.json` in the Analysis library,
+independently of Analysis and Annotation, and survives re-analysis and audio renames.
+Copy this sidecar when transferring metadata to another library. Marker positions
+continue to use existing per-user settings. Existing metadata remains readable;
+legacy study selections have no effect on calculations. The resting input retains
+its `seated_resting_hr` key and tooltip describing pre-exercise sitting; legacy
+supine `resting_hr` values are not silently repurposed.
+
+The estimate calculates automatically from each marker's BPM and supplied resting
+heart rate: `H(t)=R+(S−R)×[0.25+0.75×exp(−t/50)]`, restricted to 0–300 s.
+For ages greater than 16 and less than 70, cumulative drops at 30/60/120/180 s
+receive `a*(age-20)+b*(female-1)`, anchored to a 20-year-old woman. The respective
+`(a,b)` coefficients are `(-0.18,2.15)`, `(-0.18,3.98)`, `(-0.13,6.04)` and
+`(-0.12,6.74)`. These are transferred checkpoint associations from
+Hughes/Chaturvedi (2017), supplementary Tables S1–S4
+(https://pmc.ncbi.nlm.nih.gov/articles/PMC5439512/), not a validated personal curve.
+There is no adjusted 300-s estimate or interpolation between checkpoints.
+Out-of-range ages show an input explanation; adjusted drops below zero or above
+starting-minus-resting HR are omitted rather than clamped. Changing age or sex
+recalculates immediately, and saved selections are used on reload.
+The table compares observed and estimated cumulative drops
+and lists estimated endpoint BPM. Missing values have blank cells; checkpoints with neither an observation
+nor an estimate are omitted entirely, including their time labels.
+Starting BPM follows the visible Annotation/Result BPM source used by recovery lines.
+Observed endpoint BPM uses time-weighted ±2-s means; missing coverage, sustained
+rise or another marker can stop observed measurements. Missing or invalid model
+inputs show an explanation rather than assumed values.
+
+This proposed heuristic assumes the marker is exertion cessation followed by
+immediate passive sitting; later markers explicitly assume a fresh recovery start.
+It supplies no clinical classifications, percentiles, prediction interval
+or expected full return-to-rest time. The rounded 50-s decay constant
+and 25% remaining excess follow the explicit approximation in
+`HeartbeatSimulator/docs/research docs/heart-rate-recovery.md` (2026-10-11), informed
+by Barak et al. (2011), Table 2, passive seated submaximal-cycle recovery in young men.
+The runtime does not depend on that external checkout.
+
 ### Playback gain audition
 
 The top-right gain controls contain **+** and numbered point buttons. Click **+**,

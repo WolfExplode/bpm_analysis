@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-INTERVALS = (60, 120, 180, 300, 600, 900, 1200, 1800)
+INTERVALS = (30, 60, 120, 180, 300, 600, 900, 1200, 1800)
 END_RADIUS = 2.0
 MAX_GAP = 5.0
 RISE_BPM = 5.0
@@ -42,6 +42,17 @@ def window_mean(t, y, center, radius=END_RADIUS):
     return float(np.sum(np.diff(xs) * (values[:-1] + values[1:]) / 2) / (b - a))
 
 
+def recovery_start_bpm(t, y, start):
+    """BPM at the exact marker, only within a continuous finite source interval."""
+    if not np.isfinite(start) or not len(t) or start < t[0] or start > t[-1]:
+        return None
+    i = max(0, np.searchsorted(t, start, side="right") - 1)
+    j = min(i + 1, len(t) - 1)
+    if not np.isfinite(y[i:j + 1]).all() or t[j] - t[i] > MAX_GAP:
+        return None
+    return float(np.interp(start, t, y))
+
+
 def measure_recovery(t, y, start, stop=np.inf):
     """Return lines and cutoff. Stop on missing data, next marker, or sustained rise.
 
@@ -49,13 +60,10 @@ def measure_recovery(t, y, start, stop=np.inf):
     at the first threshold crossing once the rise persists for ten seconds.
     """
     t, y = np.asarray(t, dtype=float), np.asarray(y, dtype=float)
-    if not len(t) or start < t[0] or start > t[-1]:
+    initial = recovery_start_bpm(t, y, start)
+    if initial is None:
         return (), start
     i = max(0, np.searchsorted(t, start, side="right") - 1)
-    j = min(i + 1, len(t) - 1)
-    if not np.isfinite(y[i:j + 1]).all() or t[j] - t[i] > MAX_GAP:
-        return (), start
-    initial = float(np.interp(start, t, y))
     cutoff = min(stop, t[-1], start + INTERVALS[-1] + END_RADIUS)
     # Never connect a recovery chord across a hole in the source curve.
     for k in range(i, len(t) - 1):

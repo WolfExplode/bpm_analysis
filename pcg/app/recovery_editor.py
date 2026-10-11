@@ -7,7 +7,7 @@ from pcg.clock import clock_text
 from . import theme
 from .gain_editor import _Handles
 from .icon import tool_icon
-from .recovery import measure_recovery
+from .recovery import measure_recovery, recovery_start_bpm
 
 
 class _RecoveryHandles(_Handles):
@@ -106,6 +106,8 @@ class RecoveryEditor:
         self.draw()
 
     def add(self, x):
+        if float(x) in self.starts:
+            return
         src = self.ws._bpm_extreme_source() if self.ws.analysis is not None else None
         if src is None:
             return
@@ -125,11 +127,15 @@ class RecoveryEditor:
         if self.ws.analysis is None:
             return
         x = float(np.clip(x, 0, self.ws.analysis.duration_sec))
+        if x == self.starts[index] or x in self.starts[:index] + self.starts[index + 1:]:
+            return
+        self.ws.recording_panel.marker_moved(self.starts[index], x)
         self.starts = self.starts[:index] + (x,) + self.starts[index + 1:]
         self.selected = index
         self.publish()
 
     def remove(self, index):
+        self.ws.recording_panel.marker_removed(self.starts[index])
         self.starts = self.starts[:index] + self.starts[index + 1:]
         self.selected = None
         self.publish()
@@ -157,6 +163,8 @@ class RecoveryEditor:
         src = self.ws._bpm_extreme_source() if self.ws.analysis is not None else None
         if src is None:
             self.markers.setData([], [])
+            self.source = ""
+            self._refresh_metadata()
             return
         t, y, _, suffix = src
         self.source = "Annotation BPM" if suffix else "Result BPM"
@@ -164,10 +172,8 @@ class RecoveryEditor:
         for index, start in enumerate(self.starts):
             stop = min((s for s in self.starts if s > start), default=np.inf)
             lines, _ = measure_recovery(t, y, start, stop)
-            if not len(t) or start < t[0] or start > t[-1]:
-                continue
-            bpm = float(np.interp(start, t, y))
-            if not np.isfinite(bpm):
+            bpm = recovery_start_bpm(t, y, start)
+            if bpm is None:
                 continue
             self.positions.append((index, start, bpm))
             label = pg.TextItem(f"R{index + 1}", color=color, anchor=(0.5, 1.3))
@@ -184,6 +190,12 @@ class RecoveryEditor:
         self.markers.setData([x for _, x, _ in self.positions], [y for _, _, y in self.positions],
                              symbol="d", size=[16 if i == self.selected else 11 for i, _, _ in self.positions],
                              pen=pg.mkPen(color, width=2), brush=theme.SURFACE_0)
+        self._refresh_metadata()
+
+    def _refresh_metadata(self):
+        panel = getattr(self.ws, "recording_panel", None)
+        if panel is not None:
+            panel.refresh()
 
     def _add_item(self, item):
         item.setZValue(42)

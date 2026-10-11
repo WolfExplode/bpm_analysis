@@ -27,6 +27,7 @@ from .chart import annotation_bpm_curve, render_bpm_chart
 from .export_dialog import ExportDialog
 from .gain_editor import GainEditor
 from .recovery_editor import RecoveryEditor
+from .recording_panel import RecordingPanel
 from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, palette_row
 from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir, reveal_in_folder
 from .theme import TraceMeta, qcolor
@@ -392,10 +393,13 @@ class Workspace(QtWidgets.QWidget):
         chips.addStretch(1)
         self.issues_btn = QtWidgets.QPushButton("Issues", checkable=True)
         self.summary_btn = QtWidgets.QPushButton("Summary", checkable=True)
+        self.recording_btn = QtWidgets.QPushButton("Recording", checkable=True)
         self.issues_btn.clicked.connect(lambda on: self._show_side("issues" if on else ""))
         self.summary_btn.clicked.connect(lambda on: self._show_side("summary" if on else ""))
+        self.recording_btn.clicked.connect(lambda on: self._show_side("recording" if on else ""))
         chips.addWidget(self.issues_btn)
         chips.addWidget(self.summary_btn)
+        chips.addWidget(self.recording_btn)
 
         # One widget per lane in a vertical splitter, so lanes can be resized by dragging between them.
         self.lane_split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
@@ -478,6 +482,8 @@ class Workspace(QtWidgets.QWidget):
         self.side_stack = QtWidgets.QStackedLayout(self.side)
         self.side_stack.addWidget(issues)
         self.side_stack.addWidget(self.summary_text)
+        self.recording_panel = RecordingPanel(self)
+        self.side_stack.addWidget(self.recording_panel)
 
         split = QtWidgets.QSplitter()
         split.setHandleWidth(1)
@@ -518,12 +524,13 @@ class Workspace(QtWidgets.QWidget):
             row.insertWidget(index, chip)
 
     def _show_side(self, which: str) -> None:
-        """Open the side panel on Issues or Summary, or close it ("")."""
+        """Open the side panel on Issues, Summary or Recording, or close it ("")."""
         self.side.setVisible(bool(which))
         if which:
-            self.side_stack.setCurrentIndex(0 if which == "issues" else 1)
+            self.side_stack.setCurrentIndex({"issues": 0, "summary": 1, "recording": 2}.get(which, 1))
         self.issues_btn.setChecked(which == "issues")
         self.summary_btn.setChecked(which == "summary")
+        self.recording_btn.setChecked(which == "recording")
         self.settings.set_json("side_panel", which)
 
     def _make_lane(self, name: str) -> None:
@@ -728,6 +735,12 @@ class Workspace(QtWidgets.QWidget):
 
     def eventFilter(self, obj, ev):
         t = ev.type()
+        focus = QtWidgets.QApplication.focusWidget()
+        editing_metadata = focus is not None and self.recording_panel.isAncestorOf(focus)
+        if editing_metadata and t == QtCore.QEvent.Type.ShortcutOverride:
+            # Typing, deleting and native form shortcuts must not edit graph annotations.
+            ev.accept()
+            return True
         viewport = self.lanes["bpm"].widget.viewport()
         if t == QtCore.QEvent.Type.MouseButtonRelease and ev.button() == QtCore.Qt.MouseButton.RightButton:
             held, self._bpm_held = self._bpm_held, False
@@ -751,7 +764,7 @@ class Workspace(QtWidgets.QWidget):
                 self._bpm_readout.hide()
                 self.recovery_editor.hover_label.hide()
         if t in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.KeyRelease) and ev.key() == QtCore.Qt.Key.Key_N:
-            if not ev.isAutoRepeat() and self.isVisible():
+            if not ev.isAutoRepeat() and self.isVisible() and (not editing_metadata or t == QtCore.QEvent.Type.KeyRelease):
                 self.n_held = t == QtCore.QEvent.Type.KeyPress
         elif t == QtCore.QEvent.Type.ApplicationDeactivate:
             self.recovery_editor.hover_label.hide()
@@ -815,6 +828,7 @@ class Workspace(QtWidgets.QWidget):
         self.fingerprint = self.library.fingerprints.get(self.path)
         self.analysis = None
         self.recovery_editor.load_recording()
+        self.recording_panel.load_recording()
         self._metas = {}
         self._styles = {}
         self.doc = None
