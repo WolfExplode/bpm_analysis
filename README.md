@@ -62,6 +62,20 @@ Disagreements and Defects), signal (envelopes, peaks; hover a peak for its label
 reasoning), heart rate, and optional lanes for every debug trace the engine emits (toggle them in
 the Traces panel; choices persist). Keys (also under Help → Keys):
 
+The sliders button adds playback gain points to the Signal graph. Beside it, the descending-curve
+button adds **recovery starts** to the Heart rate graph. Click the button, then the graph; drag a
+diamond to reposition it, or select it and press Delete/Backspace. Right-click retains the BPM readout.
+Click the button again or press Escape to cancel placement. Recovery starts are remembered per
+recording in the app settings.
+
+Recovery lines run from each start to 1, 2, 3, 5, 10, 15, 20 and 30 minutes, where data permits.
+Hover an endpoint for its signed slope in bpm/s and BPM change. Each endpoint uses the time-weighted
+average over ±2 seconds; the start uses the curve value at the marker. Measurements follow the
+visible smoothed Annotation BPM when available, otherwise Result BPM. Lines stop before missing
+data (including gaps over 5 seconds), the next recovery start, or a rise of at least 5 BPM above
+the running recovery low that persists for 10 seconds. This cutoff scans the intervening curve,
+so a later endpoint cannot bridge renewed exertion just because BPM has fallen again.
+
 | Key | Action |
 |---|---|
 | Space / T | play-pause / toggle original vs filtered audio |

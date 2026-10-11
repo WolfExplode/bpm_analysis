@@ -9,6 +9,7 @@ from PySide6 import QtCore, QtWidgets
 
 from . import theme
 from .gain import GainEdit, gain_envelope
+from .icon import tool_icon
 from .theme import qcolor
 
 
@@ -26,11 +27,14 @@ class GainEditor(QtWidgets.QWidget):
         self.vb = self.plot.getViewBox()
         self.edits: tuple[GainEdit, ...] = ()
         self.selected = None
-        self.add_btn = QtWidgets.QPushButton("+", checkable=True)
+        self.add_btn = QtWidgets.QPushButton(checkable=True)
+        self.add_btn.setIcon(tool_icon("gain"))
+        self.add_btn.setAccessibleName("Add gain point")
         self.add_btn.setFixedSize(30, 30)
         self.add_btn.setFont(theme.mono_font(14))
         self.add_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.add_btn.setToolTip("Add gain point: click +, then click the Signal graph. Click + again to cancel.")
+        self.add_btn.setToolTip("Add gain point: click the sliders, then click the Signal graph. "
+                                "Click again or press Escape to cancel.")
         self.buttons = []
         self.row = QtWidgets.QHBoxLayout(self)
         self.row.setContentsMargins(0, 0, 0, 0)
@@ -53,6 +57,8 @@ class GainEditor(QtWidgets.QWidget):
 
     def show_editor(self, on):
         if on:
+            if hasattr(self.ws, "recovery_editor"):
+                self.ws.recovery_editor.add_btn.setChecked(False)
             self.ws.set_lane_visible("signal", True)
             self.ensure_space()
         self.ws.lanes["signal"].widget.viewport().setCursor(
@@ -90,6 +96,7 @@ class GainEditor(QtWidgets.QWidget):
     def select(self, index):
         self.selected = index
         if index is not None:
+            self.ws.recovery_editor.select(None)
             if self.ws.selected is not None:
                 self.ws.selected = None
                 self.ws._draw_annotation()

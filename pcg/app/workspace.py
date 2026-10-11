@@ -26,6 +26,7 @@ from .audio import SOURCE_FILTERED, Player, load_playback_audio, original_audio_
 from .chart import annotation_bpm_curve, render_bpm_chart
 from .export_dialog import ExportDialog
 from .gain_editor import GainEditor
+from .recovery_editor import RecoveryEditor
 from .items import BandsItem, EnvelopeItem, SpanRow, SpanRowsItem, TimeAxis, palette_row
 from .state import AnalyzeWorker, AnnotationDoc, Settings, downloads_dir, reveal_in_folder
 from .theme import TraceMeta, qcolor
@@ -151,6 +152,8 @@ class LaneViewBox(pg.ViewBox):
                 editor = self.ws.gain_editor
                 index = editor.hit(ev.buttonDownScenePos())
                 self._drag_mode, self._drag_ref = "gain", index
+            elif self.lane == "bpm" and self.ws.recovery_editor.hit(ev.buttonDownScenePos()) is not None:
+                self._drag_mode, self._drag_ref = "recovery", self.ws.recovery_editor.hit(ev.buttonDownScenePos())
             elif self.ws.n_held:
                 self._drag_mode, self._drag_ref = "noisy", x0
             elif self.ws.region_edge_at(self, x0) is not None:
@@ -171,6 +174,9 @@ class LaneViewBox(pg.ViewBox):
             self.ws.resize_region(side, fixed, x - offset, final=ev.isFinish())
         elif self._drag_mode == "gain":
             self.ws.gain_editor.move(self._drag_ref, x, self.mapSceneToView(ev.scenePos()).y())
+        elif self._drag_mode == "recovery":
+            self.ws.recovery_editor.select(self._drag_ref)
+            self.ws.recovery_editor.move(self._drag_ref, x)
         elif self._drag_mode == "noisy":
             self.ws.preview_noisy((self._drag_ref, x), final=ev.isFinish())
         elif self._drag_mode == "resize":
@@ -181,6 +187,21 @@ class LaneViewBox(pg.ViewBox):
             self._drag_mode = None
 
     def mouseClickEvent(self, ev):
+        if self.lane == "bpm" and self.sceneBoundingRect().contains(ev.scenePos()) and not (
+                ev.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier):
+            editor = self.ws.recovery_editor
+            index = editor.hit(ev.scenePos())
+            if ev.button() == QtCore.Qt.MouseButton.LeftButton:
+                if editor.add_btn.isChecked():
+                    editor.add(self.mapSceneToView(ev.scenePos()).x())
+                elif index is not None:
+                    editor.select(index)
+                else:
+                    editor.select(None)
+                    self.ws.click(self.lane, self.mapSceneToView(ev.scenePos()).x(),
+                                  self.mapSceneToView(ev.scenePos()).y())
+                ev.accept()
+                return
         if self.lane == "signal":
             editor = self.ws.gain_editor
             if self.sceneBoundingRect().contains(ev.scenePos()) and not (
@@ -420,6 +441,8 @@ class Workspace(QtWidgets.QWidget):
         for name in LANE_ORDER:
             self._make_lane(name)
         self.gain_editor = GainEditor(self)
+        self.recovery_editor = RecoveryEditor(self)
+        self.gain_editor.row.insertWidget(1, self.recovery_editor.add_btn)
         gain_row = QtWidgets.QHBoxLayout()
         gain_row.setContentsMargins(12, 0, 10, 0)
         gain_row.addStretch()
@@ -687,7 +710,8 @@ class Workspace(QtWidgets.QWidget):
         sc("2", lambda: self.place(an.S2))
         sc("X", self.delete_span)
         sc("Delete", self.delete_selection)
-        sc("Backspace", self.gain_editor.delete_selected)
+        sc("Backspace", self.delete_point)
+        sc("Escape", self.cancel_point_add)
         sc("F", self.relabel_span)
         sc("A", self.replace_region_from_algorithm)
         sc("]", lambda: self.step_issue(+1))
@@ -712,6 +736,7 @@ class Workspace(QtWidgets.QWidget):
                 return True
         elif obj is viewport:
             if t == QtCore.QEvent.Type.MouseButtonPress and ev.button() == QtCore.Qt.MouseButton.RightButton:
+                self.recovery_editor.hover_label.hide()
                 if self._show_bpm_readout(ev.position().toPoint()):
                     self._bpm_held = True
                     return True
@@ -724,14 +749,17 @@ class Workspace(QtWidgets.QWidget):
                 return True
             elif t == QtCore.QEvent.Type.Leave:
                 self._bpm_readout.hide()
+                self.recovery_editor.hover_label.hide()
         if t in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.KeyRelease) and ev.key() == QtCore.Qt.Key.Key_N:
             if not ev.isAutoRepeat() and self.isVisible():
                 self.n_held = t == QtCore.QEvent.Type.KeyPress
         elif t == QtCore.QEvent.Type.ApplicationDeactivate:
+            self.recovery_editor.hover_label.hide()
             self.n_held = False
             self._bpm_held = False
             self._bpm_readout.hide()
-        elif t == QtCore.QEvent.Type.Hide and obj is self:
+        elif t == QtCore.QEvent.Type.Hide and obj in (self, viewport):
+            self.recovery_editor.hover_label.hide()
             self._bpm_held = False
             self._bpm_readout.hide()
         return False
@@ -786,6 +814,7 @@ class Workspace(QtWidgets.QWidget):
         self.path = str(Path(path).resolve())
         self.fingerprint = self.library.fingerprints.get(self.path)
         self.analysis = None
+        self.recovery_editor.load_recording()
         self._metas = {}
         self._styles = {}
         self.doc = None
@@ -972,6 +1001,7 @@ class Workspace(QtWidgets.QWidget):
             lane.items.clear()
             lane.legend.set_entries([])
         self.overview_curve.setData([], [])
+        self.recovery_editor.draw()
 
     # Which traces are offered and drawn. A trace is *offered* (listed in its lane's legend) when its
     # stage is always listed (Result, Annotation), it is shown by default, or its debug stage is
@@ -1063,6 +1093,7 @@ class Workspace(QtWidgets.QWidget):
         jump there) under the lane's legend. Follows the smoothed Annotation line when it is drawn."""
         if self.analysis is None:
             return
+        self.recovery_editor.draw()
         lane = self.lanes["bpm"]
         marks = [lane.items.get(k) for k in ("_bpm_marks", "_bpm_max", "_bpm_min")]
         src = self._bpm_extreme_source()
@@ -1495,6 +1526,7 @@ class Workspace(QtWidgets.QWidget):
 
     def click(self, lane: str, x: float, y: float) -> None:
         self.gain_editor.select(None)
+        self.recovery_editor.select(None)
         self.player.seek(x)
         self._tick()
         if lane == "states" and self.doc is not None and ROW_ANN[0] <= y <= ROW_ANN[1]:
@@ -1502,8 +1534,15 @@ class Workspace(QtWidgets.QWidget):
             self._draw_annotation()
 
     def delete_selection(self) -> None:
-        if not self.gain_editor.delete_selected():
+        if not self.delete_point():
             self.delete_span()
+
+    def delete_point(self) -> bool:
+        return self.recovery_editor.delete_selected() or self.gain_editor.delete_selected()
+
+    def cancel_point_add(self) -> None:
+        self.gain_editor.add_btn.setChecked(False)
+        self.recovery_editor.add_btn.setChecked(False)
 
     def set_region(self, region: Optional[Tuple[float, float]], final: bool) -> None:
         if region is not None:
@@ -1578,13 +1617,22 @@ class Workspace(QtWidgets.QWidget):
         near_edge = (vb.sceneBoundingRect().contains(scene_pos)
                      and self.region_edge_at(vb, vb.mapSceneToView(scene_pos).x()) is not None)
         cursor = QtCore.Qt.CursorShape.SizeHorCursor if near_edge else (
-            QtCore.Qt.CursorShape.CrossCursor if lane.name == "signal" and self.gain_editor.add_btn.isChecked()
+            QtCore.Qt.CursorShape.CrossCursor if (
+                lane.name == "signal" and self.gain_editor.add_btn.isChecked()
+                or lane.name == "bpm" and self.recovery_editor.add_btn.isChecked())
             else QtCore.Qt.CursorShape.ArrowCursor)
         lane.widget.viewport().setCursor(cursor)
+        self.recovery_editor.hover_label.hide()
         if self.analysis is None or not lane.plot.sceneBoundingRect().contains(scene_pos):
             return
         pt = vb.mapSceneToView(scene_pos)
         self.status.setText(f"{clock_text(pt.x())}   {pt.x():.3f} s   {lane.name}: {pt.y():.4g}")
+        if lane.name == "bpm" and not self._bpm_held:
+            recovery = self.recovery_editor.hover_text(scene_pos)
+            if recovery:
+                QtWidgets.QToolTip.hideText()
+                self.recovery_editor.show_hover(scene_pos, recovery)
+                return
         text = self._hover_text(lane, vb, pt.x(), pt.y(), scene_pos)
         view = lane.widget
         if text:
@@ -1595,6 +1643,10 @@ class Workspace(QtWidgets.QWidget):
 
     def _hover_text(self, lane: Lane, vb, x: float, y: float, scene_pos) -> str:
         spp = self._sec_per_px(vb)
+        if lane.name == "bpm":
+            recovery = self.recovery_editor.hover_text(scene_pos)
+            if recovery:
+                return recovery
         if lane.name == "signal":
             p = self.analysis.peaks
             lo = np.searchsorted(p.time, x - HOVER_PX * spp)

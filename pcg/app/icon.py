@@ -15,6 +15,28 @@ BEATS = 3
 APP_ID = "pcg.workspace"  # Windows groups taskbar buttons by this; without it they take python.exe's icon
 
 
+def tool_icon(kind: str) -> QtGui.QIcon:
+    """Small graph tools: gain sliders and a descending recovery curve."""
+    pixmap = QtGui.QPixmap(24, 24)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    p = QtGui.QPainter(pixmap)
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    p.setPen(QtGui.QPen(qcolor(theme.TEXT), 1.8))
+    if kind == "gain":
+        for x, y in ((6, 9), (12, 16), (18, 7)):
+            p.drawLine(x, 4, x, 20)
+            p.drawEllipse(QtCore.QPointF(x, y), 2.5, 2.5)
+    else:
+        path = QtGui.QPainterPath(QtCore.QPointF(4, 5))
+        path.cubicTo(9, 5, 9, 18, 20, 18)
+        p.drawPath(path)
+        p.drawEllipse(QtCore.QPointF(4, 5), 2, 2)
+        p.drawLine(16, 14, 20, 18)
+        p.drawLine(16, 21, 20, 18)
+    p.end()
+    return QtGui.QIcon(pixmap)
+
+
 def render(size: int) -> QtGui.QImage:
     img = QtGui.QImage(size, size, QtGui.QImage.Format.Format_ARGB32)
     img.fill(QtCore.Qt.GlobalColor.transparent)
