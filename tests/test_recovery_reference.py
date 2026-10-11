@@ -63,7 +63,7 @@ def test_age_sex_matches_document_one_minute_examples(age, male, female):
 
 
 @pytest.mark.parametrize("age,sex", [
-    (None, "male"), (16, "male"), (70, "female"),
+    (None, "male"), (0, "male"), (70, "female"),
     (float("nan"), "male"), (True, "female"), (20, None), (20, "other"),
 ])
 def test_age_sex_requires_supported_demographics(age, sex):
@@ -78,3 +78,84 @@ def test_age_sex_omits_unsupported_or_incompatible_estimates():
     # Neither invent recovery below rest nor clamp a negative cumulative drop.
     assert estimate_seated_recovery(81, 80, 60, age=60, reported_sex="male") is None
     assert estimate_seated_recovery(81, 80, 60, age=17, reported_sex="female") is None
+
+
+@pytest.mark.parametrize("age,sex,seconds,expected", [
+    (8, "male", 60, 105.2), (9, "female", 60, 105.2), (10, None, 60, 105.2),
+    (12, "male", 60, 111.5), (13, "male", 120, 102.4),
+    (14, "female", 60, 119.9), (12.5, "female", 120, 110.1),
+])
+def test_pediatric_research_checkpoint_examples(age, sex, seconds, expected):
+    assert estimate_seated_recovery(150, 80, seconds, age=age, reported_sex=sex) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("age", [3, 7.9, 10.1, 11, 11.9, 14.1, 15, 16])
+def test_pediatric_age_gaps_are_not_extrapolated(age):
+    assert estimate_seated_recovery(150, 80, 60, age=age, reported_sex="male") is None
+
+
+@pytest.mark.parametrize("age,seconds", [(9, 120), (9, 30), (13, 30), (13, 180), (13, 300)])
+def test_pediatric_unsupported_checkpoints_are_blank(age, seconds):
+    assert estimate_seated_recovery(150, 80, seconds, age=age, reported_sex="male") is None
+
+
+def test_pediatric_requires_reserve_and_adolescent_sex():
+    assert estimate_seated_recovery(80, 80, 60, age=9, reported_sex="male") is None
+    assert estimate_seated_recovery(150, 80, 0, age=13, reported_sex="female") == 150
+    with pytest.raises(ValueError):
+        estimate_seated_recovery(150, 80, 60, age=13)
+
+
+@pytest.mark.parametrize("age,low_tau,high_tau", [(29, 57, 37), (49.5, 85, 46), (69.5, 108, 56)])
+def test_fitness_reproduces_source_anchors_and_assumed_midpoint(age, low_tau, high_tau):
+    from math import log
+
+    for level, tau in (("low", low_tau), ("high", high_tau), ("medium", (low_tau + high_tau) / 2)):
+        hr = estimate_seated_recovery(150, 80, 60, age=age, fitness_level=level)
+        inferred_tau = -60 / log(((hr - 80) / 70 - 0.25) / 0.75)
+        assert inferred_tau == pytest.approx(tau)
+
+
+def test_fitness_interpolates_age_and_preserves_bounds():
+    from math import log
+
+    hr = estimate_seated_recovery(150, 80, 60, age=39.25, fitness_level="low")
+    assert -60 / log(((hr - 80) / 70 - 0.25) / 0.75) == pytest.approx(71)
+    for age in (19, 39, 40, 59, 60, 79):
+        values = [estimate_seated_recovery(150, 80, 60, age=age, fitness_level=level)
+                  for level in ("low", "medium", "high")]
+        assert 80 < values[2] < values[1] < values[0] < 150
+    # No jump at the old age-band boundaries.
+    for boundary in (40, 60):
+        before = estimate_seated_recovery(150, 80, 60, age=boundary - 0.001, fitness_level="low")
+        after = estimate_seated_recovery(150, 80, 60, age=boundary + 0.001, fitness_level="low")
+        assert abs(before - after) < 0.01
+
+
+def test_fitness_replaces_demographics_and_ignores_pediatric_selection():
+    for age in (9, 13):
+        for sex in ("male", "female"):
+            base = estimate_seated_recovery(150, 80, 60, age=age, reported_sex=sex)
+            assert estimate_seated_recovery(150, 80, 60, age=age, reported_sex=sex,
+                                            fitness_level="high") == base
+    male = estimate_seated_recovery(150, 80, 60, age=40, reported_sex="male", fitness_level="high")
+    female = estimate_seated_recovery(150, 80, 60, age=40, reported_sex="female", fitness_level="high")
+    assert male == female
+    assert estimate_seated_recovery(150, 80, 300, age=40, fitness_level="high") is not None
+    assert estimate_seated_recovery(150, 80, 0, age=40, fitness_level="high") == 150
+
+
+def test_fitness_missing_inputs_and_age_limits():
+    with pytest.raises(ValueError):
+        estimate_seated_recovery(150, 80, 60, fitness_level="high")
+    with pytest.raises(ValueError):
+        estimate_seated_recovery(150, 80, 60, age=40, fitness_level="elite")
+    for age in (17, 80):
+        assert estimate_seated_recovery(150, 80, 60, age=age, fitness_level="high") is None
+    assert estimate_seated_recovery(150, 80, 60, age=79, fitness_level="high") is not None
+
+
+@pytest.mark.parametrize("level", ["low", "medium", "high"])
+def test_age_eighteen_uses_youngest_fitness_anchor(level):
+    assert estimate_seated_recovery(180, 80, 60, age=18, fitness_level=level) == pytest.approx(
+        estimate_seated_recovery(180, 80, 60, age=19, fitness_level=level))

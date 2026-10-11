@@ -30,10 +30,14 @@ class RecordingPanel(QtWidgets.QScrollArea):
         form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapAllRows)
         self.age = self._number(120, 1, " years")
         self.sex = self._combo({"male": "Male", "female": "Female"})
+        self.fitness = self._combo({"unknown": "Unknown", "low": "Low", "medium": "Medium", "high": "High"})
+        self.fitness.setToolTip(
+            "Approximate adult setting (ages 18–79). Low: sedentary; High: regularly active; "
+            "Medium: assumed midpoint. Replaces the age/sex adjustment. Children are unaffected.")
         self.seated_rest = self._number(250, 1, " bpm")
         self.seated_rest.setToolTip("Pre-exercise resting HR measured while sitting still. Used by the stop-and-sit estimate.")
         for label, widget in (("Age at recording", self.age), ("Reported sex", self.sex),
-                              ("Resting heart rate", self.seated_rest)):
+                              ("Resting heart rate", self.seated_rest), ("Fitness level (approximate)", self.fitness)):
             form.addRow(label, widget)
         layout.addWidget(self.form)
 
@@ -44,6 +48,13 @@ class RecordingPanel(QtWidgets.QScrollArea):
         self.marker = QtWidgets.QComboBox()
         context.addRow("Recovery marker", self.marker)
         layout.addWidget(self.context_form)
+        self.preview_form = QtWidgets.QWidget()
+        preview = QtWidgets.QFormLayout(self.preview_form)
+        preview.setContentsMargins(0, 8, 0, 0)
+        preview.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.preview_start = self._number(300, 1, " bpm")
+        preview.addRow("Starting heart rate", self.preview_start)
+        layout.addWidget(self.preview_form)
         self.results = QtWidgets.QTextBrowser()
         self.results.setOpenExternalLinks(True)
         self.results.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -51,12 +62,14 @@ class RecordingPanel(QtWidgets.QScrollArea):
             lambda size: self.results.setFixedHeight(max(200, int(size.height()) + 20)))
         layout.addWidget(self.results)
         layout.addStretch()
-        for spin in (self.age, self.seated_rest):
+        for spin in (self.age, self.seated_rest, self.preview_start):
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(self._save_person)
         self.sex.currentIndexChanged.connect(self._save_person)
+        self.fitness.currentIndexChanged.connect(self._save_person)
         self.marker.currentIndexChanged.connect(self._choose_marker)
         self.form.setEnabled(False)
+        self.preview_form.setEnabled(False)
         self.context_form.setEnabled(False)
         self.refresh()
 
@@ -91,11 +104,14 @@ class RecordingPanel(QtWidgets.QScrollArea):
             self.data = {"version": 1, "person": {}, "recoveries": {}}
             self._load_error = f"Cannot read recording metadata: {exc}. Existing metadata will not be overwritten."
         person = self.data["person"]
-        for spin, key in ((self.age, "age"), (self.seated_rest, "seated_resting_hr")):
+        for spin, key in ((self.age, "age"), (self.seated_rest, "seated_resting_hr"),
+                          (self.preview_start, "preview_start_bpm")):
             value = person.get(key)
             spin.setValue(value if isinstance(value, (int, float)) else 0)
         self._set_combo(self.sex, person.get("reported_sex", ""))
+        self._set_combo(self.fitness, person.get("fitness_level", "unknown"))
         self.form.setEnabled(not self._load_error)
+        self.preview_form.setEnabled(not self._load_error)
         self.save_status.setText(self._load_error)
         self.save_status.setVisible(bool(self._load_error))
         self._loading = False
@@ -115,6 +131,8 @@ class RecordingPanel(QtWidgets.QScrollArea):
             return
         self.data["person"].update(age=self.age.value() or None,
                                    reported_sex=self.sex.currentData(),
+                                   fitness_level=self.fitness.currentData(),
+                                   preview_start_bpm=self.preview_start.value() or None,
                                    seated_resting_hr=self.seated_rest.value() or None)
         self._save()
         self._render()
@@ -162,24 +180,32 @@ class RecordingPanel(QtWidgets.QScrollArea):
 
     def _render(self):
         index = self.marker.currentIndex()
+        self.context_form.setVisible(index >= 0)
+        self.preview_form.setVisible(index < 0)
         if index < 0:
-            self.results.setHtml("<p>Add a recovery start on the Heart rate graph to see observed and estimated drops.</p>")
+            self._render_estimate(self.preview_start.value() or None, "Predicted recovery", None)
             return
         self._render_seated_estimate(index)
 
     def _render_seated_estimate(self, index):
         editor = self.ws.recovery_editor
         start_bpm = next((y for i, _, y in editor.positions if i == index), None)
+        observed = {int(line.end - line.start): line for i, line in editor.lines if i == index}
+        self._render_estimate(start_bpm, f"R{index + 1} · {editor.source}", observed)
+
+    def _render_estimate(self, start_bpm, title, observed):
         person = self.data["person"]
         rest = person.get("seated_resting_hr")
         age = person.get("age")
         # Use the displayed selection, including Male for legacy missing categories.
         demographics = {"age": age, "reported_sex": self.sex.currentData()} if age is not None else {}
+        demographics["fitness_level"] = self.fitness.currentData()
         reason = ""
         estimates = {}
         try:
             if start_bpm is None:
-                raise ValueError("Starting BPM is unavailable at this marker.")
+                raise ValueError("Enter starting heart rate to calculate the prediction." if observed is None
+                                 else "Starting BPM is unavailable at this marker.")
             if rest is None:
                 raise ValueError("Enter resting heart rate to calculate the estimate.")
             for seconds in INTERVALS:
@@ -189,11 +215,19 @@ class RecordingPanel(QtWidgets.QScrollArea):
                         estimates[seconds] = value
         except ValueError as exc:
             reason = str(exc)
-        observed = {int(line.end - line.start): line for i, line in editor.lines if i == index}
         start_label = "start BPM unavailable" if start_bpm is None else f"start {start_bpm:.1f} bpm"
-        html = [f"<b>R{index + 1} · {escape(editor.source)} · {start_label}</b>",
-                f"<p>{escape(reason)}</p>" if reason else "",
-                "<table cellpadding='4'><tr><th>Time</th><th>Observed drop</th><th>Estimated drop</th></tr>"]
+        html = [f"<b>{escape(title)} · {start_label}</b>",
+                f"<p>{escape(reason)}</p>" if reason else ""]
+        if observed is None:
+            if estimates:
+                html.append("<table cellpadding='4'><tr><th>Time</th><th>Estimated BPM</th><th>Estimated drop</th></tr>")
+                for seconds, value in estimates.items():
+                    html.append(f"<tr><td>{seconds} s</td><td>{value:.1f} bpm</td>"
+                                f"<td>{start_bpm - value:.1f} bpm</td></tr>")
+                html.append("</table>")
+            self.results.setHtml("".join(html))
+            return
+        html.append("<table cellpadding='4'><tr><th>Time</th><th>Observed drop</th><th>Estimated drop</th></tr>")
         for seconds in INTERVALS:
             line = observed.get(seconds)
             measured = f"{-line.change:.1f} bpm" if line else ""

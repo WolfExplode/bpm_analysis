@@ -285,7 +285,103 @@ def test_seated_age_sex_changes_refresh_and_reload(editor):
     assert panel.age.value() == 40
     assert "60 s: 131.0 bpm" in panel.results.toPlainText()
     panel.age.setValue(70)
-    assert "greater than 16 and less than 70" in panel.results.toPlainText()
+    assert "positive age less than 70" in panel.results.toPlainText()
     assert "Estimated endpoint BPM" not in panel.results.toPlainText()
     panel.age.setValue(0)
     assert "300 s: 105.1 bpm" in panel.results.toPlainText()
+
+
+def test_pediatric_estimates_refresh_and_preserve_observations_in_gaps(editor):
+    panel = editor.ws.recording_panel
+    panel.load_recording()
+    editor.add(10)
+    panel.seated_rest.setValue(80)
+    panel.age.setValue(9)
+    text = panel.results.toPlainText()
+    assert "60 s: 115.8 bpm" in text
+    assert "120 s:" not in text
+    panel.age.setValue(13)
+    assert "60 s: 124.8 bpm" in panel.results.toPlainText()
+    assert "120 s: 111.8 bpm" in panel.results.toPlainText()
+    panel.sex.setCurrentIndex(panel.sex.findData("female"))
+    assert "60 s: 136.7 bpm" in panel.results.toPlainText()
+    panel.load_recording()
+    assert panel.age.value() == 13 and panel.sex.currentData() == "female"
+    assert "120 s: 122.8 bpm" in panel.results.toPlainText()
+    panel.age.setValue(11)
+    text = panel.results.toPlainText()
+    assert "Estimated endpoint BPM" not in text
+    assert "Observed drop" in text and "bpm" in text
+
+
+def test_fitness_selection_recalculates_saves_and_restores(editor):
+    from pcg import recording_metadata
+
+    panel = editor.ws.recording_panel
+    panel.load_recording()
+    assert panel.fitness.currentData() == "unknown"
+    editor.add(10)
+    panel.seated_rest.setValue(80)
+    panel.age.setValue(29)
+    panel.fitness.setCurrentIndex(panel.fitness.findData("low"))
+    assert "60 s: 130.9 bpm" in panel.results.toPlainText()
+    panel.fitness.setCurrentIndex(panel.fitness.findData("medium"))
+    assert "60 s: 125.7 bpm" in panel.results.toPlainText()
+    panel.fitness.setCurrentIndex(panel.fitness.findData("high"))
+    assert "60 s: 119.6 bpm" in panel.results.toPlainText()
+    assert "300 s:" in panel.results.toPlainText()
+    saved = recording_metadata.load(editor.ws.library.root, editor.ws.fingerprint)
+    assert saved["person"]["fitness_level"] == "high"
+    panel.load_recording()
+    assert panel.fitness.currentData() == "high"
+    assert "60 s: 119.6 bpm" in panel.results.toPlainText()
+    panel.sex.setCurrentIndex(panel.sex.findData("female"))
+    assert "60 s: 119.6 bpm" in panel.results.toPlainText()
+    panel.fitness.setCurrentIndex(panel.fitness.findData("unknown"))
+    assert "60 s: 119.6 bpm" not in panel.results.toPlainText()
+    assert "300 s:" not in panel.results.toPlainText()
+
+
+def test_marker_free_prediction_saves_and_switches_back_after_marker_removal(editor):
+    panel = editor.ws.recording_panel
+    panel.load_recording()
+    editor.ws._show_side("recording")
+    assert "Add a recovery start" not in panel.results.toPlainText()
+    assert "Enter starting heart rate" in panel.results.toPlainText()
+    panel.preview_start.setValue(150)
+    panel.seated_rest.setValue(80)
+    text = panel.results.toPlainText()
+    assert "Predicted recovery" in text and "Estimated BPM" in text
+    assert "Observed drop" not in text
+    assert "113.3 bpm" in text
+    assert editor.starts == ()
+    assert not panel.context_form.isVisible() and panel.preview_form.isVisible()
+    panel.load_recording()
+    assert panel.preview_start.value() == 150
+    assert "113.3 bpm" in panel.results.toPlainText()
+    editor.add(10)
+    assert "Observed drop" in panel.results.toPlainText()
+    assert panel.context_form.isVisible() and not panel.preview_form.isVisible()
+    editor.remove(0)
+    assert "Predicted recovery" in panel.results.toPlainText()
+    panel.age.setValue(13)
+    assert "111.5 bpm" in panel.results.toPlainText()
+    panel.sex.setCurrentIndex(panel.sex.findData("female"))
+    assert "119.9 bpm" in panel.results.toPlainText()
+    panel.preview_start.setValue(70)
+    assert "no greater than starting BPM" in panel.results.toPlainText()
+    assert "Estimated BPM" not in panel.results.toPlainText()
+
+
+def test_age_eighteen_preview_shows_selected_fitness_predictions(editor):
+    panel = editor.ws.recording_panel
+    panel.load_recording()
+    panel.age.setValue(18)
+    panel.sex.setCurrentIndex(panel.sex.findData("female"))
+    panel.seated_rest.setValue(80)
+    panel.preview_start.setValue(180)
+    for level in ("low", "medium", "high"):
+        panel.fitness.setCurrentIndex(panel.fitness.findData(level))
+        text = panel.results.toPlainText()
+        assert "Estimated BPM" in text and "Estimated drop" in text
+        assert "60 s" in text and "300 s" in text

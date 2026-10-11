@@ -18,6 +18,23 @@ simplified stop-and-sit model; there is no protocol selector, cohort confirmatio
 peak-HR confirmation, pediatric age band, BMI or supine-resting-HR control.
 Age and reported sex adjust the approximation at supported checkpoints when age
 is supplied. Without age, the original basic estimate remains available.
+An optional **Fitness level (approximate)** input autosaves `fitness_level` as
+`unknown` (default for existing recordings), `low`, `medium` or `high`.
+Unknown retains the current model. For ages 18–79, selected fitness uses
+`H=R+(S-R)*[0.25+0.75*exp(-t/tau)]` through 300 s, replacing both adult age
+and sex checkpoint corrections; sexes are pooled in the source.
+Low means sedentary and High means habitually active; these are activity proxies,
+not VO₂max thresholds or an elite-athlete category. Medium is an assumed midpoint.
+Muro (2003) sedentary/active tau anchors are 57/37, 85/46 and 108/56 s for
+19–39, 40–59 and 60–79 years. The app assigns them to band centers 29, 49.5
+and 69.5, interpolates linearly between centers, and holds the nearest endpoint
+constant within the supported age range. Both interpolation and the 25% residual
+are declared modelling assumptions. Missing age shows an input explanation;
+Age 18 uses the youngest adult anchor as an explicit one-year extrapolation
+below the seated study's age range. Adult ages outside 18–79 with selected
+fitness leave estimates blank. Pediatric
+calculations and age gaps ignore the fitness selection. No fitness corrections
+are applied on top of pediatric or adult demographic checkpoint estimates.
 
 Metadata autosaves to `<fingerprint>.recording.json` in the Analysis library,
 independently of Analysis and Annotation, and survives re-analysis and audio renames.
@@ -36,6 +53,19 @@ receive `a*(age-20)+b*(female-1)`, anchored to a 20-year-old woman. The respecti
 Hughes/Chaturvedi (2017), supplementary Tables S1–S4
 (https://pmc.ncbi.nlm.nih.gov/articles/PMC5439512/), not a validated personal curve.
 There is no adjusted 300-s estimate or interpolation between checkpoints.
+Pediatric estimates instead use `H=S-f*(S-R)` with measured `S>R`. Ages 8–10
+use `f60=0.64` for both sexes from Castner et al. (2013), normal-weight cohort
+(https://pmc.ncbi.nlm.nih.gov/articles/PMC3674719/). Selecting the inclusive
+8–10 range around the cohort's mean age 9.4 is an explicit app approximation,
+not a published age-bin boundary or an inferred weight classification.
+Ages 12–14 use `(f60,f120)=(0.55,0.68)` for male and `(0.43,0.57)` for female,
+from Abu Hanifah et al. (2013), Table 1 (doi:10.1371/journal.pone.0082893).
+These are ratios of cohort means scaled to a new starting reserve, not validated
+personal predictions. The adolescent source uses peak pulse; using marker BPM
+assumes cessation pulse is close to peak. There are no pediatric estimates at
+30/180/300 s, no adult corrections applied to pediatric estimates, and no
+interpolation across ages. Other ages up to and including 16 leave estimates
+blank, while observed measurements remain available.
 Out-of-range ages show an input explanation; adjusted drops below zero or above
 starting-minus-resting HR are omitted rather than clamped. Changing age or sex
 recalculates immediately, and saved selections are used on reload.
@@ -55,6 +85,13 @@ and 25% remaining excess follow the explicit approximation in
 `HeartbeatSimulator/docs/research docs/heart-rate-recovery.md` (2026-10-11), informed
 by Barak et al. (2011), Table 2, passive seated submaximal-cycle recovery in young men.
 The runtime does not depend on that external checkout.
+When no recovery marker exists, the marker control is replaced by a **Starting
+heart rate** field and a **Predicted recovery** table of estimated BPM/drop.
+The entered value autosaves as `person.preview_start_bpm`; no starting BPM is
+invented. The preview uses the same model and missing-checkpoint rules, without
+observed values or creating a marker. Adding a marker restores the comparison;
+deleting the last marker restores the saved preview. Metadata edits recalculate
+both views immediately.
 
 ### Playback gain audition
 
