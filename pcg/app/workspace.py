@@ -305,6 +305,12 @@ class Workspace(QtWidgets.QWidget):
         self._timer = QtCore.QTimer(self, interval=33, timeout=self._tick)
         self._timer.start()
         self._issues_timer = QtCore.QTimer(self, singleShot=True, interval=150, timeout=self._refresh_issues)
+        self._bpm_held = False
+        self._bpm_readout = QtWidgets.QLabel(self.lanes["bpm"].widget.viewport())
+        self._bpm_readout.setObjectName("cursorReadout")
+        self._bpm_readout.setFont(theme.mono_font())
+        self._bpm_readout.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._bpm_readout.hide()
         QtWidgets.QApplication.instance().installEventFilter(self)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -698,12 +704,60 @@ class Workspace(QtWidgets.QWidget):
 
     def eventFilter(self, obj, ev):
         t = ev.type()
+        viewport = self.lanes["bpm"].widget.viewport()
+        if t == QtCore.QEvent.Type.MouseButtonRelease and ev.button() == QtCore.Qt.MouseButton.RightButton:
+            held, self._bpm_held = self._bpm_held, False
+            self._bpm_readout.hide()
+            if held and obj is viewport:
+                return True
+        elif obj is viewport:
+            if t == QtCore.QEvent.Type.MouseButtonPress and ev.button() == QtCore.Qt.MouseButton.RightButton:
+                if self._show_bpm_readout(ev.position().toPoint()):
+                    self._bpm_held = True
+                    return True
+            elif t == QtCore.QEvent.Type.MouseMove and self._bpm_held:
+                if ev.buttons() & QtCore.Qt.MouseButton.RightButton:
+                    self._show_bpm_readout(ev.position().toPoint())
+                else:
+                    self._bpm_held = False
+                    self._bpm_readout.hide()
+                return True
+            elif t == QtCore.QEvent.Type.Leave:
+                self._bpm_readout.hide()
         if t in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.KeyRelease) and ev.key() == QtCore.Qt.Key.Key_N:
             if not ev.isAutoRepeat() and self.isVisible():
                 self.n_held = t == QtCore.QEvent.Type.KeyPress
         elif t == QtCore.QEvent.Type.ApplicationDeactivate:
             self.n_held = False
+            self._bpm_held = False
+            self._bpm_readout.hide()
+        elif t == QtCore.QEvent.Type.Hide and obj is self:
+            self._bpm_held = False
+            self._bpm_readout.hide()
         return False
+
+    def _show_bpm_readout(self, pos: QtCore.QPoint) -> bool:
+        lane = self.lanes["bpm"]
+        viewport = lane.widget.viewport()
+        scene_pos = lane.widget.mapToScene(pos)
+        vb = lane.plot.getViewBox()
+        if self.analysis is None or not vb.sceneBoundingRect().contains(scene_pos):
+            self._bpm_readout.hide()
+            return False
+        bpm = vb.mapSceneToView(scene_pos).y()
+        self._bpm_readout.setText(f"{bpm:.4g} BPM")
+        self._bpm_readout.adjustSize()
+        size = self._bpm_readout.size()
+        x, y = pos.x() + 14, pos.y() + 10
+        if x + size.width() > viewport.width():
+            x = pos.x() - size.width() - 14
+        if y + size.height() > viewport.height():
+            y = pos.y() - size.height() - 10
+        self._bpm_readout.move(max(0, x), max(0, y))
+        QtWidgets.QToolTip.hideText()
+        self._bpm_readout.show()
+        self._bpm_readout.raise_()
+        return True
 
     # ─────────────────────────────────────────────────────────────────────
     # Opening
@@ -1886,6 +1940,7 @@ class Workspace(QtWidgets.QWidget):
         algorithm = QtWidgets.QComboBox()
         algorithm.addItem("Springer 2015", "springer")
         algorithm.addItem("Native", "native")
+        algorithm.setCurrentIndex(algorithm.findData("native"))
         form.addRow("Algorithm", algorithm)
         bpm = QtWidgets.QDoubleSpinBox()
         bpm.setRange(0, 300)
@@ -1953,6 +2008,12 @@ class Workspace(QtWidgets.QWidget):
             self.progress_label.setText(f"Analysis failed: {error}" if error != "cancelled" else "Cancelled")
             return
         self.progress_label.setText("")
+        self.refresh_analysis(self.path, paths)
+
+    def refresh_analysis(self, recording_path: str, paths: List[str]) -> None:
+        """Refresh the open recording after a successful run, preserving its Annotation and view."""
+        if not self.path or not paths or Path(recording_path).resolve() != Path(self.path).resolve():
+            return
         current = self.analysis.channel if self.analysis else None
         chosen = next((p for p in paths if current and p.endswith(f"-{current}.analysis.zip")), paths[0])
         self._load_analysis(chosen, keep_view=self.analysis is not None)

@@ -268,6 +268,8 @@ def _stylesheet() -> str:
 QMainWindow, QDialog {{ background: {SURFACE_2}; }}
 QToolTip {{ background: {SURFACE_3}; color: {TEXT}; border: 1px solid {BORDER}; padding: 6px;
             font-family: "{MONO_FONTS[0]}", "{MONO_FONTS[1]}"; font-size: 8.5pt; }}
+QLabel#cursorReadout {{ background: {SURFACE_3}; color: {TEXT}; border: 1px solid {BORDER};
+                       border-radius: 4px; padding: 4px 6px; }}
 QMenuBar {{ background: {SURFACE_1}; color: {TEXT_2}; border-bottom: 1px solid {LINE}; }}
 QMenuBar::item {{ padding: 4px 10px; background: transparent; }}
 QMenuBar::item:selected {{ background: {SURFACE_3}; color: {TEXT}; }}

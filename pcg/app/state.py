@@ -183,6 +183,7 @@ class AnnotationDoc(QtCore.QObject):
 class AnalyzeWorker(QtCore.QObject):
     """Runs `python -m pcg analyze --progress-json` for one recording in a fresh process."""
 
+    started = QtCore.Signal(str)  # recording path (whole-recording analyses only)
     progress = QtCore.Signal(str)
     log = QtCore.Signal(str)  # a line of the process's stderr (warnings, tracebacks)
     finished = QtCore.Signal(list, str)  # analysis paths, error
@@ -214,6 +215,7 @@ class AnalyzeWorker(QtCore.QObject):
         if bpm_hint is not None:
             args += ["--bpm", str(bpm_hint)]
         self._range_mode = False
+        self.started.emit(recording_path)
         self._start_process(args)
 
     def start_range(self, recording_path: str, start: float, end: float, *, algorithm: str,

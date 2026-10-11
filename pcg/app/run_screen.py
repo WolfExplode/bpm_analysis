@@ -43,6 +43,7 @@ class Row:
 
 class RunScreen(QtWidgets.QWidget):
     open_requested = QtCore.Signal(str, str)  # recording path, analysis path ("" = latest)
+    analysis_finished = QtCore.Signal(str, list)  # successful Run-owned analysis: recording, analyses
     _status_ready = QtCore.Signal(str, str, str, object)  # path, result, stale, bpm
 
     def __init__(self, settings: Settings, library: A.Library, parent=None):
@@ -186,6 +187,42 @@ class RunScreen(QtWidgets.QWidget):
         self._refresh_table()
         self._check_status([r.path for r in new])
 
+    def watch_workspace_worker(self, worker: AnalyzeWorker) -> None:
+        """Show Workspace analyses in the queue without starting a second process."""
+        row: Optional[Row] = None
+
+        def started(path: str) -> None:
+            nonlocal row
+            if self._row_index(path) < 0:
+                self.add_paths([path])
+            row = self.rows[self._row_index(path)]
+            row.log.clear()
+            row.result, row.stale = "", ""
+            self.workers[path] = worker
+            self.pending = [r for r in self.pending if r.path != path]
+            self._set_status(path, "starting…")
+            self._show_log(row)
+
+        def progress(message: str) -> None:
+            if row is not None:
+                self._log_line(row, message)
+                self._set_status(row.path, message)
+
+        def log(line: str) -> None:
+            if row is not None:
+                self._log_stderr(row, line)
+
+        def finished(paths: list, error: str) -> None:
+            nonlocal row
+            if row is not None:
+                path, row = row.path, None
+                self._finished(path, paths, error, delete_worker=False)
+
+        worker.started.connect(started)
+        worker.progress.connect(progress)
+        worker.log.connect(log)
+        worker.finished.connect(finished)
+
     def remove_selected(self) -> None:
         sel = {i.row() for i in self.table.selectionModel().selectedRows()}
         self.rows = [r for i, r in enumerate(self.rows) if i not in sel or r.path in self.workers]
@@ -319,6 +356,8 @@ class RunScreen(QtWidgets.QWidget):
             w.cancel()
 
     def _pump(self) -> None:
+        if not self.pending:
+            return
         limit = self._settings.effective_jobs
         while self.pending and len(self.workers) < limit:
             r = self.pending.pop(0)
@@ -377,9 +416,9 @@ class RunScreen(QtWidgets.QWidget):
             self._fill_row(i, self.rows[i])
             self.table.blockSignals(False)
 
-    def _finished(self, path: str, paths: list, err: str) -> None:
+    def _finished(self, path: str, paths: list, err: str, *, delete_worker: bool = True) -> None:
         w = self.workers.pop(path, None)
-        if w is not None:
+        if w is not None and delete_worker:
             w.deleteLater()
         i = self._row_index(path)
         if i >= 0:
@@ -396,6 +435,8 @@ class RunScreen(QtWidgets.QWidget):
             self.table.blockSignals(True)
             self._fill_row(i, r)
             self.table.blockSignals(False)
+        if delete_worker and paths and not err:
+            self.analysis_finished.emit(path, list(paths))
         self._pump()
 
     def rename_selected(self) -> None:

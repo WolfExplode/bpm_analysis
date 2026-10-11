@@ -21,6 +21,7 @@ HELP = """\
 <tr><td><b>Space</b></td><td>play / pause</td></tr>
 <tr><td><b>T</b></td><td>toggle original / filtered audio</td></tr>
 <tr><td><b>Click</b></td><td>move playhead (on the Annotation row: select span)</td></tr>
+<tr><td><b>Hold right mouse on BPM plot</b></td><td>show the cursor's BPM value beside the mouse</td></tr>
 <tr><td><b>Shift+drag / Shift+click</b></td><td>set loop region / clear it</td></tr>
 <tr><td><b>Drag, wheel</b></td><td>pan, zoom (time only)</td></tr>
 <tr><td><b>Wheel / drag on a y-axis, Ctrl+wheel</b></td><td>scale / slide that lane's y-axis (double-click the axis to auto-range again); remembered per recording</td></tr>
@@ -50,12 +51,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.library = library
         self.run_screen = RunScreen(self.settings, library)
         self.workspace = Workspace(self.settings, library)
+        self.run_screen.watch_workspace_worker(self.workspace.worker)
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self.run_screen, "Run")
         self.tabs.addTab(self.workspace, "Workspace")
         self.setCentralWidget(self.tabs)
         self.run_screen.open_requested.connect(self.open_in_workspace)
+        self.run_screen.analysis_finished.connect(self.workspace.refresh_analysis)
         self.workspace.title_changed.connect(self._title)
         self._title("")
         self._menus()
@@ -128,7 +131,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 def main(paths: Optional[List[str]] = None, library: Optional[str] = None, analyze: bool = False) -> int:
-    """Open the app. One file opens in the workspace; several go to the run queue. With
+    """Add inputs to Run; one file also opens in Workspace. With
     *analyze* the engine starts right away (the workspace re-runs even an existing Analysis)."""
     icon.set_taskbar_identity()
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
@@ -140,14 +143,15 @@ def main(paths: Optional[List[str]] = None, library: Optional[str] = None, analy
         app.setEffectEnabled(effect, False)
     win = MainWindow(A.Library(library))
     win.show()
-    paths = paths or []
+    paths = [str(Path(p).resolve()) for p in (paths or [])]
+    if paths:
+        win.run_screen.add_paths(paths)
     files = [p for p in paths if Path(p).is_file()]
     if len(files) == 1 and len(paths) == 1:
         win.open_in_workspace(files[0])
         if analyze:
             win.workspace.rerun()  # no-op when opening already started one (no Analysis yet)
     elif paths:
-        win.run_screen.add_paths(paths)
         if analyze:
             win.run_screen.run()
     win.raise_()
